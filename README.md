@@ -1,3 +1,3 @@
-# BACKEND TRAINING
+# DeepSpeed-based Training
 
-This repo contains a standalone deepspeed training implementation.
+This repo contains a standalone DeepSpeed training implementation.
