@@ -19,9 +19,13 @@ def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
     items_list = []
     files = glob.glob(os.path.join(ilab_train_data_dir, "train_model_*.jsonl"),  
                     recursive = False) 
-    files.sort(reverse=True)
-    latest_train_file = files[0]
-
+    try:
+        files.sort(reverse=True)
+        latest_train_file = files[0]
+    except IndexError:
+        print("IndexError: no matching files found")
+        return 
+    
     with open(latest_train_file, "r") as file:
         # Read each line (which represents a JSON object)
         for line in file:
