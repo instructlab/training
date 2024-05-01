@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+
+datasets>=2.18.0,<3.0.0
+deepspeed
+numba
+numpy>=1.26.4,<2.0.0
+pathlib
+PyYAML>=6.0.1,<7.0.0
+rich
+torch>=2.2.1,<3.0.0
+transformers>=4.30.0,<=4.38.2
