@@ -70,7 +70,7 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            **deprecated_arguments,
+            **_deprecated_arguments,
         ):
             output = model.__original_forward__(
                 input_ids,
