@@ -1,30 +1,35 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
+# Standard
 from pathlib import Path
+from typing import List, Optional
+import inspect
+import logging
 import random
 import time
-from typing import List, Optional
-import numpy as np
-import torch
+
+# Third Party
+from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    StateDictType,
-    FullStateDictConfig,
-)
-from rich.logging import RichHandler
-import logging
+from torch.distributed.fsdp import FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
+import numpy as np
+import torch
 
 
 def convert_loss_to_reduce_sum(model, is_granite=False):
-    '''
+    """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
-    '''
+    """
     if is_granite:
+
         def get_autoregressive_language_modeling_loss(
-            self, lm_logits: torch.Tensor, labels: torch.Tensor, cu_seqlens: torch.Tensor
+            self,
+            lm_logits: torch.Tensor,
+            labels: torch.Tensor,
+            cu_seqlens: torch.Tensor,
         ) -> torch.Tensor:
             loss = None
             # Shift so that tokens < n predict n
@@ -42,12 +47,18 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
 
                 # Flatten the tokens
                 loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                loss = loss_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+                )
 
             return loss
-        model.get_autoregressive_language_modeling_loss = get_autoregressive_language_modeling_loss
+
+        model.get_autoregressive_language_modeling_loss = (
+            get_autoregressive_language_modeling_loss
+        )
         return model
     else:
+
         def reduce_sum_forward(
             input_ids: torch.LongTensor = None,
             attention_mask: Optional[torch.Tensor] = None,
@@ -62,18 +73,17 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
             **deprecated_arguments,
         ):
             output = model.__original_forward__(
-                    input_ids,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    inputs_embeds,
-                    labels,
-                    use_cache,
-                    output_attentions,
-                    output_hidden_states,
-                    return_dict,
-                )
-            
+                input_ids,
+                attention_mask,
+                position_ids,
+                past_key_values,
+                inputs_embeds,
+                labels,
+                use_cache,
+                output_attentions,
+                output_hidden_states,
+                return_dict,
+            )
 
             return_dict = isinstance(output, dict)
             logits = output.logits if return_dict else output[0]
@@ -91,11 +101,11 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
                 loss = loss_fct(shift_logits, shift_labels)
 
             if not return_dict:
-                return ((loss, ) + output) if loss is not None else output
+                return ((loss,) + output) if loss is not None else output
 
             output.loss = loss
             return output
-    
+
         model.__original_forward__ = model.forward
         model.forward = reduce_sum_forward
         return model

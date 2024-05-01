@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
+# Standard
 from dataclasses import dataclass, field
+
+# Third Party
 from transformers import AutoTokenizer
 
+# First Party
 from utils import log_rank_0
 
 

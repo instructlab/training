@@ -1,29 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import argparse
+# Standard
 from datetime import timedelta
+import argparse
 import math
 import os
-import time
-import torch
 import sys
-from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    get_scheduler,
-    MistralForCausalLM
-)
-from torch.distributed import (
-    ReduceOp,
-    all_reduce,
-)
+import time
 
-import deepspeed
+# Third Party
 from deepspeed.ops.adam import FusedAdam
+from torch.distributed import ReduceOp, all_reduce
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, MistralForCausalLM, get_scheduler
+import deepspeed
+import torch
+
+# First Party
 from multipack_sampler import find_packing_max_batch_len_and_grad_accum
 from token_dataset import setup_dataloader, setup_dataset
 from tokenizer_utils import setup_tokenizer
-from utils import save_hf_format_ds, set_random_seed, setup_logger, convert_loss_to_reduce_sum
+from utils import (
+    convert_loss_to_reduce_sum,
+    save_hf_format_ds,
+    set_random_seed,
+    setup_logger,
+)
 
 
 def get_ds_config(world_size, samples_per_gpu, grad_accum):
@@ -54,7 +56,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
         )
-    
+
     if len(tokenizer) > model.config.vocab_size:
         print(
             f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
@@ -66,9 +68,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     assert model.__class__.__name__ in [
         "MistralForCausalLM",
         "GPTMegatronForCausalLM",
-        "LlamaForCausalLM"
+        "LlamaForCausalLM",
     ], f"Model class name: {model.__class__.__name__} is not supported."
-    
+
     model = convert_loss_to_reduce_sum(model)
     model.gradient_checkpointing_enable()
 
@@ -116,7 +118,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
-        
+
         aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             start = time.time()
@@ -135,15 +137,19 @@ def train(args, model, tokenizer, train_loader, grad_accum):
             aggregated_values[2] = loss.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
-            
+
             num_loss_counted_tokens = aggregated_values[0]
-            loss = loss / num_loss_counted_tokens * world_size # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
-            
-            print(f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m")
+            loss = (
+                loss / num_loss_counted_tokens * world_size
+            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+
+            print(
+                f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+            )
             print(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
-            
+
             model.backward(loss)
             model.step()
 
@@ -180,6 +186,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 
 
 def main(args):
+    # Third Party
     import yaml
 
     if os.environ["LOCAL_RANK"] == "0":

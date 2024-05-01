@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import logging
+# Standard
 from pathlib import Path
 from typing import List
+import logging
 
-import numpy as np
+# Third Party
 from datasets import load_dataset
+import numpy as np
 
+# First Party
 from tokenizer_utils import SPECIAL_TOKENS, get_sp_token, setup_tokenizer
 from utils import log_rank_0, setup_logger
 
@@ -43,15 +46,15 @@ def check_valid_sample(
         or len(assistant_token_index) == 0
         or len(eos_token_index) == 0
     ):
-        print(
-            f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m"
-        )
+        print(f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
 
     # check that user_index_token is less than all other indices
     if len(user_token_index) != len(assistant_token_index):
-        print("\033[91mthe number of user_token and assistant_token is not the same\033[0m")
+        print(
+            "\033[91mthe number of user_token and assistant_token is not the same\033[0m"
+        )
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
     if (
@@ -241,6 +244,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Standard
     import argparse
 
     parser = argparse.ArgumentParser(
