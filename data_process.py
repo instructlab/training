@@ -268,8 +268,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path", type=str, required=True, help="Model name or path"
     )
-    args = parser.parse_args()
-    main(args)
+    cmd_args = parser.parse_args()
+    main(cmd_args)
 
 """
 python data_process.py --logging_level INFO --data_path "/new_data/refactored/chat-multiturn/oasst2_arena.jsonl" --data_output_path "./" --max_seq_len 4600 --model_name_or_path "mistralai/Mistral-7B-v0.1"

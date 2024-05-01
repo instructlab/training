@@ -35,18 +35,18 @@ CHAT_TEMPLATE = (
 
 
 def setup_tokenizer(
-    model_name_or_path, SPECIAL_TOKENS=SPECIAL_TOKENS, CHAT_TEMPLATE=CHAT_TEMPLATE
+    model_name_or_path, special_tokens=SPECIAL_TOKENS, chat_template=CHAT_TEMPLATE
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
     tokenizer.add_special_tokens(
-        {"eos_token": SPECIAL_TOKENS.eos, "pad_token": SPECIAL_TOKENS.pad}
+        {"eos_token": special_tokens.eos, "pad_token": special_tokens.pad}
     )
     tokenizer.add_special_tokens(
         {
             "additional_special_tokens": [
-                SPECIAL_TOKENS.system,
-                SPECIAL_TOKENS.user,
-                SPECIAL_TOKENS.assistant,
+                special_tokens.system,
+                special_tokens.user,
+                special_tokens.assistant,
             ]
         }
     )
@@ -59,7 +59,7 @@ def setup_tokenizer(
         tokenizer.add_bos_token = False
         tokenizer.add_eos_token = False
 
-    tokenizer.chat_template = CHAT_TEMPLATE
+    tokenizer.chat_template = chat_template
     return tokenizer
 
 

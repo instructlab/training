@@ -277,9 +277,9 @@ if __name__ == "__main__":
     )
     parser.add_argument("--is_granite", action="store_true")
     parser.add_argument("--max_batch_len", type=int, default=60000)
-    args = parser.parse_args()
-    set_random_seed(args.seed)
-    main(args)
+    cmd_args = parser.parse_args()
+    set_random_seed(cmd_args.seed)
+    main(cmd_args)
 
 """
 pkill python

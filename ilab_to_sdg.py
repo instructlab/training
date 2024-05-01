@@ -47,10 +47,10 @@ def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        ilab_train_data_dir = sys.argv[1]
+        data_dir = sys.argv[1]
         prefix = sys.argv[2]
         taxonomy = sys.argv[3]
     else:
         print("provide ilab train data dir as an argument")
         sys.exit(1)
-    ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy)
+    ilab_to_sdb(data_dir, taxonomy)
