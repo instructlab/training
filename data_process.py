@@ -46,7 +46,7 @@ def check_valid_sample(
         or len(assistant_token_index) == 0
         or len(eos_token_index) == 0
     ):
-        print(f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
+        print("\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
 
@@ -240,7 +240,7 @@ def main(args):
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
     # use path to get the stem of the file
-    data_with_labels.to_json(Path(args.data_output_path) / f"data.jsonl")
+    data_with_labels.to_json(Path(args.data_output_path) / "data.jsonl")
 
 
 if __name__ == "__main__":

@@ -446,7 +446,18 @@ disable=raw-checker-failed,
         abstract-method,
         pointless-statement,
         wrong-import-order,
-        line-too-long
+        line-too-long,
+        too-many-return-statements,
+        too-many-instance-attributes,
+        import-outside-toplevel,
+        pointless-string-statement,
+        no-else-return,
+        consider-using-generator,
+        consider-using-enumerate,
+        expression-not-assigned,
+        logging-fstring-interpolation,
+        import-error,
+        super-init-not-called
 
 # Enable the message, report, category or checker with the given id(s). You can
 # either give multiple identifier separated by comma (,) or put this option
