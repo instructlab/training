@@ -1,8 +1,8 @@
 import json
 import sys
-from pathlib import Path
 import glob
 import os
+
 
 def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
     """

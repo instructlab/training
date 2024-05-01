@@ -12,7 +12,7 @@ import time
 from deepspeed.ops.adam import FusedAdam
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, MistralForCausalLM, get_scheduler
+from transformers import AutoModelForCausalLM, get_scheduler
 import deepspeed
 import torch
 
