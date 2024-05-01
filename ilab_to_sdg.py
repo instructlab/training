@@ -3,8 +3,6 @@ import sys
 from pathlib import Path
 import glob
 import os
-import re
-from datetime import datetime
 
 def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
     """
