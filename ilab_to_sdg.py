@@ -4,7 +4,7 @@ from pathlib import Path
 import glob
 import os
 
-def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
+def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
     """
     Convert a ilab train dataset to a SDG compatible format for backend training
 
@@ -15,7 +15,7 @@ def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
         taxonomy_path: path to the taxonomy dataset used for generating the train dataset
     """
     items_list = []
-    files = glob.glob(os.path.join(ilab_train_data_dir, "train_model_*.jsonl"),  
+    files = glob.glob(os.path.join(ilab_train_data_dir, prefix+"*.jsonl"),
                     recursive = False) 
     try:
         files.sort(reverse=True)
@@ -23,7 +23,7 @@ def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
     except IndexError:
         print("IndexError: no matching files found")
         return 
-    
+    print("Converting", latest_train_file)
     with open(latest_train_file, "r") as file:
         # Read each line (which represents a JSON object)
         for line in file:
@@ -48,8 +48,9 @@ def ilab_to_sdb(ilab_train_data_dir, taxonomy_path):
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         ilab_train_data_dir = sys.argv[1]
-        taxonomy = sys.argv[2]
+        prefix = sys.argv[2]
+        taxonomy = sys.argv[3]
     else:
         print("provide ilab train data dir as an argument")
         sys.exit(1)
-    ilab_to_sdb(ilab_train_data_dir, taxonomy)
+    ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy)
