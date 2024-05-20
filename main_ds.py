@@ -72,7 +72,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     model = convert_loss_to_reduce_sum(model)
     model.gradient_checkpointing_enable()
     
-    if args.deepspeed_optimizer == "fused":
+    if args.offload_optimizer == "none":
         optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
     else:
         optimizer = DeepSpeedCPUAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
@@ -278,7 +278,6 @@ if __name__ == "__main__":
     parser.add_argument("--max_batch_len", type=int, default=60000)
     parser.add_argument("--offload_optimizer", type=str, default="none", choices=["none", "cpu"])
     parser.add_argument("--offload_param", type=str, default="none", choices=["none", "cpu"])
-    parser.add_argument("--deepspeed_optimizer", type=str, default="fused", choices=["fused", "cpu"])
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
