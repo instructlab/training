@@ -5,8 +5,8 @@ from typing import List
 import numpy as np
 from datasets import load_dataset
 
-from tokenizer_utils import SPECIAL_TOKENS, get_sp_token, setup_tokenizer
-from utils import log_rank_0, setup_logger
+from ilab_train.tokenizer_utils import SPECIAL_TOKENS, get_sp_token, setup_tokenizer
+from ilab_train.utils import log_rank_0, setup_logger
 
 
 def check_valid_sample(
