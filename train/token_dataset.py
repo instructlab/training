@@ -8,8 +8,8 @@ from torch.nn.utils.rnn import pad_sequence
 from pathlib import Path
 from datasets import load_dataset
 
-from utils import log_rank_0
-from multipack_sampler import (
+from ilab_train.utils import log_rank_0
+from ilab_train.multipack_sampler import (
     MultipackDistributedBatchSampler,
     find_packing_max_batch_len_and_grad_accum,
 )
