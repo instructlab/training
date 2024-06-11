@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-
 import inspect
 from pathlib import Path
 import random
@@ -19,17 +17,18 @@ import logging
 
 
 def convert_loss_to_reduce_sum(model, is_granite=False):
-    '''
+    """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
-    '''
+    """
     if is_granite:
+
         def get_autoregressive_language_modeling_loss(
-            self, lm_logits: torch.Tensor, labels: torch.Tensor, cu_seqlens: torch.Tensor
+            lm_logits: torch.Tensor, labels: torch.Tensor, cu_seqlens: torch.Tensor
         ) -> torch.Tensor:
             loss = None
             # Shift so that tokens < n predict n
             if labels is not None:
-                if self._use_padding_free_transformer:
+                if model._use_padding_free_transformer:
                     shift_logits = lm_logits[:-1, :]
                     shift_labels = labels[1:].to(shift_logits.device)
 
@@ -42,12 +41,18 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
 
                 # Flatten the tokens
                 loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+                loss = loss_fct(
+                    shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+                )
 
             return loss
-        model.get_autoregressive_language_modeling_loss = get_autoregressive_language_modeling_loss
+
+        model.get_autoregressive_language_modeling_loss = (
+            get_autoregressive_language_modeling_loss
+        )
         return model
     else:
+
         def reduce_sum_forward(
             input_ids: torch.LongTensor = None,
             attention_mask: Optional[torch.Tensor] = None,
@@ -62,18 +67,17 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
             **deprecated_arguments,
         ):
             output = model.__original_forward__(
-                    input_ids,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    inputs_embeds,
-                    labels,
-                    use_cache,
-                    output_attentions,
-                    output_hidden_states,
-                    return_dict,
-                )
-            
+                input_ids,
+                attention_mask,
+                position_ids,
+                past_key_values,
+                inputs_embeds,
+                labels,
+                use_cache,
+                output_attentions,
+                output_hidden_states,
+                return_dict,
+            )
 
             return_dict = isinstance(output, dict)
             logits = output.logits if return_dict else output[0]
@@ -91,14 +95,73 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
                 loss = loss_fct(shift_logits, shift_labels)
 
             if not return_dict:
-                return ((loss, ) + output) if loss is not None else output
+                return ((loss,) + output) if loss is not None else output
 
             output.loss = loss
             return output
-    
+
         model.__original_forward__ = model.forward
         model.forward = reduce_sum_forward
         return model
+
+from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+# import dataclasses
+from trl.trainer.utils import (
+    peft_module_casting_to_bf16,
+)
+import importlib
+from typing import Any
+
+# taken from https://github.com/foundation-model-stack/fms-acceleration/blob/main/plugins/accelerated-peft/src/fms_acceleration_peft/autogptq_utils.py
+def patch_target_module(
+    to_patch: str,
+    replace_with: Any,
+):
+    to_patch = to_patch.split(".")
+    assert len(to_patch) > 1, "must have an object to patch"
+
+    to_patch, obj_name_to_patch = to_patch[:-1], to_patch[-1]
+    to_patch = ".".join(to_patch)
+    source = importlib.import_module(to_patch)
+    setattr(source, obj_name_to_patch, replace_with)
+
+def prepare_peft_model(
+    model, peft_config, 
+    gradient_checkpointing=True,
+    gradient_checkpointing_kwargs={'use_reentrant': True},
+    mixed_precision='bf16',
+):
+    if not isinstance(peft_config, PeftConfig):
+        raise ValueError(
+            "If you want to use the PeftModel, you need to pass a PeftConfig object, "
+            f"and you passed a {type(peft_config)}."
+        )
+
+    if not isinstance(model, PeftModel):
+        if getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_loaded_in_4bit", False):
+            preprare_model_kwargs = {
+                "use_gradient_checkpointing": gradient_checkpointing
+            }
+
+            # if _support_gc_kwargs:
+            preprare_model_kwargs["gradient_checkpointing_kwargs"] = gradient_checkpointing_kwargs
+
+            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
+
+        elif gradient_checkpointing:
+            # For backward compatibility with older versions of transformers
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            else:
+
+                def make_inputs_require_grad(module, input, output):
+                    output.requires_grad_(True)
+
+                model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+        model = get_peft_model(model, peft_config)
+        if mixed_precision == 'bf16' and getattr(model, "is_loaded_in_4bit", False):
+            peft_module_casting_to_bf16(model)
 
 
 def setup_logger(level="DEBUG"):

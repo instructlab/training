@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-
 from dataclasses import dataclass, field
 from transformers import AutoTokenizer
 
@@ -19,7 +17,9 @@ SPECIAL_TOKENS = SpecialTokens()
 
 CHAT_TEMPLATE = (
     "{% for message in messages %}"
-    "{% if message['role'] == 'system' %}"
+    "{% if message['role'] == 'pretraining' %}"
+    "{{'<|endoftext|>' + message['content'] + '<|endoftext|>'}}"
+    "{% elif message['role'] == 'system' %}"
     "{{'<|system|>'+ '\n' + message['content'] + '\n'}}"
     "{% elif message['role'] == 'user' %}"
     "{{'<|user|>' + '\n' + message['content'] + '\n'}}"

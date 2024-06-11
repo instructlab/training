@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-
 import logging
 from pathlib import Path
 from typing import List
@@ -14,11 +12,15 @@ from utils import log_rank_0, setup_logger
 def check_valid_sample(
     tokenizer, whole_sentence_tk, system_tk, assistant_tk, user_tk, eos_tk, max_len=1024
 ):
-    if len(whole_sentence_tk) >= max_len:
+    if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
     if whole_sentence_tk[-1] != eos_tk:
         return False
+
+    special_tokens = [system_tk, assistant_tk, user_tk]
+    if not any(token in whole_sentence_tk for token in special_tokens):
+        return True
 
     # first token should be system_token
     if whole_sentence_tk[0] != system_tk:
@@ -43,15 +45,15 @@ def check_valid_sample(
         or len(assistant_token_index) == 0
         or len(eos_token_index) == 0
     ):
-        print(
-            f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m"
-        )
+        print(f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
 
     # check that user_index_token is less than all other indices
     if len(user_token_index) != len(assistant_token_index):
-        print("\033[91mthe number of user_token and assistant_token is not the same\033[0m")
+        print(
+            "\033[91mthe number of user_token and assistant_token is not the same\033[0m"
+        )
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
     if (
@@ -72,7 +74,9 @@ def check_valid_sample(
     return True
 
 
-def unmask_only_assistant_responses(chosen_token, user_token, assist_token):
+def unmask_only_assistant_responses(
+    chosen_token, user_token, assist_token, system_tk="<|system|>"
+):
     """
     Generate a labels tensor for language model training, where the model should predict
     the assistant's responses within a conversation. The labels for the assistant's responses
@@ -100,6 +104,11 @@ def unmask_only_assistant_responses(chosen_token, user_token, assist_token):
     sentence_legth = chosen_token["attention_mask"].sum().item()
     labels = chosen_token["input_ids"].clone()
     whole_sentence = chosen_token["input_ids"][:sentence_legth].clone()
+
+    # pre-training mode
+    if system_tk not in whole_sentence:
+        return labels
+
     labels[:sentence_legth] = -100
     assist_ids = (whole_sentence == assist_token).nonzero(as_tuple=True)[0]
     user_ids = (whole_sentence == user_token).nonzero(as_tuple=True)[0]
@@ -137,6 +146,9 @@ def unmask_only_assistant_responses_from_list(
     sentence_tk = np.array(sentence_tk)
     assert sentence_tk.ndim == 1
 
+    if user_token not in sentence_tk or assist_token not in sentence_tk:
+        return sentence_tk.tolist()
+
     labels = np.full_like(sentence_tk, -100)
 
     user_ids = (sentence_tk == user_token).nonzero()[0]
@@ -167,6 +179,15 @@ def unmask_only_assistant_responses_from_list(
     return labels.tolist()
 
 
+def remove_pretrain_system_messages(example):
+    messages = example["messages"]
+    has_pretraining = any(m["role"] == "pretraining" for m in messages)
+    if has_pretraining:
+        messages = [m for m in messages if m["role"] != "system"]
+        assert len(messages) == 1
+    return {"messages": messages}
+
+
 def main(args):
     setup_logger(args.logging_level)
     tokenizer = setup_tokenizer(args.model_name_or_path)
@@ -181,6 +202,8 @@ def main(args):
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
+    print("\033[92mremoving pretraining samples system msg\033[0m")
+    data = data.map(remove_pretrain_system_messages, num_proc=72)
 
     logging.info(f"tokenizing the dataset with {args.model_name_or_path} tokenizer...")
     data_with_input_ids = data.map(
@@ -206,6 +229,14 @@ def main(args):
         f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
     )
     print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+
+    lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
+    for i, q in enumerate(lowest_10_percent):
+        print(f"quantile {i}th: {q}")
+    num_dropped_samples = np.sum(lens < 20)
+    print(
+        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
 
     logging.info("checking the validity of the samples...")
     data_with_input_ids = data_with_input_ids.filter(
@@ -233,7 +264,6 @@ def main(args):
         },
         num_proc=72,
     )
-
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
     # use path to get the stem of the file

@@ -1,18 +1,12 @@
-# SPDX-License-Identifier: Apache-2.0
-
 import argparse
 from datetime import timedelta
 import math
 import os
 import time
 import torch
-import sys
 from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    get_scheduler,
-    MistralForCausalLM
-)
+from transformers import AutoModelForCausalLM, get_scheduler, MistralForCausalLM
+from dolomite_engine.hf_models.models import GPTDolomiteForCausalLM
 from torch.distributed import (
     ReduceOp,
     all_reduce,
@@ -23,7 +17,12 @@ from deepspeed.ops.adam import FusedAdam
 from multipack_sampler import find_packing_max_batch_len_and_grad_accum
 from token_dataset import setup_dataloader, setup_dataset
 from tokenizer_utils import setup_tokenizer
-from utils import save_hf_format_ds, set_random_seed, setup_logger, convert_loss_to_reduce_sum
+from utils import (
+    save_hf_format_ds,
+    set_random_seed,
+    setup_logger,
+    convert_loss_to_reduce_sum,
+)
 
 
 def get_ds_config(world_size, samples_per_gpu, grad_accum):
@@ -47,14 +46,29 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum):
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
     if args.is_granite:
-        sys.exit("Megatron-based Granite model not supported.")
+        model = GPTDolomiteForCausalLM.from_pretrained(
+            args.model_name_or_path,
+            attn_implementation="flash_attention_2",
+            torch_dtype=torch.bfloat16,
+            use_padding_free_transformer=True,
+        )
     else:
+        bnb_config = None
+        if args.lora_r > 0 and args.lora_quant_bits == 4:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
+            )
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",
             torch_dtype=torch.bfloat16,
+            quantization_config=bnb_config,
         )
-    
+
     if len(tokenizer) > model.config.vocab_size:
         print(
             f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
@@ -65,12 +79,53 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
     assert model.__class__.__name__ in [
         "MistralForCausalLM",
-        "GPTMegatronForCausalLM",
-        "LlamaForCausalLM"
+        "GPTDolomiteForCausalLM",
+        "LlamaForCausalLM",
+        "Starcoder2ForCausalLM",
+        "GemmaForCausalLM",
     ], f"Model class name: {model.__class__.__name__} is not supported."
-    
-    model = convert_loss_to_reduce_sum(model)
-    model.gradient_checkpointing_enable()
+
+    model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
+    if args.is_granite:
+        from dolomite_engine.gradient_checkpointing import apply_gradient_checkpointing
+        from dolomite_engine.enums import GradientCheckpointingMethod
+
+        block_name = model._no_split_modules[0]
+        apply_gradient_checkpointing(
+            model,
+            GradientCheckpointingMethod.block,
+            block_name=block_name,
+            use_reentrant=True # this should be the HF default mode
+        )
+    elif args.lora_r > 0:
+        # if lora
+        from peft import LoraConfig
+        from utils import prepare_peft_model, patch_target_module
+
+        if args.lora_target_modules is None:
+            args.__dict__['target_modules'] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+        peft_config = LoraConfig(
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            r=args.lora_r,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=args.target_modules,
+        )
+        prepare_peft_model(model, peft_config)
+
+        # patch DS to work with quantized models
+        from deepspeed import DeepSpeedEngine
+        from functools import partial
+
+        if args.lora_quant_bits is not None:
+            patch_target_module(
+                'deepspeed.DeepSpeedEngine',
+                partial(DeepSpeedEngine, dont_change_device=True)
+            )
+    else:
+        model.gradient_checkpointing_enable()
 
     optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
     lr_scheduler = get_scheduler(
@@ -116,11 +171,11 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
-        
+
         aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             start = time.time()
-            aggregated_values[0] = batch["num_loss_counted_tokens"]
+            aggregated_values[0] = batch.pop("num_loss_counted_tokens")
             aggregated_values[1] = len(batch["input_ids"])
             if not args.is_granite:
                 for k in batch:
@@ -135,15 +190,19 @@ def train(args, model, tokenizer, train_loader, grad_accum):
             aggregated_values[2] = loss.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
-            
+
             num_loss_counted_tokens = aggregated_values[0]
-            loss = loss / num_loss_counted_tokens * world_size # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
-            
-            print(f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m")
+            loss = (
+                loss / num_loss_counted_tokens * world_size
+            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+
+            print(
+                f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+            )
             print(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
-            
+
             model.backward(loss)
             model.step()
 
@@ -269,6 +328,11 @@ if __name__ == "__main__":
         help="Sharding strategy to be used for distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")
+    parser.add_argument("--lora_r", type=int, default=0) # set to > 0 to activate lora
+    parser.add_argument("--lora_alpha", type=int, default=32) 
+    parser.add_argument("--lora_dropout", type=float, default=0.1) 
+    parser.add_argument("--lora_quant_bits", type=int, default=None) 
+    parser.add_argument("--lora_target_modules", type=int, nargs='+', default=None) 
     parser.add_argument("--max_batch_len", type=int, default=60000)
     args = parser.parse_args()
     set_random_seed(args.seed)
