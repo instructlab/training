@@ -2,6 +2,9 @@
 # .gitignore file sourced from a repository licensed under CC0-1.0
 # Original source: https://github.com/github/gitignore/blob/main/Python.gitignore
 
+# add sample data
+sample-data
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
