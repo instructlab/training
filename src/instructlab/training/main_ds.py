@@ -7,28 +7,48 @@ import re
 import time
 import torch
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, get_scheduler, MistralForCausalLM
+from transformers import (
+    AutoModelForCausalLM,
+    get_scheduler,
+)
 from torch.distributed import (
     ReduceOp,
     all_reduce,
 )
+import subprocess
 
+from omegaconf import OmegaConf
+from omegaconf.errors import MissingMandatoryValue
 import deepspeed
-from deepspeed.ops.adam import FusedAdam
-from multipack_sampler import find_packing_max_batch_len_and_grad_accum
-from token_dataset import setup_dataloader, setup_dataset
-from tokenizer_utils import setup_tokenizer
-from utils import (
-    add_noisy_embeddings,
+from deepspeed.ops.adam import FusedAdam, DeepSpeedCPUAdam
+
+from instructlab.training import config
+from instructlab.training.multipack_sampler import (
+    find_packing_max_batch_len_and_grad_accum,
+)
+from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.tokenizer_utils import setup_tokenizer
+from instructlab.training.utils import (
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
     setup_logger,
     convert_loss_to_reduce_sum,
+    StreamablePopen,
+    prepare_peft_model,
+    patch_target_module,
+    add_noisy_embeddings,
 )
+from instructlab.training.config import (
+    TrainingArgs,
+    TorchrunArgs,
+    DataProcessArgs,
+    DeepSpeedOptions,
+)
+import instructlab.training.data_process as dp
 
 
-def get_ds_config(world_size, samples_per_gpu, grad_accum):
+def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
     ds_config = {
         "train_batch_size": samples_per_gpu * world_size * grad_accum,
         "gradient_accumulation_steps": grad_accum,
@@ -36,6 +56,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum):
         "steps_per_print": 1,
         "zero_optimization": {
             "stage": 2,
+            # this option is only supported with DeepSpeed ZeRO stage 3
             "offload_param": {"device": "none"},
             "offload_optimizer": {"device": "none"},
         },
@@ -44,6 +65,15 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum):
         "prescale_gradients": False,
         "wall_clock_breakdown": False,
     }
+
+    if opts.cpu_offload_optimizer:
+        # this only works when the cpu offload optimizer is enabled
+        ds_config["zero_optimization"]["offload_optimizer"] = {
+            # CPU offloading is the only option available in ZeRO stage 2
+            "device": "cpu",
+            "pin_memory": opts.cpu_offload_optimizer_pin_memory,
+            "ratio": opts.cpu_offload_optimizer_ratio,
+        }
     return ds_config
 
 
@@ -86,17 +116,29 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )  # make the vocab size multiple of 8 for sharding the embedding layer.
 
     # Fix any discrepancy between model and tokenizer
-    if model.config.pad_token_id is not None and tokenizer.pad_token_id is not None and model.config.pad_token_id != tokenizer.pad_token_id:
+    if (
+        model.config.pad_token_id is not None
+        and tokenizer.pad_token_id is not None
+        and model.config.pad_token_id != tokenizer.pad_token_id
+    ):
         print(
             f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
         )
         model.config.pad_token_id = tokenizer.pad_token_id
-    if model.config.bos_token_id is not None and tokenizer.bos_token_id is not None and model.config.bos_token_id != tokenizer.bos_token_id:
+    if (
+        model.config.bos_token_id is not None
+        and tokenizer.bos_token_id is not None
+        and model.config.bos_token_id != tokenizer.bos_token_id
+    ):
         print(
             f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
         )
         model.config.bos_token_id = tokenizer.bos_token_id
-    if model.config.eos_token_id is not None and tokenizer.eos_token_id and model.config.eos_token_id != tokenizer.eos_token_id:
+    if (
+        model.config.eos_token_id is not None
+        and tokenizer.eos_token_id
+        and model.config.eos_token_id != tokenizer.eos_token_id
+    ):
         print(
             f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
         )
@@ -120,7 +162,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     if args.lora_r > 0:
         # if lora
         from peft import LoraConfig
-        from utils import prepare_peft_model, patch_target_module
 
         if args.lora_target_modules is None:
             args.__dict__["lora_target_modules"] = [
@@ -175,7 +216,16 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
+    # need to use this only when the CPU offload optimizer is enabled
     optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
+    if args.cpu_offload_optimizer:
+        print(
+            "\033[33m!!! CPU offload optimizer enabled, switching optimizer to DeepSpeedCPUAdam !!!\033[0m"
+        )
+        optimizer = DeepSpeedCPUAdam(
+            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        )
+
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
@@ -190,6 +240,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             world_size=torch.distributed.get_world_size(),
             samples_per_gpu=args.samples_per_gpu,
             grad_accum=grad_accum,
+            opts=DeepSpeedOptions(
+                cpu_offload_optimizer=args.cpu_offload_optimizer,
+            ),
         ),
         lr_scheduler=lr_scheduler,
         dist_init_required=True,
@@ -418,79 +471,82 @@ def main(args):
     torch.distributed.destroy_process_group()
 
 
-def run_training(torch_args: TorchrunTrainArgs, train_args: FullTrainArgs):
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
     """
     Wrapper around the main training job that calls torchrun.
     """
+
+    # process the training data
+    if not os.path.exists(train_args.data_output_dir):
+        os.makedirs(train_args.data_output_dir, exist_ok=True)
+    dp.main(
+        DataProcessArgs(
+            # XXX(osilkin): make a decision here, either:
+            #   1. the CLI is fully responsible for managing where the data is written
+            #   2. we never cache it and simply write it to a tmp file everytime.
+            #
+            # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
+            # where the user has a defined place for new temporary data to be written.
+            data_output_path=train_args.data_output_dir,
+            model_path=train_args.model_path,
+            data_path=train_args.data_path,
+            max_seq_len=train_args.max_seq_len,
+        )
+    )
+
+    if not os.path.exists(train_args.ckpt_output_dir):
+        os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
+    command = [
+        "torchrun",
+        f"--nnodes={torch_args.nnodes}",
+        f"--node_rank={torch_args.node_rank}",
+        f"--nproc_per_node={torch_args.nproc_per_node}",
+        f"--rdzv_id={torch_args.rdzv_id}",
+        f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
+        __file__,
+        f"--model_name_or_path={train_args.model_path}",
+        f"--data_path={train_args.data_output_dir}/data.jsonl",
+        f"--output_dir={train_args.ckpt_output_dir}",
+        f"--num_epochs={train_args.num_epochs}",
+        f"--effective_batch_size={train_args.effective_batch_size}",
+        f"--learning_rate={train_args.learning_rate}",
+        f"--num_warmup_steps={train_args.warmup_steps}",
+        f"--save_samples={train_args.save_samples}",
+        f"--log_level=INFO",
+        f"--max_batch_len={train_args.max_batch_len}",
+        f"--seed={train_args.random_seed}",
+    ]
+
+    if train_args.mock_data:
+        command.append("--mock_data")
+        if train_args.mock_len:
+            command.append(f"--mock_len={train_args.mock_len}")
+
+    if train_args.is_padding_free:
+        command.append("--is_granite")
+
+    if train_args.lora:
+        command.extend(
+            [
+                f"--lora_r={train_args.lora.rank}",
+                f"--lora_alpha={train_args.lora.alpha}",
+                f"--lora_dropout={train_args.lora.dropout}",
+                f"--lora_target_modules={' '.join(train_args.lora.target_modules)}",
+            ]
+        )
+        # hard-code 4-bit quantization for now, change this when we add more
+        if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
+            command.append("--lora_quant_bits=4")
+
+    print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
+    process = None
     try:
-        command = [
-            "torchrun",
-            f"--nnodes={torch_args.nnodes}",
-            f"--node_rank={torch_args.node_rank}",
-            f"--nproc_per_node={torch_args.nproc_per_node}",
-            f"--rdzv_id={torch_args.rdzv_id}",
-            f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
-            __file__,
-            f"--model_name_or_path={train_args.model_name_or_path}",
-            f"--data_path={train_args.data_path}",
-            f"--output_dir={train_args.output_dir}",
-            f"--num_epochs={train_args.num_epochs}",
-            f"--effective_batch_size={train_args.effective_batch_size}",
-            f"--learning_rate={train_args.learning_rate}",
-            f"--num_warmup_steps={train_args.num_warmup_steps}",
-            f"--save_samples={train_args.save_samples}",
-            f"--log_level={train_args.log_level}",
-            f"--max_batch_len={train_args.max_batch_len}",
-            f"--seed={train_args.seed}",
-        ]
+        process = StreamablePopen(command)
 
-        if train_args.mock_data:
-            command.append("--mock_data")
-            if train_args.mock_len:
-                command.append(f"--mock_len={train_args.mock_len}")
-
-        if train_args.is_granite:
-            command.append("--is_granite")
-
-        print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
-
-        with open("logfile.out", "w", encoding="utf-8") as logfile:
-            subprocess.run(
-                command,
-                stdout=logfile,
-                stderr=subprocess.STDOUT,
-            )
-
-        # stream the stdout and stderr output
-        # process = subprocess.Popen(
-        #     command,
-        #     stdout=subprocess.PIPE,
-        #     stderr=subprocess.STDOUT,
-        #     bufsize=1,
-        #     universal_newlines=True
-        # )
-        # while True:
-        #     output = process.stdout.readline()
-        #     if output == "" and process.poll() is not None:
-        #         break
-        #     if output:
-        #         print(output.strip())
-
-        #     rc = process.poll()
-
-        #     if rc != 0:
-        #         if process.stderr:
-        #             print(process.stderr)
-        #         if process.stdout:
-        #             print(process.stdout)
-        #         break
-
-        # for line in iter(process.stdout.readline, b''):
-        #     print(line.decode('utf-8'), end='')
-        # process.stdout.close()
-        # process.wait()
     except KeyboardInterrupt:
         print("Process interrupted by user")
+    except MissingMandatoryValue as e:
+        print(f"Missing {e.key}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:
@@ -507,6 +563,8 @@ def run_training(torch_args: TorchrunTrainArgs, train_args: FullTrainArgs):
 
 
 if __name__ == "__main__":
+    # TODO(osilkin): Configure a type that these args must adhere to for the sake of type checking
+    #               Maybe switch out from argparse to something smarter
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
     parser.add_argument("--data_path", type=str)
@@ -549,7 +607,16 @@ if __name__ == "__main__":
     parser.add_argument("--lora_quant_bits", type=int, default=None)
     parser.add_argument("--lora_target_modules", nargs="+", default=None)
     parser.add_argument("--max_batch_len", type=int, default=60000)
+<<<<<<< HEAD:train/main_ds.py
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
+=======
+    parser.add_argument(
+        "--cpu_offload_optimizer",
+        action="store_true",
+        default=False,
+        help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
+    )
+>>>>>>> 2a700b1 (Create a polished interface for the instructlab training library.):src/instructlab/training/main_ds.py
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
