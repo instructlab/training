@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8"]
+requires = ["setuptools>=64", "setuptools_scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -12,7 +12,7 @@ authors = [
 description = "Training Library"
 readme = "README.md"
 license = {text = "Apache-2.0"}
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -22,6 +22,7 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
@@ -31,7 +32,7 @@ dynamic = ["dependencies", "optional-dependencies", "version"]
 [project.scripts]
 
 [project.urls]
-homepage = "https://instructlab.io"
+homepage = "https://instructlab.ai"
 source = "https://github.com/instructlab/training"
 issues = "https://github.com/instructlab/training/issues"
 
@@ -45,18 +46,14 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+optional-dependencies.cuda = { file = ["requirements-cuda.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["instructlab.training"]
 
-[tool.setuptools.package-data]
-"instructlab.schema.v1" = ["*.json"]
-"instructlab.schema.v2" = ["*.json"]
-
-
 [tool.ruff]
-target-version = "py311"
+target-version = "py310"
 # same as black's default line length
 line-length = 88
 
