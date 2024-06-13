@@ -89,6 +89,39 @@ def ffd_check(a: np.ndarray, c: int, n: int):
 
 
 @numba.njit
+def ffd_check_padding(a: np.ndarray, c: int, n: int):
+    # First-fit-decreasing bin packing
+    # Check if a[] could fit in n bins with capacity c
+    # https://en.wikipedia.org/wiki/First-fit-decreasing_bin_packing
+
+    a = np.sort(a)[::-1]
+    bins_max_lengths = np.zeros(
+        (n,), dtype=a.dtype
+    )  # Track the maximum length in each bin
+    bins_num_samples = np.zeros(
+        (n,), dtype=np.int_
+    )  # Track the number of samples in each bin
+
+    for size in a:
+        not_found = True
+        for idx in range(n):
+            # Calculate the new capacity if size is added to the bin
+            new_capacity = max(bins_max_lengths[idx], size) * (
+                bins_num_samples[idx] + 1
+            )
+            if new_capacity <= c:
+                bins_max_lengths[idx] = max(bins_max_lengths[idx], size)
+                bins_num_samples[idx] += 1
+                not_found = False
+                break
+
+        if not_found:
+            return False
+
+    return True
+
+
+@numba.njit
 def ffd_with_result(a: np.ndarray, c: int, start_index: int):
     # First-fit-decreasing bin packing (with result return)
 
@@ -114,8 +147,46 @@ def ffd_with_result(a: np.ndarray, c: int, start_index: int):
 
 
 @numba.njit
+def ffd_with_result_padding(a: np.ndarray, c: int, start_index: int):
+    # First-fit-decreasing bin packing (with result return)
+
+    indices = np.argsort(a)[::-1]
+    a = a[indices]
+
+    bins_max_lengths = []  # Track the maximum length in each bin
+    bins_num_samples = []  # Track the number of samples in each bin
+    bins_result = []  # Track the indices of the samples in each bin
+
+    for a_id, size in enumerate(a):
+        add_new = True
+        for idx in range(len(bins_max_lengths)):
+            # Calculate the new capacity if size is added to the bin
+            new_capacity = max(bins_max_lengths[idx], size) * (
+                bins_num_samples[idx] + 1
+            )
+            if new_capacity <= c:
+                bins_max_lengths[idx] = max(bins_max_lengths[idx], size)
+                bins_num_samples[idx] += 1
+                bins_result[idx].append(indices[a_id] + start_index)
+                add_new = False
+                break
+
+        if add_new:
+            bins_max_lengths.append(size)
+            bins_num_samples.append(1)
+            bins_result.append([indices[a_id] + start_index])
+
+    return bins_result
+
+
+@numba.njit
 def allocate(
-    lengths: np.ndarray, lengths_cumsum: np.ndarray, rank: int, c: int, n: int
+    lengths: np.ndarray,
+    lengths_cumsum: np.ndarray,
+    rank: int,
+    c: int,
+    n: int,
+    padding: bool = True,
 ):
     # Dynamic batch allocator, similar to Multifit
     # https://en.wikipedia.org/wiki/Multifit_algorithm
@@ -132,13 +203,24 @@ def allocate(
 
         while r - l > 1:
             m = (l + r) // 2
-            if ffd_check(lengths[start_index : start_index + m], c, n):
+            if padding:
+                check = ffd_check_padding(lengths[start_index : start_index + m], c, n)
+            else:
+                check = ffd_check(lengths[start_index : start_index + m], c, n)
+            if check:
                 l = m
             else:
                 r = m
 
         # use length l
-        batch = ffd_with_result(lengths[start_index : start_index + l], c, start_index)
+        if padding:
+            batch = ffd_with_result_padding(
+                lengths[start_index : start_index + l], c, start_index
+            )
+        else:
+            batch = ffd_with_result(
+                lengths[start_index : start_index + l], c, start_index
+            )
         assert len(batch) <= n
         if len(batch) < n:
             break
@@ -164,6 +246,7 @@ class MultipackDistributedBatchSampler(Sampler):
         num_replicas: Optional[int] = None,
         rank: Optional[int] = None,
         seed: int = 0,
+        padding: bool = True,
     ):
         # Get rank
         if num_replicas is None:
@@ -188,6 +271,7 @@ class MultipackDistributedBatchSampler(Sampler):
         # statistics
         self.eff_total_used = 0
         self.eff_total_slots = 0
+        self.padding = padding
 
     def set_epoch(self, epoch: int):
         self.epoch = epoch
@@ -206,6 +290,7 @@ class MultipackDistributedBatchSampler(Sampler):
             rank=self.rank,
             c=self.batch_max_length,
             n=self.num_replicas,
+            padding=self.padding,
         )
 
         batches = [indices[batch] for batch in batches]

@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: Apache-2.0
-
 import os
 import numpy as np
 import torch
@@ -84,7 +82,9 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
             batch = batch[:valid_up_to]
             input_ids = [x["input_ids"].tolist() for x in batch]
             labels = [x["labels"].tolist() for x in batch]
-            num_loss_counted_tokens = sum([(x["labels"]!=-100).sum().item() for x in batch])
+            num_loss_counted_tokens = sum(
+                [(x["labels"] != -100).sum().item() for x in batch]
+            )
 
             print(
                 f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
@@ -93,9 +93,11 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                 f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
             )
 
-            return {"input_ids": input_ids, 
-                    "labels": labels, 
-                    "num_loss_counted_tokens": num_loss_counted_tokens}
+            return {
+                "input_ids": input_ids,
+                "labels": labels,
+                "num_loss_counted_tokens": num_loss_counted_tokens,
+            }
 
     else:
 
@@ -103,37 +105,43 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
             lens = np.array([len(item["input_ids"]) for item in batch])
             max_len = max(lens)
 
-            input_ids = torch.stack([
-                F.pad(
-                    item["input_ids"],
-                    (max_len - len(item["input_ids"]), 0),
-                    mode="constant",
-                    value=pad_token_id,
-                )
-                for item in batch
-            ])
-            labels = torch.stack([
-                F.pad(
-                    item["labels"],
-                    (max_len - len(item["labels"]), 0),
-                    mode="constant",
-                    value=-100,
-                )
-                for item in batch
-            ])
+            input_ids = torch.stack(
+                [
+                    F.pad(
+                        item["input_ids"],
+                        (max_len - len(item["input_ids"]), 0),
+                        mode="constant",
+                        value=pad_token_id,
+                    )
+                    for item in batch
+                ]
+            )
+            labels = torch.stack(
+                [
+                    F.pad(
+                        item["labels"],
+                        (max_len - len(item["labels"]), 0),
+                        mode="constant",
+                        value=-100,
+                    )
+                    for item in batch
+                ]
+            )
             num_loss_counted_tokens = (labels != -100).sum()
 
-            attention_mask = torch.stack([
-                F.pad(
-                    item["attention_mask"],
-                    (max_len - len(item["attention_mask"]), 0),
-                    mode="constant",
-                    value=0,
-                )
-                for item in batch
-            ])
+            attention_mask = torch.stack(
+                [
+                    F.pad(
+                        item["attention_mask"],
+                        (max_len - len(item["attention_mask"]), 0),
+                        mode="constant",
+                        value=0,
+                    )
+                    for item in batch
+                ]
+            )
             print(
-                f"\033[96m total length: {lens.sum()} num samples {len(batch)} - rank: {rank} "
+                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
                 f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
                 f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
             )
@@ -183,6 +191,7 @@ def setup_dataloader(
         num_replicas=world_size,
         rank=rank,
         seed=seed,
+        padding=not is_granite,
     )
     dataloader = DataLoader(
         dataset,
