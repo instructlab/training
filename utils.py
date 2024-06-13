@@ -104,11 +104,6 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
         model.forward = reduce_sum_forward
         return model
 
-from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-# import dataclasses
-from trl.trainer.utils import (
-    peft_module_casting_to_bf16,
-)
 import importlib
 from typing import Any
 
@@ -131,6 +126,11 @@ def prepare_peft_model(
     gradient_checkpointing_kwargs={'use_reentrant': True},
     mixed_precision='bf16',
 ):
+    # will guard this
+    from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
+    from trl.trainer.utils import (
+        peft_module_casting_to_bf16,
+    )
     if not isinstance(peft_config, PeftConfig):
         raise ValueError(
             "If you want to use the PeftModel, you need to pass a PeftConfig object, "
@@ -163,6 +163,7 @@ def prepare_peft_model(
         if mixed_precision == 'bf16' and getattr(model, "is_loaded_in_4bit", False):
             peft_module_casting_to_bf16(model)
 
+    return model
 
 def setup_logger(level="DEBUG"):
     logging.basicConfig(
@@ -245,6 +246,39 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen):
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
 
+# this is native deepspeed saving with optimizer, schediuler
+def save_model_ds_native(
+    args, model, tokenizer, samples_seen, 
+):
+    # to get a statedict from a zero checkpoint, all you need to do is
+    # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+    # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
+    # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
+
+    log_rank_0(
+        f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
+        to_print=True,
+    )
+    start = time.time()
+    # used to save huggingface format, so we can use it for hf.from_pretrained
+    output_dir = Path(args.output_dir) / "ds_native" 
+    tag = f"samples_{samples_seen}"
+    use_lora = args.lora_r > 0
+
+    # NOTE: this is a distributed save
+    # if its lora, we only save the adapters
+    # - so we exclude frozen if use_lora==True
+    model.save_checkpoint(
+        output_dir, 
+        exclude_frozen_parameters=use_lora, 
+        tag=tag # this will create the subdirectory with the correct name
+    )
+
+    # for now we are not saving tokenizer, config, eg..
+    # so it is not totally "HF compatible"
+
+    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+    log_rank_0(f"saving took {time.time() - start} seconds")
 
 def set_random_seed(seed):
     if seed is not None:
