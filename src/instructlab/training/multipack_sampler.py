@@ -40,11 +40,12 @@ def find_padding_max_batch_len_addition(
     base_avg, goal, lengths, num_gpus, grad_accum
 ):  
 
-    sorted_lengths =  lengths.sort(reverse=True)
+    sorted_lengths = list(lengths)
+    sorted_lengths.sort(reverse=True)
 
     # Use first default bucket avg padding as starting value for addition 
     addition = 0
-    packing_max_batch_len = int((base_avg + addition) * goal)
+    packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
     bucket_zero = []
     max = sorted_lengths[0]
@@ -59,14 +60,16 @@ def find_padding_max_batch_len_addition(
     total_pad = 0
     for length in bucket_zero:
         total_pad += (max - length)
-    addition = total_pad / len(bucket_zero)
+    addition = round(total_pad / len(bucket_zero))
     
 
     # binary search correct addition value from starting value
 
-    multiplier = 0.5
-    while multiplier > 0.01:
-        packing_max_batch_len = int((base_avg + addition) * goal)
+    first_over_hit = False
+    l = 0
+    r = 2 * addition
+    while r-l > 1:
+        packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
         # simulate buckets with current addition value
         buckets = []
@@ -102,11 +105,18 @@ def find_padding_max_batch_len_addition(
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
         if abs(avg_efs - goal) <= 20:
             break
+
         if avg_efs > goal:
-            addition -= (addition * multiplier)
+            first_over_hit = True
+            r = addition
         elif avg_efs < goal:
-            addition += (addition * multiplier)
-        multiplier /= 2
+            if not first_over_hit:
+                r = r * 2
+            else:
+                l = addition
+        addition = (r - l) // 2
+
+    return addition
 
 >>>>>>> 6deb733 (Testing potential padding fix for for multipack):multipack_sampler.py
 
@@ -143,7 +153,7 @@ def find_packing_max_batch_len_and_grad_accum(
         grad_accum += 1
         total_micro_batch = (effective_batch_size / grad_accum) / num_gpus
         if is_padding:
-            addition = find_padding_max_batch_len_addition(avg_sample_len, effective_batch_size, dataset_lengths, num_gpus, grac_accum)
+            addition = find_padding_max_batch_len_addition(avg_sample_len, effective_batch_size, dataset_lengths, num_gpus, grad_accum)
         else:
             addition = 0
         packing_max_batch_len = int((avg_sample_len + addition) * total_micro_batch)
