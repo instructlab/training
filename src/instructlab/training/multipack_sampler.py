@@ -114,7 +114,7 @@ def find_padding_max_batch_len_addition(
                 r = r * 2
             else:
                 l = addition
-        addition = (r - l) // 2
+        addition = l + ((r - l) // 2)
 
     return addition
 
