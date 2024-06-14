@@ -33,7 +33,7 @@ import numpy as np
 import numba
 import os
 
-from token_dataset import make_collate_fn
+from instructlab.training.utils import make_collate_fn
 
 def find_padding_max_batch_len_addition(
     base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
