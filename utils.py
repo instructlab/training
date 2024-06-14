@@ -223,10 +223,10 @@ def save_hf_format(args, model, tokenizer, samples_seen):
     log_rank_0(f"saving took {time.time() - start} seconds")
 
 
-def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True):
+def save_hf_format_ds(args, model, tokenizer, samples_seen, epoch, convert_granite=True):
     model_to_save = model.module
     log_rank_0(
-        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
+        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen} epochs: {epoch}\033[0m",
         to_print=True,
     )
     start = time.time()
@@ -238,7 +238,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         MODEL_TYPE = 'llama'
     else:
         WEIGHTS_NAME = "pytorch_model.bin"
-    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}_epochs_{epoch}"
     if torch.distributed.get_rank() == 0:
         model_state = model_to_save.state_dict()
         output_dir.mkdir(parents=True, exist_ok=True)

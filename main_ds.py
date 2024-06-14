@@ -303,6 +303,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
                     model,
                     tokenizer,
                     global_step * args.samples_per_gpu * world_size,
+                    epoch
                 )
 
             if args.save_samples_ds is not None and \
@@ -318,6 +319,17 @@ def train(args, model, tokenizer, train_loader, grad_accum):
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+
+        # epoch has finished. do we save the model this epoch?
+        if (args.save_model_epochs > 0) and \
+            ((epoch % args.save_model_epochs) == 0):
+            save_hf_format_ds(
+                args,
+                model,
+                tokenizer,
+                global_step * args.samples_per_gpu * world_size,
+                epoch=epoch
+            )
 
 
 def main(args):
@@ -426,6 +438,10 @@ if __name__ == "__main__":
     parser.add_argument("--lora_quant_bits", type=int, default=None) 
     parser.add_argument("--lora_target_modules", nargs='+', default=None) 
     parser.add_argument("--max_batch_len", type=int, default=60000)
+    parser.add_argument("--save_model_epochs", type=int, default=1,
+                        help='Save model every n epochs\
+                              Do not save if 0,\
+                              Save every epoch if 1 and so on')
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
