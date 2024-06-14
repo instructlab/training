@@ -29,17 +29,16 @@ from typing import List, Optional
 # Third Party
 from torch.utils.data import Sampler
 import numba
-<<<<<<< HEAD:src/instructlab/training/multipack_sampler.py
 import numpy as np
 import torch.distributed as dist
-=======
-import math
 
+
+from token_dataset import setup_dataloader
 
 def find_padding_max_batch_len_addition(
-    base_avg, goal, lengths, num_gpus, grad_accum
+    base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
 ):  
-
+    lengths = dataset.get_lengths()
     sorted_lengths = list(lengths)
     sorted_lengths.sort(reverse=True)
 
@@ -72,44 +71,27 @@ def find_padding_max_batch_len_addition(
         packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
         # simulate buckets with current addition value
-        buckets = []
-        first = True
-        for length in sorted_lengths:
-            if first:
-                count = 1
-                sum = length
-                max = length
-                first = False
-            elif max + sum <= packing_max_batch_len:
-                count += 1
-                sum = sum + max
-            else:
-                buckets.append(count)
-                count = 1
-                sum = length
-                max = length
+        simulation_loader = setup_dataloader(
+            dataset,
+            pad_id,
+            num_workers=8,
+            is_granite=False,
+            max_batch_len=max_batch_len,
+            packing_max_batch_len=packing_max_batch_len,
+            seed=seed,
+        )
 
-        # group buckets to calculate simulated effective batch size
-        buckets_per_batch = num_gpus * grad_accum
+        avg_ebs = len(dataset)/len(simulation_loader)
+        #print(f"avg_samples_per_batch: {avg_ebs}\n")
 
-        bucket_batches = [buckets[i:i + buckets_per_batch] for i in range(0, len(buckets), buckets_per_batch)]
-        if len(bucket_batches) > 1:
-            bucket_batches = bucket_batches[:-1]
-
-        total_efs = 0
-        for bucket in bucket_batches:
-            for counts in bucket:
-                total_efs += counts
-        avg_efs = total_efs / len(bucket_batches)
-        
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
-        if abs(avg_efs - goal) <= 20:
+        if abs(avg_ebs - goal) <= 20:
             break
 
-        if avg_efs > goal:
+        if avg_ebs > goal:
             first_over_hit = True
             r = addition
-        elif avg_efs < goal:
+        elif avg_ebs < goal:
             if not first_over_hit:
                 r = r * 2
             else:
@@ -118,11 +100,9 @@ def find_padding_max_batch_len_addition(
 
     return addition
 
->>>>>>> 6deb733 (Testing potential padding fix for for multipack):multipack_sampler.py
-
 
 def find_packing_max_batch_len_and_grad_accum(
-    num_gpus, avg_sample_len, effective_batch_size, max_batch_len_per_gpu, is_padding, dataset_lengths
+    num_gpus, avg_sample_len, effective_batch_size, max_batch_len_per_gpu, is_padding, dataset, pad_id, seed
 ):
     """
     Calculate the minimum gradient accumulation steps required and the corresponding maximum batch length.
@@ -153,7 +133,7 @@ def find_packing_max_batch_len_and_grad_accum(
         grad_accum += 1
         total_micro_batch = (effective_batch_size / grad_accum) / num_gpus
         if is_padding:
-            addition = find_padding_max_batch_len_addition(avg_sample_len, effective_batch_size, dataset_lengths, num_gpus, grad_accum)
+            addition = find_padding_max_batch_len_addition(avg_sample_len, effective_batch_size, dataset, num_gpus, grad_accum, pad_id, max_batch_len_per_gpu, seed)
         else:
             addition = 0
         packing_max_batch_len = int((avg_sample_len + addition) * total_micro_batch)

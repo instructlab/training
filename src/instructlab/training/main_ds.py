@@ -462,7 +462,9 @@ def main(args):
         effective_batch_size=args.effective_batch_size,
         max_batch_len_per_gpu=args.max_batch_len,
         is_padding=not args.is_granite,
-        dataset_lengths=dataset.get_lengths()
+        dataset=dataset,
+        pad_id=tokenizer.pad_token_id,
+        seed=args.seed
     )
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
