@@ -26,14 +26,14 @@ taken from https://github.com/imoneoi/multipack_sampler
 # Standard
 from typing import List, Optional
 
-# Third Party
-from torch.utils.data import Sampler
-import numba
-import numpy as np
 import torch.distributed as dist
+from torch.utils.data import Sampler, DataLoader
 
+import numpy as np
+import numba
+import os
 
-from token_dataset import setup_dataloader
+from token_dataset import make_collate_fn
 
 def find_padding_max_batch_len_addition(
     base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
@@ -71,6 +71,7 @@ def find_padding_max_batch_len_addition(
         packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
         # simulate buckets with current addition value
+        """
         simulation_loader = setup_dataloader(
             dataset,
             pad_id,
@@ -79,6 +80,29 @@ def find_padding_max_batch_len_addition(
             max_batch_len=max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
             seed=seed,
+        )
+        """
+
+        collate_fn = make_collate_fn(
+            pad_id, is_granite=False, max_batch_len=max_batch_len
+        )
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+
+        #lengths = dataset.get_lengths()
+        sampler = MultipackDistributedBatchSampler(
+            batch_max_length=packing_max_batch_len,
+            lengths=lengths,
+            num_replicas=world_size,
+            rank=rank,
+            seed=seed,
+            padding=True,
+        )
+        simulation_loader = DataLoader(
+            dataset,
+            batch_sampler=sampler,
+            num_workers=8,
+            collate_fn=collate_fn,
         )
 
         avg_ebs = len(dataset)/len(simulation_loader)
