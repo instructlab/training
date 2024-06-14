@@ -71,17 +71,6 @@ def find_padding_max_batch_len_addition(
         packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
         # simulate buckets with current addition value
-        """
-        simulation_loader = setup_dataloader(
-            dataset,
-            pad_id,
-            num_workers=8,
-            is_granite=False,
-            max_batch_len=max_batch_len,
-            packing_max_batch_len=packing_max_batch_len,
-            seed=seed,
-        )
-        """
 
         collate_fn = make_collate_fn(
             pad_id, is_granite=False, max_batch_len=max_batch_len
@@ -89,7 +78,6 @@ def find_padding_max_batch_len_addition(
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
 
-        #lengths = dataset.get_lengths()
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=packing_max_batch_len,
             lengths=lengths,
@@ -106,7 +94,6 @@ def find_padding_max_batch_len_addition(
         )
 
         avg_ebs = len(dataset)/len(simulation_loader)
-        #print(f"avg_samples_per_batch: {avg_ebs}\n")
 
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
         if abs(avg_ebs - goal) <= 20:
