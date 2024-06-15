@@ -31,7 +31,7 @@ def add_noisy_embeddings(model, noise_alpha=None):
         return new_func
 
     model_class_name = model.__class__.__name__
-    if model_class_name == 'GPTMegatronForCausalLM':
+    if model_class_name in ['GPTMegatronForCausalLM','GPTDolomiteForCausalLM']:
         orig_forward = model.transformer.wte.forward
         model.transformer.wte.forward = noised_embed(orig_forward, noise_alpha)
     elif model_class_name in ['MistralForCausalLM', 'LlamaForCausalLM']:
