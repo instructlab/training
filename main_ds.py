@@ -19,6 +19,7 @@ from multipack_sampler import find_packing_max_batch_len_and_grad_accum
 from token_dataset import setup_dataloader, setup_dataset
 from tokenizer_utils import setup_tokenizer
 from utils import (
+    add_noisy_embeddings,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -91,6 +92,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
     model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
+    model = add_noisy_embeddings(model, args.NEFTune_alpha)
 
     # handling of gradient checkpointing
     # it is handled differently for lora and full
@@ -425,6 +427,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.1) 
     parser.add_argument("--lora_quant_bits", type=int, default=None) 
     parser.add_argument("--lora_target_modules", nargs='+', default=None) 
+    parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument("--max_batch_len", type=int, default=60000)
     args = parser.parse_args()
     set_random_seed(args.seed)
