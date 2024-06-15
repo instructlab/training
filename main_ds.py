@@ -51,15 +51,17 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         from transformers import BitsAndBytesConfig
+
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
         )
-        
+
     if args.is_granite:
         from dolomite_engine.hf_models.models import GPTDolomiteForCausalLM
+
         model = GPTDolomiteForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",
@@ -104,7 +106,12 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         from utils import prepare_peft_model, patch_target_module
 
         if args.lora_target_modules is None:
-            args.__dict__['lora_target_modules'] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            args.__dict__["lora_target_modules"] = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+            ]
 
         peft_config = LoraConfig(
             lora_alpha=args.lora_alpha,
@@ -115,8 +122,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             target_modules=args.lora_target_modules,
         )
         model = prepare_peft_model(
-            model, peft_config, 
-            gradient_checkpointing=not args.is_granite
+            model, peft_config, gradient_checkpointing=not args.is_granite
         )
 
         # patch DS to work with quantized models
@@ -125,8 +131,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
         if args.lora_quant_bits is not None:
             patch_target_module(
-                'deepspeed.DeepSpeedEngine',
-                partial(DeepSpeedEngine, dont_change_device=True)
+                "deepspeed.DeepSpeedEngine",
+                partial(DeepSpeedEngine, dont_change_device=True),
             )
     elif not args.is_granite:
         model.gradient_checkpointing_enable()
@@ -142,10 +148,11 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model,
             GradientCheckpointingMethod.block,
             block_name=block_name,
-            use_reentrant=True # this should be the HF default mode
+            use_reentrant=True,  # this should be the HF default mode
         )
 
         if args.lora_r > 0:
+
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
 
@@ -173,6 +180,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # model = torch.compile(model)
     return model
 
+
 # this function is to check if the checkpoint provided can be resumed
 def maybe_resume_training(args, model):
 
@@ -183,23 +191,23 @@ def maybe_resume_training(args, model):
     #   so we need to disable load_module_strict
     # - load checkpoint will find the latest checkpoint
     # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0 # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native" 
+    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
+    output_dir = Path(args.output_dir) / "ds_native"
     model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
 
-    output_dir = Path(args.output_dir) / "ds_native" 
+    output_dir = Path(args.output_dir) / "ds_native"
     # need to figure out the resumed start step
     latest_file = output_dir / "latest"
     try:
-        with open (latest_file) as f:
+        with open(latest_file) as f:
             # there is some assumption here that the ds_native
             # checkpoints are tagged as <something>_(samples_seen)
             samples_seen = f.read()
-            samples_seen, = re.match('\w+_(\d+)', samples_seen).groups()
+            (samples_seen,) = re.match("\w+_(\d+)", samples_seen).groups()
             samples_seen = int(samples_seen)
 
             last_step = samples_seen // args.effective_batch_size
-            args.__dict__['last_step'] = last_step
+            args.__dict__["last_step"] = last_step
         (
             print(f"\033[93mStarting from: {last_step}\033[0m")
             if local_rank == 0
@@ -208,9 +216,10 @@ def maybe_resume_training(args, model):
     except FileNotFoundError:
         pass
 
-    # we will update the start step here 
+    # we will update the start step here
     return model
-    
+
+
 def train(args, model, tokenizer, train_loader, grad_accum):
     model.train()
 
@@ -228,7 +237,9 @@ def train(args, model, tokenizer, train_loader, grad_accum):
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         (
-            print(f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m")
+            print(
+                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
+            )
             if local_rank == 0
             else None
         )
@@ -307,8 +318,10 @@ def train(args, model, tokenizer, train_loader, grad_accum):
                     global_step * args.samples_per_gpu * world_size,
                 )
 
-            if args.save_samples_ds is not None and \
-            global_step * batch_size % args.save_samples_ds == 0:
+            if (
+                args.save_samples_ds is not None
+                and global_step * batch_size % args.save_samples_ds == 0
+            ):
                 save_model_ds_native(
                     args,
                     model,
@@ -396,9 +409,11 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument(
-        "--last_step", type=int, default=0, 
-        help='understand this as the last completed step. '
-        'The default is 0, since global_step starts from 1 by default.'
+        "--last_step",
+        type=int,
+        default=0,
+        help="understand this as the last completed step. "
+        "The default is 0, since global_step starts from 1 by default.",
     )
     # parser.add_argument("--samples_per_gpu", type=int, default=8)
     parser.add_argument("--effective_batch_size", type=int, default=3840)
@@ -407,8 +422,10 @@ if __name__ == "__main__":
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--save_samples", type=int)
     parser.add_argument(
-        "--save_samples_ds", type=int, help='for saving in ds native format', 
-        default=None
+        "--save_samples_ds",
+        type=int,
+        help="for saving in ds native format",
+        default=None,
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)
@@ -422,11 +439,11 @@ if __name__ == "__main__":
         help="Sharding strategy to be used for distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")
-    parser.add_argument("--lora_r", type=int, default=0) # set to > 0 to activate lora
-    parser.add_argument("--lora_alpha", type=int, default=32) 
-    parser.add_argument("--lora_dropout", type=float, default=0.1) 
-    parser.add_argument("--lora_quant_bits", type=int, default=None) 
-    parser.add_argument("--lora_target_modules", nargs='+', default=None) 
+    parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.1)
+    parser.add_argument("--lora_quant_bits", type=int, default=None)
+    parser.add_argument("--lora_target_modules", nargs="+", default=None)
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument("--max_batch_len", type=int, default=60000)
     args = parser.parse_args()
