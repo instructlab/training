@@ -23,7 +23,7 @@ def add_noisy_embeddings(model, noise_alpha=None):
         def new_func(x):
             if model.training:
                 embed_init = orig_embed(x)
-                dims = torch.tensor(embed_init.size(1) * embed_init.size(2))
+                dims = torch.tensor(torch.numel(x))
                 mag_norm = noise_alpha/torch.sqrt(dims)
                 return embed_init + torch.zeros_like(embed_init).uniform_(-mag_norm, mag_norm)
             else:
@@ -32,8 +32,8 @@ def add_noisy_embeddings(model, noise_alpha=None):
 
     model_class_name = model.__class__.__name__
     if model_class_name in ['GPTMegatronForCausalLM','GPTDolomiteForCausalLM']:
-        orig_forward = model.transformer.wte.forward
-        model.transformer.wte.forward = noised_embed(orig_forward, noise_alpha)
+        orig_forward = model.get_input_embeddings().forward
+        model.get_input_embeddings().forward = noised_embed(orig_forward, noise_alpha)
     elif model_class_name in ['MistralForCausalLM', 'LlamaForCausalLM']:
         orig_forward = model.base_model.embed_tokens.forward
         model.base_model.embed_tokens.forward = noised_embed(orig_forward, noise_alpha)
