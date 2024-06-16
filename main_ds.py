@@ -83,6 +83,14 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             int(8 * math.ceil(len(tokenizer) / 8.0))
         )  # make the vocab size multiple of 8 for sharding the embedding layer.
 
+    # Fix any discrepancy between model and tokenizer
+    if model.config.pad_token_id is not None and model.config.pad_token_id != tokenizer.pad_token_id:
+        model.config.pad_token_id = tokenizer.pad_token_id
+    if model.config.bos_token_id is not None and model.config.bos_token_id != tokenizer.bos_token_id:
+        model.config.bos_token_id = tokenizer.bos_token_id
+    if model.config.eos_token_id is not None and model.config.eos_token_id != tokenizer.eos_token_id:
+        model.config.eos_token_id = tokenizer.eos_token_id
+
     assert model.__class__.__name__ in [
         "MistralForCausalLM",
         "GPTDolomiteForCausalLM",
