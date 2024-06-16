@@ -263,11 +263,28 @@ def maybe_resume_training(args, model):
     #   so we need to disable load_module_strict
     # - load checkpoint will find the latest checkpoint
     # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native"
-    model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+    load_module_strict = args.lora_r == 0 # can only be true if lora is not used
+    output_dir = Path(args.output_dir) / "ds_native" 
 
-    output_dir = Path(args.output_dir) / "ds_native"
+    from deepspeed.runtime.zero.utils import ZeRORuntimeException
+
+    try:
+        model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+    except ZeRORuntimeException as e:
+        from utils import prepare_universal_checkpoint
+
+        if str(e).startswith("The checkpoint being loaded used a DP world size of"):
+            prepare_universal_checkpoint(output_dir)
+
+            # need to do this to trigger the universal checkpoint 
+            # loading
+            model._config.load_universal_checkpoint = True
+
+            # then attempt to load again
+            model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+        else:
+            raise e # reraise
+
     # need to figure out the resumed start step
     latest_file = output_dir / "latest"
     try:
@@ -292,6 +309,7 @@ def maybe_resume_training(args, model):
     return model
 
 
+    
 def train(args, model, tokenizer, train_loader, grad_accum):
     model.train()
 

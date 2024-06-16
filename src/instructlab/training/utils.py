@@ -238,6 +238,87 @@ def prepare_peft_model(
 
     return model
 
+def prepare_universal_checkpoint(output_dir):
+    log_rank_0(f"\033[93mPreparing universal checkpoint in {output_dir}\033[0m", to_print=True)
+    start = time.time()
+    if torch.distributed.get_rank() == 0:
+        # TODO: check the DS version, require quite latest version
+        # TODO: if alreay craeted then we can skip it
+
+        from deepspeed.checkpoint.ds_to_universal import (
+            _check_for_required_state,
+            _create_checkpoint_paths,
+            _extract_zero_shard_files,
+            _save_optimizer_state,
+            _merge_tp_slice_files,
+            UNIVERSAL_CHECKPOINT_INFO,
+            PARAM_SHAPES
+        )
+        from deepspeed.checkpoint import DeepSpeedCheckpoint
+        import os, shutil
+
+        latest_file = output_dir / "latest"
+        with open (latest_file) as f:
+            step_folder = f.read()
+
+        input_folder = os.path.join(output_dir, step_folder)
+        # output_folder = input_folder # just put it in same place
+
+        # cvreate args
+        class WorkerArgs:
+            num_extract_workers: int = 1
+            num_merge_workers: int = 1
+            output_folder: str = input_folder # just put in same place
+            strict: bool = True
+        args = WorkerArgs()
+
+        # this is not very reliable, it is copied from main
+        ds_checkpoint = DeepSpeedCheckpoint(input_folder)
+
+        # this is a hack, not super confident
+        if UNIVERSAL_CHECKPOINT_INFO not in  ds_checkpoint.global_state:
+            ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
+
+        _check_for_required_state(ds_checkpoint)
+
+        # iteration = ds_checkpoint.get_iteration()
+        #_create_latest_file(args.output_folder, iteration)
+        # checkpoint_paths = _create_checkpoint_paths(
+        #     output_folder, iteration, ds_checkpoint.tp_degree,
+        #     ds_checkpoint.pp_degree
+        # )
+
+        slice_shapes = []
+        for mp_rank_file in ds_checkpoint.mp_rank_files:
+            mp_sd = torch.load(mp_rank_file, map_location=torch.device('cpu'))
+            slice_shapes += mp_sd[PARAM_SHAPES]
+
+        # fix back to normal flat dict, merge duplicates for tp>1
+        slice_shapes = dict((k, v) for d in slice_shapes for k, v in d.items())
+        temp_dir = os.path.join(args.output_folder, 'tmp')
+
+        log_rank_0(f"\033[93m1. Extracting ZeRO fragments into {temp_dir}\033[0m", to_print=True)
+        _extract_zero_shard_files(args, ds_checkpoint, temp_dir)
+
+        print('*** 2. Merging slices .....')
+        zero_output_folder = os.path.join(args.output_folder, "zero")
+
+        log_rank_0(f"\033[93m2. Merging slices into {zero_output_folder}\033[0m", to_print=True)
+        _merge_tp_slice_files(args, ds_checkpoint, slice_shapes, temp_dir)
+
+        print('*** 3. Saving common optimizer states')
+        log_rank_0(f"\033[93m3. Saving common optimizer states into {zero_output_folder}\033[0m", to_print=True)
+        _save_optimizer_state(args, ds_checkpoint)
+
+        log_rank_0(f"\033[93m3. Removing temp directory {temp_dir}\033[0m", to_print=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        latest_file = os.path.join(output_dir, 'latest_universal')
+        with open(latest_file, "w") as f:
+            f.write(step_folder)
+
+    dist.barrier()
+    log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
 def setup_logger(level="DEBUG"):
     logging.basicConfig(
