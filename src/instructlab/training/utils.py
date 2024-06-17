@@ -17,6 +17,30 @@ from torch.distributed.fsdp import (
 from rich.logging import RichHandler
 import logging
 
+def add_noisy_embeddings(model, noise_alpha=None):
+    if not noise_alpha:
+        return model
+    def noised_embed(orig_embed, noise_alpha):
+        def new_func(x):
+            if model.training:
+                embed_init = orig_embed(x)
+                dims = torch.tensor(torch.numel(x))
+                mag_norm = noise_alpha/torch.sqrt(dims)
+                return embed_init + torch.zeros_like(embed_init).uniform_(-mag_norm, mag_norm)
+            else:
+                return orig_embed(x)
+        return new_func
+
+    model_class_name = model.__class__.__name__
+    if model_class_name in ['GPTMegatronForCausalLM','GPTDolomiteForCausalLM']:
+        orig_forward = model.get_input_embeddings().forward
+        model.get_input_embeddings().forward = noised_embed(orig_forward, noise_alpha)
+    elif model_class_name in ['MistralForCausalLM', 'LlamaForCausalLM']:
+        orig_forward = model.base_model.embed_tokens.forward
+        model.base_model.embed_tokens.forward = noised_embed(orig_forward, noise_alpha)
+    else:
+        raise ValueError(f"Unsupported model class: {model_class_name}")
+    return model
 
 class StreamablePopen(subprocess.Popen):
     """

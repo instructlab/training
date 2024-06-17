@@ -37,6 +37,7 @@ from instructlab.training.utils import (
     StreamablePopen,
     prepare_peft_model,
     patch_target_module,
+    add_noisy_embeddings,
 )
 from instructlab.training.config import (
     TrainingArgs,
@@ -152,6 +153,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
     model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
+    model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
     # handling of gradient checkpointing
     # it is handled differently for lora and full
