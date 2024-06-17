@@ -10,7 +10,6 @@ import time
 
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
