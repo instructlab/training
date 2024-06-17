@@ -84,10 +84,19 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
     # Fix any discrepancy between model and tokenizer
     if model.config.pad_token_id is not None and model.config.pad_token_id != tokenizer.pad_token_id:
+        print(
+            f"WARNING: There is a mismatch between pad token of model and tokenizer. Fixing model pad token to be same as tokenizer's pad token"
+        )
         model.config.pad_token_id = tokenizer.pad_token_id
     if model.config.bos_token_id is not None and model.config.bos_token_id != tokenizer.bos_token_id:
+        print(
+            f"WARNING: There is a mismatch between bos token of model and tokenizer. Fixing model bos token to be same as tokenizer's bos token"
+        )
         model.config.bos_token_id = tokenizer.bos_token_id
     if model.config.eos_token_id is not None and model.config.eos_token_id != tokenizer.eos_token_id:
+        print(
+            f"WARNING: There is a mismatch between eos token of model and tokenizer. Fixing model eos token to be same as tokenizer's eos token"
+        )
         model.config.eos_token_id = tokenizer.eos_token_id
 
     assert model.__class__.__name__ in [
