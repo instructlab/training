@@ -613,6 +613,7 @@ if __name__ == "__main__":
         default=False,
         help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
     )
+    parser.add_argument("--NEFTune_alpha", type=float, default=None)
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
