@@ -9,7 +9,7 @@ datasets
 numba
 numpy
 rich
-git+https://github.com/ibm-granite/dolomite-engine.git
+dolomite-engine @ git+https://github.com/ibm-granite/dolomite-engine.git@main
 trl==0.9.4
 omegaconf>=2.3.0
 peft
