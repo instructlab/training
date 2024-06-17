@@ -1,49 +1,46 @@
-import argparse
-from pathlib import Path
+# Standard
 from datetime import timedelta
+from pathlib import Path
+import argparse
 import math
 import os
 import re
-import time
-import torch
-from tqdm import tqdm
-from transformers import (
-    AutoModelForCausalLM,
-    get_scheduler,
-)
-from torch.distributed import (
-    ReduceOp,
-    all_reduce,
-)
 import subprocess
+import time
 
+# Third Party
+from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from omegaconf import OmegaConf
 from omegaconf.errors import MissingMandatoryValue
+from torch.distributed import ReduceOp, all_reduce
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, get_scheduler
 import deepspeed
-from deepspeed.ops.adam import FusedAdam, DeepSpeedCPUAdam
+import torch
 
+# First Party
 from instructlab.training import config
+from instructlab.training.config import (
+    DataProcessArgs,
+    DeepSpeedOptions,
+    TorchrunArgs,
+    TrainingArgs,
+)
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
+    StreamablePopen,
+    add_noisy_embeddings,
+    convert_loss_to_reduce_sum,
+    patch_target_module,
+    prepare_peft_model,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
     setup_logger,
-    convert_loss_to_reduce_sum,
-    StreamablePopen,
-    prepare_peft_model,
-    patch_target_module,
-    add_noisy_embeddings,
-)
-from instructlab.training.config import (
-    TrainingArgs,
-    TorchrunArgs,
-    DataProcessArgs,
-    DeepSpeedOptions,
 )
 import instructlab.training.data_process as dp
 
@@ -80,6 +77,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
 def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
+        # Third Party
         from transformers import BitsAndBytesConfig
 
         bnb_config = BitsAndBytesConfig(
@@ -90,6 +88,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
+        # Third Party
         from dolomite_engine.hf_models.models import GPTDolomiteForCausalLM
 
         model = GPTDolomiteForCausalLM.from_pretrained(
@@ -161,6 +160,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     #   in the later stanza
     if args.lora_r > 0:
         # if lora
+        # Third Party
         from peft import LoraConfig
 
         if args.lora_target_modules is None:
@@ -184,8 +184,11 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
         # patch DS to work with quantized models
-        from deepspeed import DeepSpeedEngine
+        # Standard
         from functools import partial
+
+        # Third Party
+        from deepspeed import DeepSpeedEngine
 
         if args.lora_quant_bits is not None:
             patch_target_module(
@@ -198,8 +201,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # granite gradient checkpointing is handled uniformly
     # for both lora and full here
     if args.is_granite:
-        from dolomite_engine.gradient_checkpointing import apply_gradient_checkpointing
+        # Third Party
         from dolomite_engine.enums import GradientCheckpointingMethod
+        from dolomite_engine.gradient_checkpointing import apply_gradient_checkpointing
 
         block_name = model._no_split_modules[0]
         apply_gradient_checkpointing(
@@ -405,6 +409,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 
 
 def main(args):
+    # Third Party
     import yaml
 
     if os.environ["LOCAL_RANK"] == "0":

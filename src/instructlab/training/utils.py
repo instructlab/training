@@ -1,46 +1,53 @@
-import inspect
+# Standard
 from pathlib import Path
+from typing import List, Optional
+import inspect
+import logging
 import random
 import subprocess
 import sys
 import time
-from typing import List, Optional
-import numpy as np
-import torch
+
+# Third Party
+from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    StateDictType,
-    FullStateDictConfig,
-)
-from rich.logging import RichHandler
-import logging
+from torch.distributed.fsdp import FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
+import numpy as np
+import torch
+
 
 def add_noisy_embeddings(model, noise_alpha=None):
     if not noise_alpha:
         return model
+
     def noised_embed(orig_embed, noise_alpha):
         def new_func(x):
             if model.training:
                 embed_init = orig_embed(x)
                 dims = torch.tensor(torch.numel(x))
-                mag_norm = noise_alpha/torch.sqrt(dims)
-                return embed_init + torch.zeros_like(embed_init).uniform_(-mag_norm, mag_norm)
+                mag_norm = noise_alpha / torch.sqrt(dims)
+                return embed_init + torch.zeros_like(embed_init).uniform_(
+                    -mag_norm, mag_norm
+                )
             else:
                 return orig_embed(x)
+
         return new_func
 
     model_class_name = model.__class__.__name__
-    if model_class_name in ['GPTMegatronForCausalLM','GPTDolomiteForCausalLM']:
+    if model_class_name in ["GPTMegatronForCausalLM", "GPTDolomiteForCausalLM"]:
         orig_forward = model.get_input_embeddings().forward
         model.get_input_embeddings().forward = noised_embed(orig_forward, noise_alpha)
-    elif model_class_name in ['MistralForCausalLM', 'LlamaForCausalLM']:
+    elif model_class_name in ["MistralForCausalLM", "LlamaForCausalLM"]:
         orig_forward = model.base_model.embed_tokens.forward
         model.base_model.embed_tokens.forward = noised_embed(orig_forward, noise_alpha)
     else:
         raise ValueError(f"Unsupported model class: {model_class_name}")
     return model
+
 
 class StreamablePopen(subprocess.Popen):
     """
@@ -155,8 +162,9 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
         return model
 
 
-import importlib
+# Standard
 from typing import Any
+import importlib
 
 
 # taken from https://github.com/foundation-model-stack/fms-acceleration/blob/main/plugins/accelerated-peft/src/fms_acceleration_peft/autogptq_utils.py
@@ -181,15 +189,14 @@ def prepare_peft_model(
     mixed_precision="bf16",
 ):
     # will guard this
+    # Third Party
     from peft import (
         PeftConfig,
         PeftModel,
         get_peft_model,
         prepare_model_for_kbit_training,
     )
-    from trl.trainer.utils import (
-        peft_module_casting_to_bf16,
-    )
+    from trl.trainer.utils import peft_module_casting_to_bf16
 
     if not isinstance(peft_config, PeftConfig):
         raise ValueError(
@@ -302,7 +309,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
     if args.is_granite:
         # save if in a temp directory first then convert it
         WEIGHTS_NAME = "model.safetensors"
-        MODEL_TYPE = 'llama'
+        MODEL_TYPE = "llama"
     else:
         WEIGHTS_NAME = "pytorch_model.bin"
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
@@ -313,14 +320,16 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         output_config_file = output_dir / CONFIG_NAME
 
         if args.is_granite and convert_granite:
-
             # guarded import
-            from dolomite_engine.hf_models import export_to_huggingface
+            # Standard
             from tempfile import TemporaryDirectory
-            from safetensors.torch import save_file
             import shutil
 
-            with TemporaryDirectory('w') as tmpdir:
+            # Third Party
+            from dolomite_engine.hf_models import export_to_huggingface
+            from safetensors.torch import save_file
+
+            with TemporaryDirectory("w") as tmpdir:
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
                 model_to_save.config.to_json_file(Path(tmpdir) / CONFIG_NAME)
                 tokenizer.save_pretrained(tmpdir)
@@ -330,7 +339,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
                 export_to_huggingface(
                     pretrained_model_name_or_path=tmpdir,
                     save_path=output_dir,
-                    model_type=MODEL_TYPE
+                    model_type=MODEL_TYPE,
                 )
         else:
             torch.save(model_state, str(output_model_file))

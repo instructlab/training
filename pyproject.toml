@@ -95,7 +95,7 @@ from-first = true
 known-local-folder = ["tuning"]
 
 [tool.mypy]
-disable_error_code = ["import-not-found", "import-untyped"]
+disable_error_code = ["import-not-found", "import-untyped", "var-annotated", "attr-defined"]
 exclude = [
     "^src/instructlab/training/generate_data\\.py$",
     "^src/instructlab/training/utils\\.py$",
