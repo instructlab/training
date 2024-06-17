@@ -269,12 +269,18 @@ def maybe_resume_training(args, model):
     from deepspeed.runtime.zero.utils import ZeRORuntimeException
 
     try:
+        # attempt to load a regular checkpoint first
         model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
     except ZeRORuntimeException as e:
-        from utils import prepare_universal_checkpoint
 
         if str(e).startswith("The checkpoint being loaded used a DP world size of"):
-            prepare_universal_checkpoint(output_dir)
+            # if it fails with the above exception, then a universal
+            # checkpoint is required
+
+            # prepare the universal checkpoint
+            # - by reading 'latest' to get the resumable checkpoint
+            from utils import prepare_universal_checkpoint_from_latest
+            prepare_universal_checkpoint_from_latest(output_dir)
 
             # need to do this to trigger the universal checkpoint 
             # loading
@@ -282,17 +288,20 @@ def maybe_resume_training(args, model):
 
             # then attempt to load again
             model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+
+            # reset to regular checkpoint loading
+            model._config.load_universal_checkpoint = False
         else:
             raise e # reraise
 
-    # need to figure out the resumed start step
+    # do this to figure out the last_step
     latest_file = output_dir / "latest"
     try:
         with open(latest_file) as f:
             # there is some assumption here that the ds_native
             # checkpoints are tagged as <something>_(samples_seen)
-            samples_seen = f.read()
-            (samples_seen,) = re.match("\w+_(\d+)", samples_seen).groups()
+            step_folder = f.read()
+            samples_seen, = re.match('\w+_(\d+)', step_folder).groups()
             samples_seen = int(samples_seen)
 
             last_step = samples_seen // args.effective_batch_size
