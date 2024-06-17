@@ -83,19 +83,19 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )  # make the vocab size multiple of 8 for sharding the embedding layer.
 
     # Fix any discrepancy between model and tokenizer
-    if model.config.pad_token_id is not None and model.config.pad_token_id != tokenizer.pad_token_id:
+    if model.config.pad_token_id is not None and tokenizer.pad_token_id is not None and model.config.pad_token_id != tokenizer.pad_token_id:
         print(
-            f"WARNING: There is a mismatch between pad token of model and tokenizer. Fixing model pad token to be same as tokenizer's pad token"
+            f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
         )
         model.config.pad_token_id = tokenizer.pad_token_id
-    if model.config.bos_token_id is not None and model.config.bos_token_id != tokenizer.bos_token_id:
+    if model.config.bos_token_id is not None and tokenizer.bos_token_id is not None and model.config.bos_token_id != tokenizer.bos_token_id:
         print(
-            f"WARNING: There is a mismatch between bos token of model and tokenizer. Fixing model bos token to be same as tokenizer's bos token"
+            f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
         )
         model.config.bos_token_id = tokenizer.bos_token_id
-    if model.config.eos_token_id is not None and model.config.eos_token_id != tokenizer.eos_token_id:
+    if model.config.eos_token_id is not None and tokenizer.eos_token_id and model.config.eos_token_id != tokenizer.eos_token_id:
         print(
-            f"WARNING: There is a mismatch between eos token of model and tokenizer. Fixing model eos token to be same as tokenizer's eos token"
+            f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
         )
         model.config.eos_token_id = tokenizer.eos_token_id
 
