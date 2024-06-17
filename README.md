@@ -1,5 +1,10 @@
 # InstructLab Training Library
 
+![Lint](https://github.com/instructlab/training/actions/workflows/lint.yml/badge.svg?branch=main)
+![Build](https://github.com/instructlab/training/actions/workflows/pypi.yaml/badge.svg?branch=main)
+![Release](https://img.shields.io/github/v/release/instructlab/training)
+![License](https://img.shields.io/github/license/instructlab/training)
+
 In order to simplify the process of fine-tuning models through the LAB 
 method, this library provides a simple training interface.
 
