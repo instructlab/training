@@ -13,3 +13,4 @@ ignores:
   - ".github/**"
   - "venv/**"
   - ".venv/**"
+  - ".tox/**"
