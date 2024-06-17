@@ -1,18 +1,21 @@
-import logging
+# Standard
 from pathlib import Path
 from typing import List
+import logging
 
-import numpy as np
+# Third Party
 from datasets import load_dataset
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+import numpy as np
 
+# First Party
+from instructlab.training.config import DataProcessArgs
 from instructlab.training.tokenizer_utils import (
     SPECIAL_TOKENS,
     get_sp_token,
     setup_tokenizer,
 )
 from instructlab.training.utils import log_rank_0, setup_logger
-from instructlab.training.config import DataProcessArgs
 
 
 def check_valid_sample(
@@ -282,6 +285,7 @@ def main(args: DataProcessArgs):
 
 
 if __name__ == "__main__":
+    # Standard
     import argparse
 
     parser = argparse.ArgumentParser(
