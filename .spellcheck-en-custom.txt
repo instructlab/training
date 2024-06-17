@@ -1,5 +1,20 @@
+
 # make spellcheck-sort
 # Please keep this file sorted:
 # SPDX-License-Identifier: Apache-2.0
-eval
+ckpt
+Config
+config
+cpu
+CUDA
+deepspeed
+dir
+len
+lora
+multipack
+num
+repo
 Tatsu
+torchrun
+warmup
+ZeRO
