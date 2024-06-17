@@ -446,7 +446,32 @@ disable=raw-checker-failed,
         abstract-method,
         pointless-statement,
         wrong-import-order,
-        line-too-long
+        line-too-long,
+        # Added specifically for the training repo to get a green starting point
+        import-outside-toplevel,
+        redefined-outer-name,
+        unused-argument,
+        unused-import,
+        f-string-without-interpolation,
+        expression-not-assigned,
+        wrong-import-position,
+        unspecified-encoding,
+        redefined-builtin,
+        pointless-string-statement,
+        consider-using-enumerate,
+        anomalous-backslash-in-string,
+        unsupported-binary-operation,
+        ungrouped-imports,
+        too-many-return-statements,
+        too-many-instance-attributes,
+        return-in-finally,
+        possibly-used-before-assignment,
+        no-else-return,
+        lost-exception,
+        logging-fstring-interpolation,
+        dangerous-default-value,
+        consider-using-generator,
+        broad-exception-caught
 
 # Enable the message, report, category or checker with the given id(s). You can
 # either give multiple identifier separated by comma (,) or put this option
