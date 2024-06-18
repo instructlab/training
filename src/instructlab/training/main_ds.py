@@ -10,8 +10,7 @@ import time
 
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-from omegaconf import OmegaConf
-from omegaconf.errors import MissingMandatoryValue
+from deepspeed.runtime.zero.utils import ZeRORuntimeException
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -37,6 +36,7 @@ from instructlab.training.utils import (
     convert_loss_to_reduce_sum,
     patch_target_module,
     prepare_peft_model,
+    prepare_universal_checkpoint_from_latest,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -266,17 +266,39 @@ def maybe_resume_training(args, model):
     # - it will also load the optimizer and scheduler states by default
     load_module_strict = args.lora_r == 0  # can only be true if lora is not used
     output_dir = Path(args.output_dir) / "ds_native"
-    model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
 
-    output_dir = Path(args.output_dir) / "ds_native"
-    # need to figure out the resumed start step
+    try:
+        # attempt to load a regular checkpoint first
+        model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+    except ZeRORuntimeException as e:
+        if str(e).startswith("The checkpoint being loaded used a DP world size of"):
+            # if it fails with the above exception, then a universal
+            # checkpoint is required
+
+            # prepare the universal checkpoint
+            # - by reading 'latest' to get the resumable checkpoint
+            prepare_universal_checkpoint_from_latest(output_dir)
+
+            # need to do this to trigger the universal checkpoint
+            # loading
+            model._config.load_universal_checkpoint = True
+
+            # then attempt to load again
+            model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+
+            # reset to regular checkpoint loading
+            model._config.load_universal_checkpoint = False
+        else:
+            raise e  # reraise
+
+    # do this to figure out the last_step
     latest_file = output_dir / "latest"
     try:
         with open(latest_file) as f:
             # there is some assumption here that the ds_native
             # checkpoints are tagged as <something>_(samples_seen)
-            samples_seen = f.read()
-            (samples_seen,) = re.match("\w+_(\d+)", samples_seen).groups()
+            step_folder = f.read()
+            (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
             samples_seen = int(samples_seen)
 
             last_step = samples_seen // args.effective_batch_size
@@ -536,8 +558,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
                 f"--lora_r={train_args.lora.rank}",
                 f"--lora_alpha={train_args.lora.alpha}",
                 f"--lora_dropout={train_args.lora.dropout}",
-                f"--lora_target_modules={' '.join(train_args.lora.target_modules)}",
+                "--lora_target_modules",
             ]
+            + train_args.lora.target_modules
         )
         # hard-code 4-bit quantization for now, change this when we add more
         if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
@@ -550,8 +573,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
 
     except KeyboardInterrupt:
         print("Process interrupted by user")
-    except MissingMandatoryValue as e:
-        print(f"Missing {e.key}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:

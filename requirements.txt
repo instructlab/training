@@ -5,22 +5,15 @@ py-cpuinfo
 # replace custom pytorch images with the 2.3.0
 torch>=2.3.0a0
 transformers==4.41.2
-datasets
+datasets>=2.15.0
 numba
 numpy
 rich
-git+https://github.com/ibm-granite/dolomite-engine.git
+dolomite-engine @ git+https://github.com/ibm-granite/dolomite-engine.git@main
 trl==0.9.4
-omegaconf>=2.3.0
 peft
 pydantic>=2.7.0
-# TODO: add dolomite_engine as a dependency
-# for the time being, you can install it using this command:
-# pip install git+https://github.com/ibm-granite/dolomite-engine.git
-# Note: this doesn't install its dependencies, for those you should install the ones
-# in this list: https://github.com/ibm-granite/dolomite-engine/blob/main/requirements.txt
-# 
 
 # deepspeed needs to be at the bottom or it'll break during installation
-deepspeed==0.14.3
+deepspeed>=0.14.3
 
