@@ -7,7 +7,7 @@ torch>=2.3.0a0
 transformers==4.41.2
 datasets>=2.15.0
 numba
-numpy
+numpy<2.0
 rich
 dolomite-engine @ git+https://github.com/ibm-granite/dolomite-engine.git@main
 trl==0.9.4

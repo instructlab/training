@@ -16,10 +16,10 @@ from torch.distributed import (
 
 import deepspeed
 from deepspeed.ops.adam import FusedAdam
-from multipack_sampler import find_packing_max_batch_len_and_grad_accum
-from token_dataset import setup_dataloader, setup_dataset
-from tokenizer_utils import setup_tokenizer
-from utils import (
+from instructlab.training.multipack_sampler import find_packing_max_batch_len_and_grad_accum
+from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.tokenizer_utils import setup_tokenizer
+from instructlab.training.utils import (
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -32,7 +32,7 @@ class DataWrapper:
 
     def __init__(self, _args: argparse.ArgumentParser):
 
-        self._args = _args.copy()
+        self._args = _args
         self.dataset = setup_dataset(data_path=_args.data_path)
         self.tokenizer = setup_tokenizer(_args.model_name_or_path)
         self.packing_max_batch_len, self.grad_accum = (
@@ -62,7 +62,7 @@ class DataWrapper:
 class DSModelWrapper:
 
     def __init__(self, _args: argparse.ArgumentParser, dataw: DataWrapper):
-        self._args = _args.copy()
+        self._args = _args
         self.dataw = dataw
         self._ds_config = self._get_ds_config(
             world_size=self._args.world_size,
@@ -269,7 +269,7 @@ class DeepSpeedTrainer:
     def __init__(
         self, _args: argparse.ArgumentParser, modelw: DSModelWrapper, dataw: DataWrapper
     ):
-        self._args = _args.copy()
+        self._args = _args
         self.dataw = dataw
         self.modelw = modelw
         self.model = self.modelw.model
@@ -403,6 +403,7 @@ def distributed_init(_args: argparse.ArgumentParser):
     _args.local_rank = int(os.environ["LOCAL_RANK"])
     deepspeed.init_distributed(timeout=timedelta(minutes=360))
     _args.global_rank = torch.distributed.get_rank()
+    _args.world_size= int(os.environ["WORLD_SIZE"])
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
@@ -428,7 +429,7 @@ def main(_args: argparse.ArgumentParser):
             f"grad_accum: {dataw.grad_accum}\n"
             f"num batches: {len(dataw.train_loader)}\n"
             f"avg_samples_per_batch: {len(dataw.dataset)/len(dataw.train_loader)}\n"
-            f"samples_per_gpu: {_args.samples_per_gpu}\033[0m"
+            # f"samples_per_gpu: {_args.samples_per_gpu}\033[0m"
         )
 
     modelw = DSModelWrapper(_args=_args, dataw=dataw)
