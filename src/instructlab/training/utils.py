@@ -1,19 +1,74 @@
-import inspect
+# Standard
 from pathlib import Path
-import random
-import time
 from typing import List, Optional
-import numpy as np
-import torch
+import inspect
+import logging
+import random
+import subprocess
+import sys
+import time
+
+# Third Party
+from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    StateDictType,
-    FullStateDictConfig,
-)
-from rich.logging import RichHandler
-import logging
+from torch.distributed.fsdp import FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
+import numpy as np
+import torch
+
+
+def add_noisy_embeddings(model, noise_alpha=None):
+    if not noise_alpha:
+        return model
+
+    def noised_embed(orig_embed, noise_alpha):
+        def new_func(x):
+            if model.training:
+                embed_init = orig_embed(x)
+                dims = torch.tensor(torch.numel(x))
+                mag_norm = noise_alpha / torch.sqrt(dims)
+                return embed_init + torch.zeros_like(embed_init).uniform_(
+                    -mag_norm, mag_norm
+                )
+            else:
+                return orig_embed(x)
+
+        return new_func
+
+    model_class_name = model.__class__.__name__
+    if model_class_name in ["GPTMegatronForCausalLM", "GPTDolomiteForCausalLM"]:
+        orig_forward = model.get_input_embeddings().forward
+        model.get_input_embeddings().forward = noised_embed(orig_forward, noise_alpha)
+    elif model_class_name in ["MistralForCausalLM", "LlamaForCausalLM"]:
+        orig_forward = model.base_model.embed_tokens.forward
+        model.base_model.embed_tokens.forward = noised_embed(orig_forward, noise_alpha)
+    else:
+        raise ValueError(f"Unsupported model class: {model_class_name}")
+    return model
+
+
+class StreamablePopen(subprocess.Popen):
+    """
+    Provides a way of reading stdout and stderr line by line.
+    """
+
+    def __init__(self, *args, **kwargs):
+        # remove the stderr and stdout from kwargs
+        kwargs.pop("stderr", None)
+        kwargs.pop("stdout", None)
+
+        super().__init__(*args, **kwargs)
+        while True:
+            if self.stdout:
+                output = self.stdout.readline().strip()
+                print(output)
+            if self.stderr:
+                error = self.stderr.readline().strip()
+                print(error, file=sys.stderr)
+            if self.poll() is not None:
+                break
 
 
 def convert_loss_to_reduce_sum(model, is_granite=False):
@@ -23,7 +78,9 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
     if is_granite:
 
         def get_autoregressive_language_modeling_loss(
-            lm_logits: torch.Tensor, labels: torch.Tensor, cu_seqlens: torch.Tensor
+            lm_logits: torch.Tensor,
+            labels: torch.Tensor,
+            cu_seqlens: torch.Tensor,
         ) -> torch.Tensor:
             loss = None
             # Shift so that tokens < n predict n
@@ -104,8 +161,11 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
         model.forward = reduce_sum_forward
         return model
 
-import importlib
+
+# Standard
 from typing import Any
+import importlib
+
 
 # taken from https://github.com/foundation-model-stack/fms-acceleration/blob/main/plugins/accelerated-peft/src/fms_acceleration_peft/autogptq_utils.py
 def patch_target_module(
@@ -120,17 +180,24 @@ def patch_target_module(
     source = importlib.import_module(to_patch)
     setattr(source, obj_name_to_patch, replace_with)
 
+
 def prepare_peft_model(
-    model, peft_config, 
+    model,
+    peft_config,
     gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={'use_reentrant': True},
-    mixed_precision='bf16',
+    gradient_checkpointing_kwargs={"use_reentrant": True},
+    mixed_precision="bf16",
 ):
     # will guard this
-    from peft import PeftConfig, PeftModel, get_peft_model, prepare_model_for_kbit_training
-    from trl.trainer.utils import (
-        peft_module_casting_to_bf16,
+    # Third Party
+    from peft import (
+        PeftConfig,
+        PeftModel,
+        get_peft_model,
+        prepare_model_for_kbit_training,
     )
+    from trl.trainer.utils import peft_module_casting_to_bf16
+
     if not isinstance(peft_config, PeftConfig):
         raise ValueError(
             "If you want to use the PeftModel, you need to pass a PeftConfig object, "
@@ -138,13 +205,17 @@ def prepare_peft_model(
         )
 
     if not isinstance(model, PeftModel):
-        if getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_loaded_in_4bit", False):
+        if getattr(model, "is_loaded_in_8bit", False) or getattr(
+            model, "is_loaded_in_4bit", False
+        ):
             preprare_model_kwargs = {
                 "use_gradient_checkpointing": gradient_checkpointing
             }
 
             # if _support_gc_kwargs:
-            preprare_model_kwargs["gradient_checkpointing_kwargs"] = gradient_checkpointing_kwargs
+            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
+                gradient_checkpointing_kwargs
+            )
 
             model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
 
@@ -157,13 +228,16 @@ def prepare_peft_model(
                 def make_inputs_require_grad(module, input, output):
                     output.requires_grad_(True)
 
-                model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+                model.get_input_embeddings().register_forward_hook(
+                    make_inputs_require_grad
+                )
 
         model = get_peft_model(model, peft_config)
-        if mixed_precision == 'bf16' and getattr(model, "is_loaded_in_4bit", False):
+        if mixed_precision == "bf16" and getattr(model, "is_loaded_in_4bit", False):
             peft_module_casting_to_bf16(model)
 
     return model
+
 
 def setup_logger(level="DEBUG"):
     logging.basicConfig(
@@ -235,7 +309,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
     if args.is_granite:
         # save if in a temp directory first then convert it
         WEIGHTS_NAME = "model.safetensors"
-        MODEL_TYPE = 'llama'
+        MODEL_TYPE = "llama"
     else:
         WEIGHTS_NAME = "pytorch_model.bin"
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
@@ -246,14 +320,16 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         output_config_file = output_dir / CONFIG_NAME
 
         if args.is_granite and convert_granite:
-
             # guarded import
-            from dolomite_engine.hf_models import export_to_huggingface
+            # Standard
             from tempfile import TemporaryDirectory
-            from safetensors.torch import save_file
             import shutil
 
-            with TemporaryDirectory('w') as tmpdir:
+            # Third Party
+            from dolomite_engine.hf_models import export_to_huggingface
+            from safetensors.torch import save_file
+
+            with TemporaryDirectory("w") as tmpdir:
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
                 model_to_save.config.to_json_file(Path(tmpdir) / CONFIG_NAME)
                 tokenizer.save_pretrained(tmpdir)
@@ -263,7 +339,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
                 export_to_huggingface(
                     pretrained_model_name_or_path=tmpdir,
                     save_path=output_dir,
-                    model_type=MODEL_TYPE
+                    model_type=MODEL_TYPE,
                 )
         else:
             torch.save(model_state, str(output_model_file))
@@ -274,9 +350,13 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
 
+
 # this is native deepspeed saving with optimizer, schediuler
 def save_model_ds_native(
-    args, model, tokenizer, samples_seen, 
+    args,
+    model,
+    tokenizer,
+    samples_seen,
 ):
     # to get a statedict from a zero checkpoint, all you need to do is
     # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
@@ -289,7 +369,7 @@ def save_model_ds_native(
     )
     start = time.time()
     # used to save huggingface format, so we can use it for hf.from_pretrained
-    output_dir = Path(args.output_dir) / "ds_native" 
+    output_dir = Path(args.output_dir) / "ds_native"
     tag = f"samples_{samples_seen}"
     use_lora = args.lora_r > 0
 
@@ -297,9 +377,9 @@ def save_model_ds_native(
     # if its lora, we only save the adapters
     # - so we exclude frozen if use_lora==True
     model.save_checkpoint(
-        output_dir, 
-        exclude_frozen_parameters=use_lora, 
-        tag=tag # this will create the subdirectory with the correct name
+        output_dir,
+        exclude_frozen_parameters=use_lora,
+        tag=tag,  # this will create the subdirectory with the correct name
     )
 
     # for now we are not saving tokenizer, config, eg..
@@ -307,6 +387,7 @@ def save_model_ds_native(
 
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
+
 
 def set_random_seed(seed):
     if seed is not None:

@@ -23,13 +23,14 @@ SOFTWARE.
 taken from https://github.com/imoneoi/multipack_sampler
 """
 
-from typing import Optional, List
+# Standard
+from typing import List, Optional
 
-import torch.distributed as dist
+# Third Party
 from torch.utils.data import Sampler
-
-import numpy as np
 import numba
+import numpy as np
+import torch.distributed as dist
 
 
 def find_packing_max_batch_len_and_grad_accum(

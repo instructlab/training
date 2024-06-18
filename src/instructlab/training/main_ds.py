@@ -1,33 +1,51 @@
-import argparse
-from pathlib import Path
+# Standard
 from datetime import timedelta
+from pathlib import Path
+import argparse
 import math
 import os
 import re
+import subprocess
 import time
-import torch
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM, get_scheduler, MistralForCausalLM
-from torch.distributed import (
-    ReduceOp,
-    all_reduce,
-)
 
+# Third Party
+from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+from omegaconf import OmegaConf
+from omegaconf.errors import MissingMandatoryValue
+from torch.distributed import ReduceOp, all_reduce
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, get_scheduler
 import deepspeed
-from deepspeed.ops.adam import FusedAdam
-from multipack_sampler import find_packing_max_batch_len_and_grad_accum
-from token_dataset import setup_dataloader, setup_dataset
-from tokenizer_utils import setup_tokenizer
-from utils import (
+import torch
+
+# First Party
+from instructlab.training import config
+from instructlab.training.config import (
+    DataProcessArgs,
+    DeepSpeedOptions,
+    TorchrunArgs,
+    TrainingArgs,
+)
+from instructlab.training.multipack_sampler import (
+    find_packing_max_batch_len_and_grad_accum,
+)
+from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.tokenizer_utils import setup_tokenizer
+from instructlab.training.utils import (
+    StreamablePopen,
+    add_noisy_embeddings,
+    convert_loss_to_reduce_sum,
+    patch_target_module,
+    prepare_peft_model,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
     setup_logger,
-    convert_loss_to_reduce_sum,
 )
+import instructlab.training.data_process as dp
 
 
-def get_ds_config(world_size, samples_per_gpu, grad_accum):
+def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
     ds_config = {
         "train_batch_size": samples_per_gpu * world_size * grad_accum,
         "gradient_accumulation_steps": grad_accum,
@@ -35,6 +53,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum):
         "steps_per_print": 1,
         "zero_optimization": {
             "stage": 2,
+            # this option is only supported with DeepSpeed ZeRO stage 3
             "offload_param": {"device": "none"},
             "offload_optimizer": {"device": "none"},
         },
@@ -43,22 +62,35 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum):
         "prescale_gradients": False,
         "wall_clock_breakdown": False,
     }
+
+    if opts.cpu_offload_optimizer:
+        # this only works when the cpu offload optimizer is enabled
+        ds_config["zero_optimization"]["offload_optimizer"] = {
+            # CPU offloading is the only option available in ZeRO stage 2
+            "device": "cpu",
+            "pin_memory": opts.cpu_offload_optimizer_pin_memory,
+            "ratio": opts.cpu_offload_optimizer_ratio,
+        }
     return ds_config
 
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
+        # Third Party
         from transformers import BitsAndBytesConfig
+
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
         )
-        
+
     if args.is_granite:
+        # Third Party
         from dolomite_engine.hf_models.models import GPTDolomiteForCausalLM
+
         model = GPTDolomiteForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",
@@ -82,6 +114,35 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             int(8 * math.ceil(len(tokenizer) / 8.0))
         )  # make the vocab size multiple of 8 for sharding the embedding layer.
 
+    # Fix any discrepancy between model and tokenizer
+    if (
+        model.config.pad_token_id is not None
+        and tokenizer.pad_token_id is not None
+        and model.config.pad_token_id != tokenizer.pad_token_id
+    ):
+        print(
+            f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
+        )
+        model.config.pad_token_id = tokenizer.pad_token_id
+    if (
+        model.config.bos_token_id is not None
+        and tokenizer.bos_token_id is not None
+        and model.config.bos_token_id != tokenizer.bos_token_id
+    ):
+        print(
+            f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
+        )
+        model.config.bos_token_id = tokenizer.bos_token_id
+    if (
+        model.config.eos_token_id is not None
+        and tokenizer.eos_token_id
+        and model.config.eos_token_id != tokenizer.eos_token_id
+    ):
+        print(
+            f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
+        )
+        model.config.eos_token_id = tokenizer.eos_token_id
+
     assert model.__class__.__name__ in [
         "MistralForCausalLM",
         "GPTDolomiteForCausalLM",
@@ -91,6 +152,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
     model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
+    model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
     # handling of gradient checkpointing
     # it is handled differently for lora and full
@@ -98,11 +160,16 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     #   in the later stanza
     if args.lora_r > 0:
         # if lora
+        # Third Party
         from peft import LoraConfig
-        from utils import prepare_peft_model, patch_target_module
 
         if args.lora_target_modules is None:
-            args.__dict__['lora_target_modules'] = ["q_proj", "k_proj", "v_proj", "o_proj"]
+            args.__dict__["lora_target_modules"] = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+            ]
 
         peft_config = LoraConfig(
             lora_alpha=args.lora_alpha,
@@ -113,18 +180,20 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             target_modules=args.lora_target_modules,
         )
         model = prepare_peft_model(
-            model, peft_config, 
-            gradient_checkpointing=not args.is_granite
+            model, peft_config, gradient_checkpointing=not args.is_granite
         )
 
         # patch DS to work with quantized models
-        from deepspeed import DeepSpeedEngine
+        # Standard
         from functools import partial
+
+        # Third Party
+        from deepspeed import DeepSpeedEngine
 
         if args.lora_quant_bits is not None:
             patch_target_module(
-                'deepspeed.DeepSpeedEngine',
-                partial(DeepSpeedEngine, dont_change_device=True)
+                "deepspeed.DeepSpeedEngine",
+                partial(DeepSpeedEngine, dont_change_device=True),
             )
     elif not args.is_granite:
         model.gradient_checkpointing_enable()
@@ -132,24 +201,35 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # granite gradient checkpointing is handled uniformly
     # for both lora and full here
     if args.is_granite:
-        from dolomite_engine.gradient_checkpointing import apply_gradient_checkpointing
+        # Third Party
         from dolomite_engine.enums import GradientCheckpointingMethod
+        from dolomite_engine.gradient_checkpointing import apply_gradient_checkpointing
 
         block_name = model._no_split_modules[0]
         apply_gradient_checkpointing(
             model,
             GradientCheckpointingMethod.block,
             block_name=block_name,
-            use_reentrant=True # this should be the HF default mode
+            use_reentrant=True,  # this should be the HF default mode
         )
 
         if args.lora_r > 0:
+
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
+    # need to use this only when the CPU offload optimizer is enabled
     optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
+    if args.cpu_offload_optimizer:
+        print(
+            "\033[33m!!! CPU offload optimizer enabled, switching optimizer to DeepSpeedCPUAdam !!!\033[0m"
+        )
+        optimizer = DeepSpeedCPUAdam(
+            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        )
+
     lr_scheduler = get_scheduler(
         name="cosine",
         optimizer=optimizer,
@@ -164,6 +244,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             world_size=torch.distributed.get_world_size(),
             samples_per_gpu=args.samples_per_gpu,
             grad_accum=grad_accum,
+            opts=DeepSpeedOptions(
+                cpu_offload_optimizer=args.cpu_offload_optimizer,
+            ),
         ),
         lr_scheduler=lr_scheduler,
         dist_init_required=True,
@@ -171,9 +254,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # model = torch.compile(model)
     return model
 
+
 # this function is to check if the checkpoint provided can be resumed
 def maybe_resume_training(args, model):
-
     local_rank = int(os.environ["LOCAL_RANK"])
 
     # DS's loading function will not raise if fails to reload a checkpoint
@@ -181,23 +264,23 @@ def maybe_resume_training(args, model):
     #   so we need to disable load_module_strict
     # - load checkpoint will find the latest checkpoint
     # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0 # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native" 
+    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
+    output_dir = Path(args.output_dir) / "ds_native"
     model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
 
-    output_dir = Path(args.output_dir) / "ds_native" 
+    output_dir = Path(args.output_dir) / "ds_native"
     # need to figure out the resumed start step
     latest_file = output_dir / "latest"
     try:
-        with open (latest_file) as f:
+        with open(latest_file) as f:
             # there is some assumption here that the ds_native
             # checkpoints are tagged as <something>_(samples_seen)
             samples_seen = f.read()
-            samples_seen, = re.match('\w+_(\d+)', samples_seen).groups()
+            (samples_seen,) = re.match("\w+_(\d+)", samples_seen).groups()
             samples_seen = int(samples_seen)
 
             last_step = samples_seen // args.effective_batch_size
-            args.__dict__['last_step'] = last_step
+            args.__dict__["last_step"] = last_step
         (
             print(f"\033[93mStarting from: {last_step}\033[0m")
             if local_rank == 0
@@ -206,9 +289,10 @@ def maybe_resume_training(args, model):
     except FileNotFoundError:
         pass
 
-    # we will update the start step here 
+    # we will update the start step here
     return model
-    
+
+
 def train(args, model, tokenizer, train_loader, grad_accum):
     model.train()
 
@@ -226,7 +310,9 @@ def train(args, model, tokenizer, train_loader, grad_accum):
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         (
-            print(f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m")
+            print(
+                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
+            )
             if local_rank == 0
             else None
         )
@@ -305,8 +391,10 @@ def train(args, model, tokenizer, train_loader, grad_accum):
                     global_step * args.samples_per_gpu * world_size,
                 )
 
-            if args.save_samples_ds is not None and \
-            global_step * batch_size % args.save_samples_ds == 0:
+            if (
+                args.save_samples_ds is not None
+                and global_step * batch_size % args.save_samples_ds == 0
+            ):
                 save_model_ds_native(
                     args,
                     model,
@@ -321,6 +409,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 
 
 def main(args):
+    # Third Party
     import yaml
 
     if os.environ["LOCAL_RANK"] == "0":
@@ -387,16 +476,111 @@ def main(args):
     torch.distributed.destroy_process_group()
 
 
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
+    """
+    Wrapper around the main training job that calls torchrun.
+    """
+
+    # process the training data
+    if not os.path.exists(train_args.data_output_dir):
+        os.makedirs(train_args.data_output_dir, exist_ok=True)
+    dp.main(
+        DataProcessArgs(
+            # XXX(osilkin): make a decision here, either:
+            #   1. the CLI is fully responsible for managing where the data is written
+            #   2. we never cache it and simply write it to a tmp file everytime.
+            #
+            # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
+            # where the user has a defined place for new temporary data to be written.
+            data_output_path=train_args.data_output_dir,
+            model_path=train_args.model_path,
+            data_path=train_args.data_path,
+            max_seq_len=train_args.max_seq_len,
+        )
+    )
+
+    if not os.path.exists(train_args.ckpt_output_dir):
+        os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
+    command = [
+        "torchrun",
+        f"--nnodes={torch_args.nnodes}",
+        f"--node_rank={torch_args.node_rank}",
+        f"--nproc_per_node={torch_args.nproc_per_node}",
+        f"--rdzv_id={torch_args.rdzv_id}",
+        f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
+        __file__,
+        f"--model_name_or_path={train_args.model_path}",
+        f"--data_path={train_args.data_output_dir}/data.jsonl",
+        f"--output_dir={train_args.ckpt_output_dir}",
+        f"--num_epochs={train_args.num_epochs}",
+        f"--effective_batch_size={train_args.effective_batch_size}",
+        f"--learning_rate={train_args.learning_rate}",
+        f"--num_warmup_steps={train_args.warmup_steps}",
+        f"--save_samples={train_args.save_samples}",
+        f"--log_level=INFO",
+        f"--max_batch_len={train_args.max_batch_len}",
+        f"--seed={train_args.random_seed}",
+    ]
+
+    if train_args.mock_data:
+        command.append("--mock_data")
+        if train_args.mock_len:
+            command.append(f"--mock_len={train_args.mock_len}")
+
+    if train_args.is_padding_free:
+        command.append("--is_granite")
+
+    if train_args.lora:
+        command.extend(
+            [
+                f"--lora_r={train_args.lora.rank}",
+                f"--lora_alpha={train_args.lora.alpha}",
+                f"--lora_dropout={train_args.lora.dropout}",
+                f"--lora_target_modules={' '.join(train_args.lora.target_modules)}",
+            ]
+        )
+        # hard-code 4-bit quantization for now, change this when we add more
+        if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
+            command.append("--lora_quant_bits=4")
+
+    print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
+    process = None
+    try:
+        process = StreamablePopen(command)
+
+    except KeyboardInterrupt:
+        print("Process interrupted by user")
+    except MissingMandatoryValue as e:
+        print(f"Missing {e.key}")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+    finally:
+        if "process" not in locals() or process is None:
+            return
+
+        print("\033[91mTerminating process 🤖\033[0m")
+        process.terminate()
+        try:
+            process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            print("\033[91mProcess did not terminate in time, killing it.\033[0m")
+            process.kill()
+
+
 if __name__ == "__main__":
+    # TODO(osilkin): Configure a type that these args must adhere to for the sake of type checking
+    #               Maybe switch out from argparse to something smarter
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
     parser.add_argument("--data_path", type=str)
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument(
-        "--last_step", type=int, default=0, 
-        help='understand this as the last completed step. '
-        'The default is 0, since global_step starts from 1 by default.'
+        "--last_step",
+        type=int,
+        default=0,
+        help="understand this as the last completed step. "
+        "The default is 0, since global_step starts from 1 by default.",
     )
     # parser.add_argument("--samples_per_gpu", type=int, default=8)
     parser.add_argument("--effective_batch_size", type=int, default=3840)
@@ -405,8 +589,10 @@ if __name__ == "__main__":
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--save_samples", type=int)
     parser.add_argument(
-        "--save_samples_ds", type=int, help='for saving in ds native format', 
-        default=None
+        "--save_samples_ds",
+        type=int,
+        help="for saving in ds native format",
+        default=None,
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)
@@ -420,12 +606,19 @@ if __name__ == "__main__":
         help="Sharding strategy to be used for distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")
-    parser.add_argument("--lora_r", type=int, default=0) # set to > 0 to activate lora
-    parser.add_argument("--lora_alpha", type=int, default=32) 
-    parser.add_argument("--lora_dropout", type=float, default=0.1) 
-    parser.add_argument("--lora_quant_bits", type=int, default=None) 
-    parser.add_argument("--lora_target_modules", nargs='+', default=None) 
+    parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
+    parser.add_argument("--lora_alpha", type=int, default=32)
+    parser.add_argument("--lora_dropout", type=float, default=0.1)
+    parser.add_argument("--lora_quant_bits", type=int, default=None)
+    parser.add_argument("--lora_target_modules", nargs="+", default=None)
     parser.add_argument("--max_batch_len", type=int, default=60000)
+    parser.add_argument(
+        "--cpu_offload_optimizer",
+        action="store_true",
+        default=False,
+        help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
+    )
+    parser.add_argument("--NEFTune_alpha", type=float, default=None)
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
