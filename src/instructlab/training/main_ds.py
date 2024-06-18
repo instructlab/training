@@ -10,6 +10,7 @@ import time
 
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+from deepspeed.runtime.zero.utils import ZeRORuntimeException
 from omegaconf.errors import MissingMandatoryValue
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
@@ -36,6 +37,7 @@ from instructlab.training.utils import (
     convert_loss_to_reduce_sum,
     patch_target_module,
     prepare_peft_model,
+    prepare_universal_checkpoint_from_latest,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -263,26 +265,22 @@ def maybe_resume_training(args, model):
     #   so we need to disable load_module_strict
     # - load checkpoint will find the latest checkpoint
     # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0 # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native" 
-
-    from deepspeed.runtime.zero.utils import ZeRORuntimeException
+    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
+    output_dir = Path(args.output_dir) / "ds_native"
 
     try:
         # attempt to load a regular checkpoint first
         model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
     except ZeRORuntimeException as e:
-
         if str(e).startswith("The checkpoint being loaded used a DP world size of"):
             # if it fails with the above exception, then a universal
             # checkpoint is required
 
             # prepare the universal checkpoint
             # - by reading 'latest' to get the resumable checkpoint
-            from utils import prepare_universal_checkpoint_from_latest
             prepare_universal_checkpoint_from_latest(output_dir)
 
-            # need to do this to trigger the universal checkpoint 
+            # need to do this to trigger the universal checkpoint
             # loading
             model._config.load_universal_checkpoint = True
 
@@ -292,7 +290,7 @@ def maybe_resume_training(args, model):
             # reset to regular checkpoint loading
             model._config.load_universal_checkpoint = False
         else:
-            raise e # reraise
+            raise e  # reraise
 
     # do this to figure out the last_step
     latest_file = output_dir / "latest"
@@ -301,7 +299,7 @@ def maybe_resume_training(args, model):
             # there is some assumption here that the ds_native
             # checkpoints are tagged as <something>_(samples_seen)
             step_folder = f.read()
-            samples_seen, = re.match('\w+_(\d+)', step_folder).groups()
+            (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
             samples_seen = int(samples_seen)
 
             last_step = samples_seen // args.effective_batch_size
@@ -318,7 +316,6 @@ def maybe_resume_training(args, model):
     return model
 
 
-    
 def train(args, model, tokenizer, train_loader, grad_accum):
     model.train()
 
