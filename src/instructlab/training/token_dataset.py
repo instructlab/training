@@ -63,7 +63,7 @@ class MockDataset(Dataset):
         }
 
     def get_lengths(self):
-        np.array([len(self.input_ids[0])] * len(self.input_ids))
+        return np.array([len(self.input_ids[0])] * len(self.input_ids))
 
 
 def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
