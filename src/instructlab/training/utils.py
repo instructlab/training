@@ -1,12 +1,16 @@
 # Standard
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
+import importlib
 import inspect
 import logging
+import os
 import random
+import shutil
 import subprocess
 import sys
 import time
+import warnings
 
 # Third Party
 from rich.logging import RichHandler
@@ -162,11 +166,6 @@ def convert_loss_to_reduce_sum(model, is_granite=False):
         return model
 
 
-# Standard
-from typing import Any
-import importlib
-
-
 # taken from https://github.com/foundation-model-stack/fms-acceleration/blob/main/plugins/accelerated-peft/src/fms_acceleration_peft/autogptq_utils.py
 def patch_target_module(
     to_patch: str,
@@ -237,6 +236,132 @@ def prepare_peft_model(
             peft_module_casting_to_bf16(model)
 
     return model
+
+
+def prepare_universal_checkpoint_from_latest(output_dir):
+    """Populate the universal checkpoint in output_dir/step_folder
+    - 1. read output_dir/latest to get step_folder
+    - 2. populate tmp dir in output_dir/step_folder/tmp
+    - 3. populate zero checkpoints in output_dir/step_folder/zero
+    - 4. create output_dir/latest_universal
+
+    Items 1, 2, 3, 4 are idempotent. There is atomicity in the sense that
+    only after 4 is completed, then the output_dir/latest_universal
+    checkpoint is created in which then the universal checkpoint
+    can be loaded.
+
+    Be aware that this creates an extra dir `zero/` in the checkpoint dir,
+    which doubles the DS checkpoint storage requirement.
+    - DS checkpoints store 3X model parameters in 32bit.
+    - e.g., will be 6X a model paramter-only checkpoint in 16bit.
+
+    Note that this requires a latest version of deepspeed. It kind of works if
+    the model is not saving universal checkpoint info, but only in the
+    the case where advanced features like tensor parallel (TP) and
+    pipeline parallel (PP) are turned off.
+    """
+
+    log_rank_0(
+        f"\033[93mPreparing universal checkpoint in {output_dir}\033[0m", to_print=True
+    )
+    # Third Party
+    from transformers.utils.import_utils import _is_package_available
+
+    _, ds_version = _is_package_available("deepspeed", return_version=True)
+    if ds_version < "0.14.3":
+        raise ValueError("universal checkpoint only supported on deepspeed >= 0.14.3")
+
+    start = time.time()
+    if torch.distributed.get_rank() == 0:
+        # Third Party
+        from deepspeed.checkpoint import DeepSpeedCheckpoint
+        from deepspeed.checkpoint.ds_to_universal import (
+            PARAM_SHAPES,
+            UNIVERSAL_CHECKPOINT_INFO,
+            _check_for_required_state,
+            _extract_zero_shard_files,
+            _merge_tp_slice_files,
+            _save_optimizer_state,
+        )
+
+        # read the latest file to get the step folder
+        latest_file = output_dir / "latest"
+        with open(latest_file) as f:
+            step_folder = f.read()
+
+        # will process the checkpoint in the latest step folder
+        input_folder = os.path.join(output_dir, step_folder)
+
+        # create args for the scripts below
+        class UniversalCheckpointArgs:
+            num_extract_workers: int = 1
+            num_merge_workers: int = 1
+            output_folder: str = input_folder  # just put in same place
+            strict: bool = True  # strict checkpoint
+
+        args = UniversalCheckpointArgs()
+
+        # get the checkpoint
+        ds_checkpoint = DeepSpeedCheckpoint(input_folder)
+
+        # hack, force this to null if we did not properly save
+        # any universal checkpoint information
+        # - this will not support any pipeline replication and other
+        #   replication such as TP, row parallelism, vocab, sub_params
+        if UNIVERSAL_CHECKPOINT_INFO not in ds_checkpoint.global_state:
+            warnings.warn(
+                "Universal checkpoint information not found, setting it to "
+                "an empty dictionary."
+            )
+            ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
+            assert (
+                ds_checkpoint.tp_degree == 1
+            ), "if universal checkpointing info is missing, TP must be absent"
+            assert (
+                ds_checkpoint.pp_degree == 1
+            ), "if universal checkpointing info is missing, PP must be absent"
+        _check_for_required_state(ds_checkpoint)
+
+        slice_shapes = []
+        for mp_rank_file in ds_checkpoint.mp_rank_files:
+            mp_sd = torch.load(mp_rank_file, map_location=torch.device("cpu"))
+            slice_shapes += mp_sd[PARAM_SHAPES]
+
+        # fix back to normal flat dict, merge duplicates for tp>1
+        slice_shapes = dict((k, v) for d in slice_shapes for k, v in d.items())
+        temp_dir = os.path.join(args.output_folder, "tmp")
+
+        log_rank_0(
+            f"\033[93m1. Extracting ZeRO fragments into {temp_dir}\033[0m",
+            to_print=True,
+        )
+        _extract_zero_shard_files(args, ds_checkpoint, temp_dir)
+
+        zero_output_folder = os.path.join(args.output_folder, "zero")
+
+        log_rank_0(
+            f"\033[93m2. Merging slices into {zero_output_folder}\033[0m", to_print=True
+        )
+        _merge_tp_slice_files(args, ds_checkpoint, slice_shapes, temp_dir)
+
+        log_rank_0(
+            f"\033[93m3. Saving common optimizer states into {zero_output_folder}\033[0m",
+            to_print=True,
+        )
+        _save_optimizer_state(args, ds_checkpoint)
+
+        log_rank_0(
+            f"\033[93m4. Removing temp directory {temp_dir}\033[0m", to_print=True
+        )
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        latest_file = os.path.join(output_dir, "latest_universal")
+        log_rank_0(f"\033[93m5. Creating {latest_file}\033[0m", to_print=True)
+        with open(latest_file, "w") as f:
+            f.write(step_folder)
+
+    dist.barrier()
+    log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
 
 def setup_logger(level="DEBUG"):
@@ -323,7 +448,6 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
             # guarded import
             # Standard
             from tempfile import TemporaryDirectory
-            import shutil
 
             # Third Party
             from dolomite_engine.hf_models import export_to_huggingface
