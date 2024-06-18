@@ -535,8 +535,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
                 f"--lora_r={train_args.lora.rank}",
                 f"--lora_alpha={train_args.lora.alpha}",
                 f"--lora_dropout={train_args.lora.dropout}",
-                f"--lora_target_modules={' '.join(train_args.lora.target_modules)}",
+                "--lora_target_modules",
             ]
+            + train_args.lora.target_modules
         )
         # hard-code 4-bit quantization for now, change this when we add more
         if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
