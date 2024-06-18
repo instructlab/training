@@ -11,7 +11,6 @@ numpy
 rich
 dolomite-engine @ git+https://github.com/ibm-granite/dolomite-engine.git@main
 trl==0.9.4
-omegaconf>=2.3.0
 peft
 pydantic>=2.7.0
 # TODO: add dolomite_engine as a dependency

@@ -11,7 +11,6 @@ import time
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
-from omegaconf.errors import MissingMandatoryValue
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -574,8 +573,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
 
     except KeyboardInterrupt:
         print("Process interrupted by user")
-    except MissingMandatoryValue as e:
-        print(f"Missing {e.key}")
     except Exception as e:
         print(f"An error occurred: {str(e)}")
     finally:
