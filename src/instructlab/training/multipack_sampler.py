@@ -25,15 +25,17 @@ taken from https://github.com/imoneoi/multipack_sampler
 
 # Standard
 from typing import List, Optional
-
-import torch.distributed as dist
-from torch.utils.data import Sampler, DataLoader
-
-import numpy as np
-import numba
 import os
 
+# Third Party
+from torch.utils.data import DataLoader, Sampler
+import numba
+import numpy as np
+import torch.distributed as dist
+
+# First Party
 from instructlab.training.utils import make_collate_fn
+
 
 def guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_lengths):
     """
@@ -45,7 +47,9 @@ def guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_leng
     upper-bound for average padding, should overshoot.
     """
     addition = 0
-    packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
+    packing_max_batch_len = int(
+        (base_avg + addition) * ((goal / num_gpus) / grad_accum)
+    )
 
     bucket_zero = []
     max = sorted_lengths[0]
@@ -59,20 +63,32 @@ def guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_leng
 
     total_pad = 0
     for length in bucket_zero:
-        total_pad += (max - length)
+        total_pad += max - length
     addition = round(total_pad / len(bucket_zero))
     return addition
 
-def simulate_buckets(base_avg, goal, num_gpus, grad_accum, pad_id, max_batch_len, lengths, seed, dataset, addition):
+
+def simulate_buckets(
+    base_avg,
+    goal,
+    num_gpus,
+    grad_accum,
+    pad_id,
+    max_batch_len,
+    lengths,
+    seed,
+    dataset,
+    addition,
+):
     """
     Given an addition to packing_max_batch_len, simulate the
     packing to find the updated average effective batch size.
     """
-    packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
-
-    collate_fn = make_collate_fn(
-        pad_id, is_granite=False, max_batch_len=max_batch_len
+    packing_max_batch_len = int(
+        (base_avg + addition) * ((goal / num_gpus) / grad_accum)
     )
+
+    collate_fn = make_collate_fn(pad_id, is_granite=False, max_batch_len=max_batch_len)
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
@@ -91,12 +107,13 @@ def simulate_buckets(base_avg, goal, num_gpus, grad_accum, pad_id, max_batch_len
         collate_fn=collate_fn,
     )
 
-    avg_ebs = len(dataset)/len(simulation_loader)
+    avg_ebs = len(dataset) / len(simulation_loader)
     return avg_ebs
+
 
 def find_padding_max_batch_len_addition(
     base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
-):  
+):
     """
     Do a modified binary search to find optimal padding addition for
     packing_maximum_batch_len. Starts with an upper-bound guess, and
@@ -108,15 +125,28 @@ def find_padding_max_batch_len_addition(
     sorted_lengths = list(lengths)
     sorted_lengths.sort(reverse=True)
 
-    # Use first default bucket avg padding as starting value for addition 
-    addition = guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_lengths)
-    
+    # Use first default bucket avg padding as starting value for addition
+    addition = guess_starting_avg_padding(
+        base_avg, goal, num_gpus, grad_accum, sorted_lengths
+    )
+
     # binary search correct addition value from starting value
     first_over_hit = False
     l = 0
     r = 2 * addition
-    while r-l > 1:
-        avg_ebs = simulate_buckets(base_avg, goal, num_gpus, grad_accum, pad_id, max_batch_len, lengths, seed, dataset, addition)
+    while r - l > 1:
+        avg_ebs = simulate_buckets(
+            base_avg,
+            goal,
+            num_gpus,
+            grad_accum,
+            pad_id,
+            max_batch_len,
+            lengths,
+            seed,
+            dataset,
+            addition,
+        )
 
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
         if abs(avg_ebs - goal) <= max(10, round(goal * 0.02)):
@@ -137,7 +167,14 @@ def find_padding_max_batch_len_addition(
 
 
 def find_packing_max_batch_len_and_grad_accum(
-    num_gpus, avg_sample_len, effective_batch_size, max_batch_len_per_gpu, is_padding, dataset, pad_id, seed
+    num_gpus,
+    avg_sample_len,
+    effective_batch_size,
+    max_batch_len_per_gpu,
+    is_padding,
+    dataset,
+    pad_id,
+    seed,
 ):
     """
     Calculate the minimum gradient accumulation steps required and the corresponding maximum batch length.
@@ -168,7 +205,16 @@ def find_packing_max_batch_len_and_grad_accum(
         grad_accum += 1
         total_micro_batch = (effective_batch_size / grad_accum) / num_gpus
         if is_padding:
-            addition = find_padding_max_batch_len_addition(avg_sample_len, effective_batch_size, dataset, num_gpus, grad_accum, pad_id, max_batch_len_per_gpu, seed)
+            addition = find_padding_max_batch_len_addition(
+                avg_sample_len,
+                effective_batch_size,
+                dataset,
+                num_gpus,
+                grad_accum,
+                pad_id,
+                max_batch_len_per_gpu,
+                seed,
+            )
         else:
             addition = 0
         packing_max_batch_len = int((avg_sample_len + addition) * total_micro_batch)
