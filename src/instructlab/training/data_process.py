@@ -37,18 +37,6 @@ def check_valid_sample(
     if not any(token in whole_sentence_tk for token in special_tokens):
         return True
 
-    # first token should be system_token
-    if whole_sentence_tk[0] != system_tk:
-        print("\033[91mfirst token is not a system_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
-
-    # check there's only one system_token
-    if (np.array(whole_sentence_tk) == system_tk).sum() != 1:
-        print("\033[91mthere are more than one system_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
-
     whole_sentence_tk = np.array(whole_sentence_tk)
     user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
     assistant_token_index = (whole_sentence_tk == assistant_tk).nonzero()[0]
@@ -121,7 +109,7 @@ def unmask_only_assistant_responses(
     whole_sentence = chosen_token["input_ids"][:sentence_legth].clone()
 
     # pre-training mode
-    if system_tk not in whole_sentence:
+    if not (system_tk in whole_sentence or user_token in whole_sentence or assist_token in whole_sentence):
         return labels
 
     labels[:sentence_legth] = -100
