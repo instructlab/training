@@ -16,7 +16,9 @@ from torch.distributed import (
 
 import deepspeed
 from deepspeed.ops.adam import FusedAdam
-from instructlab.training.multipack_sampler import find_packing_max_batch_len_and_grad_accum
+from instructlab.training.multipack_sampler import (
+    find_packing_max_batch_len_and_grad_accum,
+)
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
@@ -28,46 +30,112 @@ from instructlab.training.utils import (
 )
 
 
-class DataWrapper:
+class MultipackDataWrapper:
+    """
+    Preps dataset, tokenizer, and data_loader. \
+    Calculates per-cpu batch length and grad accumulation params. \
+    For data_loader, uses MultipackSampler to optimize 
+    for batch-throughput.
+    """
 
-    def __init__(self, _args: argparse.ArgumentParser):
+    def __init__(
+        self,
+        model_name_or_path: str,
+        data_path: str,
+        effective_batch_size: int,
+        max_batch_len: int,
+        world_size: int,
+        is_padding_free: bool,
+        seed: int,
+    ):
 
-        self._args = _args
-        self.dataset = setup_dataset(data_path=_args.data_path)
-        self.tokenizer = setup_tokenizer(_args.model_name_or_path)
+        self.model_name_or_path: str = model_name_or_path
+        self.data_path: str = data_path
+        self.effective_batch_size: int = effective_batch_size
+        self.max_batch_len: int = max_batch_len
+        self.world_size: int = world_size
+        self.is_padding_free: bool = is_padding_free
+        self.seed: int = seed
+
+        self.dataset = setup_dataset(data_path=data_path)
+        self.tokenizer = setup_tokenizer(model_name_or_path)
+
         self.packing_max_batch_len, self.grad_accum = (
             find_packing_max_batch_len_and_grad_accum(
                 num_gpus=torch.distributed.get_world_size(),
                 avg_sample_len=self.dataset.get_lengths().mean(),
-                effective_batch_size=self._args.effective_batch_size,
-                max_batch_len_per_gpu=self._args.max_batch_len,
+                effective_batch_size=effective_batch_size,
+                max_batch_len_per_gpu=max_batch_len,
             )
         )
-        self.samples_per_gpu = (
-            self._args.effective_batch_size
-            // self.grad_accum
-            // torch.distributed.get_world_size()
-        )
-        self.train_loader = setup_dataloader(
+
+        self.samples_per_gpu = effective_batch_size // self.grad_accum // world_size
+        self.data_loader = setup_dataloader(
             self.dataset,
             self.tokenizer.pad_token_id,
             num_workers=8,
-            is_granite=self._args.is_granite,
-            max_batch_len=self._args.max_batch_len,
+            is_granite=is_padding_free,
+            max_batch_len=max_batch_len,
             packing_max_batch_len=self.packing_max_batch_len,
-            seed=self._args.seed,
+            seed=seed,
         )
 
 
-class DSModelWrapper:
+class DeepSpeedModelWrapper:
+    """
+    1. Loads model, accepts quantization / LoRA configuration.
+    2. Initializes optimizer, model, learning-rate scheduler for DeepSpeed distributed training.
+    """
 
-    def __init__(self, _args: argparse.ArgumentParser, dataw: DataWrapper):
-        self._args = _args
-        self.dataw = dataw
+    def __init__(
+        self,
+        model_name_or_path: str,
+        data_loader: any, # TODO: type the DataLoader obj.
+        output_dir: str,
+        tokenizer: any, # TODO: type the tokenizer obj.
+        effective_batch_size: int,
+        max_batch_len: int,
+        samples_per_gpu: int,
+        grad_accum: int,
+        learning_rate: float,
+        num_warmup_steps: int,
+        num_epochs: int,
+        last_step: int,
+        lora_rank: int,
+        lora_alpha: float,
+        lora_dropout: int,
+        lora_quant_bits: str,
+        world_size: int,
+        is_padding_free: bool,
+        seed: int,
+        lora_target_modules: list = None,
+    ):
+        # NOTE: this is exhausive. In review, let's decide how to split this up into config groups.
+        self.model_name_or_path: str = model_name_or_path
+        self.data_loader: any = data_loader 
+        self.output_dir: str = output_dir
+        self.tokenizer: any = tokenizer
+        self.effective_batch_size: int = effective_batch_size
+        self.max_batch_len: int = max_batch_len
+        self.samples_per_gpu: int = samples_per_gpu
+        self.grad_accum: int = grad_accum
+        self.learning_rate: float = learning_rate
+        self.num_warmup_steps: int = num_warmup_steps
+        self.num_epochs: int = num_epochs
+        self.last_step: int = last_step
+        self.lora_rank: int = lora_rank
+        self.lora_alpha: float = lora_alpha
+        self.lora_dropout: int = lora_dropout
+        self.lora_quant_bits: str = lora_quant_bits
+        self.lora_target_modules: list | None = lora_target_modules
+        self.world_size: int = world_size
+        self.is_padding_free: bool = is_padding_free
+        self.seed: int = seed
+
         self._ds_config = self._get_ds_config(
-            world_size=self._args.world_size,
-            samples_per_gpu=dataw.samples_per_gpu,
-            grad_accum=dataw.grad_accum,
+            world_size=world_size,
+            samples_per_gpu=samples_per_gpu,
+            grad_accum=grad_accum,
         )
         self.model = self._setup_model()
         self.model = self._maybe_resume_training()
@@ -92,7 +160,7 @@ class DSModelWrapper:
 
     def _setup_model(self):
         bnb_config = None
-        if self._args.lora_r > 0 and self._args.lora_quant_bits == 4:
+        if self.lora_rank > 0 and self.lora_quant_bits == "nf4":
             from transformers import BitsAndBytesConfig
 
             bnb_config = BitsAndBytesConfig(
@@ -102,11 +170,11 @@ class DSModelWrapper:
                 bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
             )
 
-        if self._args.is_granite:
+        if self.is_padding_free:
             from dolomite_engine.hf_models.models import GPTDolomiteForCausalLM
 
             model = GPTDolomiteForCausalLM.from_pretrained(
-                self._args.model_name_or_path,
+                self.model_name_or_path,
                 attn_implementation="flash_attention_2",
                 torch_dtype=torch.bfloat16,
                 use_padding_free_transformer=True,
@@ -114,18 +182,18 @@ class DSModelWrapper:
             )
         else:
             model = AutoModelForCausalLM.from_pretrained(
-                self._args.model_name_or_path,
+                self.model_name_or_path,
                 attn_implementation="flash_attention_2",
                 torch_dtype=torch.bfloat16,
                 quantization_config=bnb_config,
             )
 
-        if len(self.dataw.tokenizer) > model.config.vocab_size:
+        if len(self.tokenizer) > model.config.vocab_size:
             print(
-                f"WARNING: tokenizer has {len(self.dataw.tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
+                f"WARNING: tokenizer has {len(self.tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
             )
             model.resize_token_embeddings(
-                int(8 * math.ceil(len(self.dataw.tokenizer) / 8.0))
+                int(8 * math.ceil(len(self.tokenizer) / 8.0))
             )  # make the vocab size multiple of 8 for sharding the embedding layer.
 
         assert model.__class__.__name__ in [
@@ -136,19 +204,19 @@ class DSModelWrapper:
             "GemmaForCausalLM",
         ], f"Model class name: {model.__class__.__name__} is not supported."
 
-        model = convert_loss_to_reduce_sum(model, is_granite=self._args.is_granite)
+        model = convert_loss_to_reduce_sum(model, is_granite=self.is_padding_free)
 
         # handling of gradient checkpointing
         # it is handled differently for lora and full
         # - with the exception of granite, which handles it
         #   in the later stanza
-        if self._args.lora_r > 0:
+        if self.lora_rank > 0:
             # if lora
             from peft import LoraConfig
             from utils import prepare_peft_model, patch_target_module
 
-            if self._args.lora_target_modules is None:
-                self._args.__dict__["lora_target_modules"] = [
+            if self.lora_target_modules is None:
+                self.lora_target_modules = [
                     "q_proj",
                     "k_proj",
                     "v_proj",
@@ -156,32 +224,32 @@ class DSModelWrapper:
                 ]
 
             peft_config = LoraConfig(
-                lora_alpha=self._args.lora_alpha,
-                lora_dropout=self._args.lora_dropout,
-                r=self._args.lora_r,
+                lora_alpha=self.lora_alpha,
+                lora_dropout=self.lora_dropout,
+                r=self.lora_rank,
                 bias="none",
                 task_type="CAUSAL_LM",
-                target_modules=args.lora_target_modules,
+                target_modules=self.lora_target_modules,
             )
             model = prepare_peft_model(
-                model, peft_config, gradient_checkpointing=not self._args.is_granite
+                model, peft_config, gradient_checkpointing=not self.is_padding_free
             )
 
             # patch DS to work with quantized models
             from deepspeed import DeepSpeedEngine
             from functools import partial
 
-            if self._args.lora_quant_bits is not None:
+            if self.lora_quant_bits is not None:
                 patch_target_module(
                     "deepspeed.DeepSpeedEngine",
                     partial(DeepSpeedEngine, dont_change_device=True),
                 )
-        elif not self._args.is_granite:
+        elif not self.is_padding_free:
             model.gradient_checkpointing_enable()
 
         # granite gradient checkpointing is handled uniformly
         # for both lora and full here
-        if self._args.is_granite:
+        if self.is_padding_free:
             from dolomite_engine.gradient_checkpointing import (
                 apply_gradient_checkpointing,
             )
@@ -195,7 +263,7 @@ class DSModelWrapper:
                 use_reentrant=True,  # this should be the HF default mode
             )
 
-            if self._args.lora_r > 0:
+            if self.lora_rank > 0:
 
                 def make_inputs_require_grad(module, input, output):
                     output.requires_grad_(True)
@@ -205,13 +273,13 @@ class DSModelWrapper:
                 )
 
         optimizer = FusedAdam(
-            model.parameters(), lr=self._args.learning_rate, betas=(0.9, 0.95)
+            model.parameters(), lr=self.learning_rate, betas=(0.9, 0.95)
         )
         lr_scheduler = get_scheduler(
             name="cosine",
             optimizer=optimizer,
-            num_warmup_steps=self._args.num_warmup_steps,
-            num_training_steps=self._args.num_epochs * len(self.dataw.train_loader),
+            num_warmup_steps=self.num_warmup_steps,
+            num_training_steps=self.num_epochs * len(self.data_loader),
         )
 
         model, _, _, lr_scheduler = deepspeed.initialize(
@@ -236,12 +304,12 @@ class DSModelWrapper:
         # - load checkpoint will find the latest checkpoint
         # - it will also load the optimizer and scheduler states by default
         load_module_strict = (
-            self._args.lora_r == 0
+            self.lora_rank == 0
         )  # can only be true if lora is not used
-        output_dir = Path(self._args.output_dir) / "ds_native"
+        output_dir = Path(self.output_dir) / "ds_native"
         model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
 
-        output_dir = Path(self._args.output_dir) / "ds_native"
+        output_dir = Path(self.output_dir) / "ds_native"
         # need to figure out the resumed start step
         latest_file = output_dir / "latest"
         try:
@@ -252,8 +320,8 @@ class DSModelWrapper:
                 (samples_seen,) = re.match("\w+_(\d+)", samples_seen).groups()
                 samples_seen = int(samples_seen)
 
-                last_step = samples_seen // args.effective_batch_size
-                self._args.__dict__["last_step"] = last_step
+                last_step = samples_seen // self.effective_batch_size
+                self.last_step = last_step
 
                 if local_rank == 0:
                     print(f"\033[93mStarting from: {last_step}\033[0m")
@@ -267,40 +335,85 @@ class DSModelWrapper:
 class DeepSpeedTrainer:
 
     def __init__(
-        self, _args: argparse.ArgumentParser, modelw: DSModelWrapper, dataw: DataWrapper
+        self,
+        _args: dict,
+        model: any, #TODO type model obj
+        data_loader: any, # TODO: type the DataLoader obj.
+        output_dir: str,
+        tokenizer: any, # TODO: type the tokenizer obj.
+        effective_batch_size: int,
+        max_batch_len: int,
+        samples_per_gpu: int,
+        grad_accum: int,
+        learning_rate: float,
+        num_warmup_steps: int,
+        num_epochs: int,
+        last_step: int,
+        lora_rank: int,
+        lora_alpha: float,
+        lora_dropout: int,
+        lora_quant_bits: str,
+        local_rank: int,
+        world_size: int,
+        is_padding_free: bool,
+        seed: int,
+        save_samples: int,
+        save_samples_ds: int = None,
+        lora_target_modules: list = None,
     ):
-        self._args = _args
-        self.dataw = dataw
-        self.modelw = modelw
-        self.model = self.modelw.model
-        self.local_rank = int(os.environ["LOCAL_RANK"])
-        self.world_size = int(os.environ["WORLD_SIZE"])
+        # NOTE: this is exhausive. In review, let's decide how to split this up into config groups.
+        self.model: any = model
+        self.data_loader: any = data_loader
+        self.output_dir: str = output_dir
+        self.tokenizer: any = tokenizer
+        self.effective_batch_size: int = effective_batch_size
+        self.max_batch_len: int = max_batch_len
+        self.samples_per_gpu: int = samples_per_gpu
+        self.grad_accum: int = grad_accum
+        self.learning_rate: float = learning_rate
+        self.num_warmup_steps: int = num_warmup_steps
+        self.num_epochs: int = num_epochs
+        self.last_step: int = last_step
+        self.lora_rank: int = lora_rank
+        self.lora_alpha: float = lora_alpha
+        self.lora_dropout: int = lora_dropout
+        self.lora_quant_bits: str = lora_quant_bits
+        self.lora_target_modules: list | None = lora_target_modules
+        self.world_size: int = world_size
+        self.is_padding_free: bool = is_padding_free
+        self.seed: int = seed
+        self.local_rank = local_rank
+        self.world_size = world_size
         self.global_step = 1
-        self.batch_size = self._args.effective_batch_size // self.dataw.grad_accum
+        self.batch_size = effective_batch_size // grad_accum
         self.save_samples = (
-            self._args.save_samples // self.batch_size
+            save_samples // self.batch_size
         ) * self.batch_size
-        if self._args.save_samples_ds is not None:
+        self.last_step = last_step
+        self._args = _args
+        if save_samples_ds is not None:
             self.save_samples_ds = (
-                self._args.save_samples_ds // self.batch_size
+                save_samples_ds // self.batch_size
             ) * self.batch_size
-            if self._args.local_rank == 0:
+            if local_rank == 0:
                 print(
                     f"\033[93mNumber of samples per DS save: {self.save_samples_ds}\033[0m"
                 )
+        else:
+            self.save_samples_ds = None
         if self.local_rank == 0:
             print(f"\033[93mNumber of samples per save: {self.save_samples}\033[0m")
 
     def _run_epoch(self, epoch: int):
 
-        self.dataw.train_loader.batch_sampler.set_epoch(epoch)
+        self.data_loader.batch_sampler.set_epoch(epoch)
 
         if self.local_rank == 0:
-            inner_pb = tqdm(range(len(self.dataw.train_loader)), desc=f"Epoch {epoch}")
+            inner_pb = tqdm(range(len(self.data_loader)), desc=f"Epoch {epoch}")
 
         aggregated_values = torch.zeros(3, dtype=torch.float32).to(self.local_rank)
-        for batch in self.dataw.train_loader:
-            if self.global_step <= self._args.last_step:
+        for batch in self.data_loader:
+            if self.global_step <= self.last_step:
                 # in the case of resuming, last_step > 0
                 self.global_step += 1
                 if self.local_rank == 0:
@@ -310,7 +423,7 @@ class DeepSpeedTrainer:
             start = time.time()
             aggregated_values[0] = batch.pop("num_loss_counted_tokens")
             aggregated_values[1] = len(batch["input_ids"])
-            if not self._args.is_granite:
+            if not self.is_padding_free:
                 for k in batch:
                     batch[k] = batch[k].to(self.local_rank)
 
@@ -353,7 +466,7 @@ class DeepSpeedTrainer:
         if self.local_rank == 0:
             elapsed_time = time.time() - start
             overall_throughput = (
-                self._args.samples_per_gpu * self.world_size / elapsed_time
+                self.samples_per_gpu * self.world_size / elapsed_time
             )
             current_lr = self.model.lr_scheduler.get_last_lr()[0]
             cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
@@ -370,12 +483,12 @@ class DeepSpeedTrainer:
                 f"total loss: {aggregated_values[2]/num_loss_counted_tokens}"
             )
 
-        if self.global_step * self.batch_size % args.save_samples == 0:
+        if self.global_step * self.batch_size % self.save_samples == 0:
             save_hf_format_ds(
-                args,
+                self._args,
                 self.model,
-                self.dataw.tokenizer,
-                self.global_step * self._args.samples_per_gpu * self.world_size,
+                self.tokenizer,
+                self.global_step * self.samples_per_gpu * self.world_size,
             )
 
         if (
@@ -385,14 +498,14 @@ class DeepSpeedTrainer:
             save_model_ds_native(
                 self._args,
                 self.model,
-                self.dataw.tokenizer,
-                self.global_step * self._args.samples_per_gpu * self.world_size,
+                self.tokenizer,
+                self.global_step * self.samples_per_gpu * self.world_size,
             )
 
     def train(self):
         self.model.train()
 
-        for epoch in range(self._args.num_epochs):
+        for epoch in range(self.num_epochs):
             torch.distributed.barrier()
             self._run_epoch(epoch)
 
@@ -403,7 +516,7 @@ def distributed_init(_args: argparse.ArgumentParser):
     _args.local_rank = int(os.environ["LOCAL_RANK"])
     deepspeed.init_distributed(timeout=timedelta(minutes=360))
     _args.global_rank = torch.distributed.get_rank()
-    _args.world_size= int(os.environ["WORLD_SIZE"])
+    _args.world_size = int(os.environ["WORLD_SIZE"])
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
@@ -418,8 +531,17 @@ def main(_args: argparse.ArgumentParser):
 
     distributed_init(_args)
 
-    dataw = DataWrapper(_args)
-    if _args.local_rank == 0:
+    dataw = MultipackDataWrapper(
+        model_name_or_path=_args.model_name_or_path,
+        data_path=_args.data_path,
+        effective_batch_size=_args.effective_batch_size,
+        max_batch_len=_args.max_batch_len,
+        world_size=int(os.getenv("WORLD_SIZE")),
+        is_padding_free=_args.is_granite,
+        seed=_args.seed,
+    )
+
+    if int(os.getenv("LOCAL_RANK")) == 0:
         print(
             f"\033[96mnum_gpus: {torch.distributed.get_world_size()}\n"
             f"avg_sample_len: {dataw.dataset.get_lengths().mean()}\n"
@@ -427,14 +549,57 @@ def main(_args: argparse.ArgumentParser):
             f"max_batch_len_per_gpu: {_args.max_batch_len}\n"
             f"packing_max_batch_len: {dataw.packing_max_batch_len}\n"
             f"grad_accum: {dataw.grad_accum}\n"
-            f"num batches: {len(dataw.train_loader)}\n"
-            f"avg_samples_per_batch: {len(dataw.dataset)/len(dataw.train_loader)}\n"
-            # f"samples_per_gpu: {_args.samples_per_gpu}\033[0m"
+            f"num batches: {len(dataw.data_loader)}\n"
+            f"avg_samples_per_batch: {len(dataw.dataset)/len(dataw.data_loader)}\n"
+            f"samples_per_gpu: {dataw.samples_per_gpu}\033[0m"
         )
 
-    modelw = DSModelWrapper(_args=_args, dataw=dataw)
+    modelw = DeepSpeedModelWrapper(
+        model_name_or_path=_args.model_name_or_path,
+        data_loader=dataw.data_loader,
+        output_dir=_args.output_dir,
+        tokenizer=dataw.tokenizer,
+        effective_batch_size=_args.effective_batch_size,
+        max_batch_len=_args.max_batch_len,
+        samples_per_gpu=dataw.samples_per_gpu,
+        grad_accum=dataw.grad_accum,
+        learning_rate=_args.learning_rate,
+        num_warmup_steps=_args.num_warmup_steps,
+        num_epochs=_args.num_epochs,
+        last_step=_args.last_step,
+        lora_rank=_args.lora_r,
+        lora_alpha=_args.lora_alpha,
+        lora_dropout=_args.lora_dropout,
+        lora_quant_bits=_args.lora_quant_bits,
+        world_size=int(os.getenv("WORLD_SIZE")),
+        is_padding_free=_args.is_granite,
+        seed=_args.seed,
+    )
 
-    DeepSpeedTrainer(_args=_args, modelw=modelw, dataw=dataw).train()
+    DeepSpeedTrainer(
+        _args=_args,
+        model=modelw.model,
+        data_loader=dataw.data_loader,
+        output_dir=_args.output_dir,
+        tokenizer=dataw.tokenizer,
+        effective_batch_size=_args.effective_batch_size,
+        max_batch_len=_args.max_batch_len,
+        samples_per_gpu=dataw.samples_per_gpu,
+        grad_accum=dataw.grad_accum,
+        learning_rate=_args.learning_rate,
+        num_warmup_steps=_args.num_warmup_steps,
+        num_epochs=_args.num_epochs,
+        last_step=_args.last_step,
+        lora_rank=_args.lora_r,
+        lora_alpha=_args.lora_alpha,
+        lora_dropout=_args.lora_dropout,
+        lora_quant_bits=_args.lora_quant_bits,
+        world_size=int(os.getenv("WORLD_SIZE")),
+        local_rank=int(os.getenv("LOCAL_RANK")),
+        is_padding_free=_args.is_granite,
+        seed=_args.seed,
+        save_samples=_args.save_samples,
+    ).train()
 
 
 if __name__ == "__main__":
