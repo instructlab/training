@@ -6,7 +6,6 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
