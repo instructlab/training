@@ -35,14 +35,15 @@ import os
 
 from instructlab.training.utils import make_collate_fn
 
-def find_padding_max_batch_len_addition(
-    base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
-):  
-    lengths = dataset.get_lengths()
-    sorted_lengths = list(lengths)
-    sorted_lengths.sort(reverse=True)
+def guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_lengths):
+    """
+    Return a starting middle point for the binary search
+    (to find optimal addition to packing_max_batch_len
+    to account for padding)
 
-    # Use first default bucket avg padding as starting value for addition 
+    Uses the largest initial bucket to approximate an
+    upper-bound for average padding, should overshoot.
+    """
     addition = 0
     packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
 
@@ -60,43 +61,65 @@ def find_padding_max_batch_len_addition(
     for length in bucket_zero:
         total_pad += (max - length)
     addition = round(total_pad / len(bucket_zero))
+    return addition
+
+def simulate_buckets(base_avg, goal, num_gpus, grad_accum, pad_id, max_batch_len, lengths, seed, dataset, addition):
+    """
+    Given an addition to packing_max_batch_len, simulate the
+    packing to find the updated average effective batch size.
+    """
+    packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
+
+    collate_fn = make_collate_fn(
+        pad_id, is_granite=False, max_batch_len=max_batch_len
+    )
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    sampler = MultipackDistributedBatchSampler(
+        batch_max_length=packing_max_batch_len,
+        lengths=lengths,
+        num_replicas=world_size,
+        rank=rank,
+        seed=seed,
+        padding=True,
+    )
+    simulation_loader = DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        num_workers=8,
+        collate_fn=collate_fn,
+    )
+
+    avg_ebs = len(dataset)/len(simulation_loader)
+    return avg_ebs
+
+def find_padding_max_batch_len_addition(
+    base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
+):  
+    """
+    Do a modified binary search to find optimal padding addition for
+    packing_maximum_batch_len. Starts with an upper-bound guess, and
+    increases upper-bound until guess overshoots. Then perform standard
+    binary search until within a threshold for average effective batch
+    size.
+    """
+    lengths = dataset.get_lengths()
+    sorted_lengths = list(lengths)
+    sorted_lengths.sort(reverse=True)
+
+    # Use first default bucket avg padding as starting value for addition 
+    addition = guess_starting_avg_padding(base_avg, goal, num_gpus, grad_accum, sorted_lengths)
     
-
     # binary search correct addition value from starting value
-
     first_over_hit = False
     l = 0
     r = 2 * addition
     while r-l > 1:
-        packing_max_batch_len = int((base_avg + addition) * ((goal / num_gpus) / grad_accum))
-
-        # simulate buckets with current addition value
-
-        collate_fn = make_collate_fn(
-            pad_id, is_granite=False, max_batch_len=max_batch_len
-        )
-        rank = int(os.environ["RANK"])
-        world_size = int(os.environ["WORLD_SIZE"])
-
-        sampler = MultipackDistributedBatchSampler(
-            batch_max_length=packing_max_batch_len,
-            lengths=lengths,
-            num_replicas=world_size,
-            rank=rank,
-            seed=seed,
-            padding=True,
-        )
-        simulation_loader = DataLoader(
-            dataset,
-            batch_sampler=sampler,
-            num_workers=8,
-            collate_fn=collate_fn,
-        )
-
-        avg_ebs = len(dataset)/len(simulation_loader)
+        avg_ebs = simulate_buckets(base_avg, goal, num_gpus, grad_accum, pad_id, max_batch_len, lengths, seed, dataset, addition)
 
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
-        if abs(avg_ebs - goal) <= 20:
+        if abs(avg_ebs - goal) <= max(10, round(goal * 0.02)):
             break
 
         if avg_ebs > goal:
@@ -104,6 +127,7 @@ def find_padding_max_batch_len_addition(
             r = addition
         elif avg_ebs < goal:
             if not first_over_hit:
+                # If the starting midpoint failed to overshoot, increase the bounds of the search
                 r = r * 2
             else:
                 l = addition
