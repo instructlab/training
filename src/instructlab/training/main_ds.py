@@ -30,6 +30,7 @@ from instructlab.training.multipack_sampler import (
 )
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
+from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
@@ -434,9 +435,10 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 def main(args):
     # Third Party
     import yaml
-
+    metric_logger = AsyncStructuredLogger(args.output_dir + "/training_params_and_metrics.json")
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
+        metric_logger.log_sync({'script_params': vars(args)})
 
     setup_logger(args.log_level)
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
