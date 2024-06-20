@@ -13,6 +13,7 @@ import time
 import warnings
 
 # Third Party
+from instructlab.dolomite.hf_models import export_to_huggingface
 from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
@@ -539,7 +540,6 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
             from tempfile import TemporaryDirectory
 
             # Third Party
-            from dolomite_engine.hf_models import export_to_huggingface
             from safetensors.torch import save_file
 
             with TemporaryDirectory("w") as tmpdir:
