@@ -6,11 +6,10 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
-from instructlab.training.utils import log_rank_0
+from instructlab.training.utils import log_rank_0, make_collate_fn
 
 
 class TokenDataset(Dataset):
@@ -64,94 +63,6 @@ class MockDataset(Dataset):
 
     def get_lengths(self):
         return np.array([len(self.input_ids[0])] * len(self.input_ids))
-
-
-def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
-    rank = int(os.environ["RANK"])
-    if is_granite:
-
-        def pad_collate_fn(batch):
-            lens = np.array([len(item["input_ids"]) for item in batch])
-
-            cumsum_lens = np.cumsum(lens)
-            valid_up_to = int((cumsum_lens < max_batch_len).sum())
-            total_len = cumsum_lens[valid_up_to - 1]
-
-            batch = batch[:valid_up_to]
-            input_ids = [x["input_ids"].tolist() for x in batch]
-            labels = [x["labels"].tolist() for x in batch]
-            num_loss_counted_tokens = sum(
-                [(x["labels"] != -100).sum().item() for x in batch]
-            )
-
-            print(
-                f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
-                f"num samples {len(batch)} - rank: {rank} "
-                f"max len: {lens.max()} min len: {lens.min()} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
-
-            return {
-                "input_ids": input_ids,
-                "labels": labels,
-                "num_loss_counted_tokens": num_loss_counted_tokens,
-            }
-
-    else:
-
-        def pad_collate_fn(batch):
-            lens = np.array([len(item["input_ids"]) for item in batch])
-            max_len = max(lens)
-
-            input_ids = torch.stack(
-                [
-                    F.pad(
-                        item["input_ids"],
-                        (max_len - len(item["input_ids"]), 0),
-                        mode="constant",
-                        value=pad_token_id,
-                    )
-                    for item in batch
-                ]
-            )
-            labels = torch.stack(
-                [
-                    F.pad(
-                        item["labels"],
-                        (max_len - len(item["labels"]), 0),
-                        mode="constant",
-                        value=-100,
-                    )
-                    for item in batch
-                ]
-            )
-            num_loss_counted_tokens = (labels != -100).sum()
-
-            attention_mask = torch.stack(
-                [
-                    F.pad(
-                        item["attention_mask"],
-                        (max_len - len(item["attention_mask"]), 0),
-                        mode="constant",
-                        value=0,
-                    )
-                    for item in batch
-                ]
-            )
-            print(
-                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
-
-            return {
-                "input_ids": input_ids,
-                "labels": labels,
-                "num_loss_counted_tokens": num_loss_counted_tokens,
-                "attention_mask": attention_mask,
-            }
-
-    return pad_collate_fn
 
 
 def setup_dataset(
