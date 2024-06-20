@@ -9,7 +9,7 @@ datasets>=2.15.0
 numba
 numpy==1.26.4
 rich
-dolomite-engine @ git+https://github.com/ibm-granite/dolomite-engine.git@main
+instructlab-dolomite @ git+https://github.com/instructlab/GPTDolomite.git@main
 trl>=0.9.4
 peft
 pydantic>=2.7.0
