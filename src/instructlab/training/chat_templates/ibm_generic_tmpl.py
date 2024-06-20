@@ -1,3 +1,4 @@
+# Third Party
 from tokenizer_utils import SpecialTokens
 
 SPECIAL_TOKENS = SpecialTokens(
@@ -5,7 +6,7 @@ SPECIAL_TOKENS = SpecialTokens(
     user="<|user|>",
     assistant="<|assistant|>",
     eos="<|endoftext|>",
-    pad="<|pad|>"
+    pad="<|pad|>",
 )
 
 CHAT_TEMPLATE = (

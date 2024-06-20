@@ -18,26 +18,17 @@ class SpecialTokens:
     bos: str = field(default="<|begginingoftext|>")
 
 
-#TODO: Replace with specified template path
-#from instructlab.training.chat_templates.ibm_generic_tmpl import SPECIAL_TOKENS, CHAT_TEMPLATE
-import importlib.util
-import sys
-spec = importlib.util.spec_from_file_location("ibm_generic_tmpl", "chat_templates/ibm_generic_tmpl.py")
-module = importlib.util.module_from_spec(spec)
-sys.modules["ibm_generic_tmpl"] = module
-spec.loader.exec_module(module)
-SPECIAL_TOKENS = module.SPECIAL_TOKENS
-CHAT_TEMPLATE = module.CHAT_TEMPLATE
-
-def setup_tokenizer(
-    model_name_or_path, SPECIAL_TOKENS=SPECIAL_TOKENS, CHAT_TEMPLATE=CHAT_TEMPLATE
-):
+def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
 
     if not SPECIAL_TOKENS.pad:
         SPECIAL_TOKENS.pad = SPECIAL_TOKENS.eos
     tokenizer.add_special_tokens(
-        {"bos_token": SPECIAL_TOKENS.bos, "eos_token": SPECIAL_TOKENS.eos, "pad_token": SPECIAL_TOKENS.pad}
+        {
+            "bos_token": SPECIAL_TOKENS.bos,
+            "eos_token": SPECIAL_TOKENS.eos,
+            "pad_token": SPECIAL_TOKENS.pad,
+        }
     )
 
     if SPECIAL_TOKENS.system:
@@ -46,11 +37,7 @@ def setup_tokenizer(
         add_token_list = []
     add_token_list.extend([SPECIAL_TOKENS.user, SPECIAL_TOKENS.assistant])
 
-    tokenizer.add_special_tokens(
-        {
-            "additional_special_tokens": add_token_list
-        }
-    )
+    tokenizer.add_special_tokens({"additional_special_tokens": add_token_list})
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
     ):

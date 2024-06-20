@@ -10,12 +10,8 @@ import numpy as np
 
 # First Party
 from instructlab.training.config import DataProcessArgs
-from instructlab.training.tokenizer_utils import (
-    SPECIAL_TOKENS,
-    get_sp_token,
-    setup_tokenizer,
-)
-from instructlab.training.utils import log_rank_0, setup_logger
+from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
+from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
 
 
 def check_valid_sample(
@@ -109,7 +105,11 @@ def unmask_only_assistant_responses(
     whole_sentence = chosen_token["input_ids"][:sentence_legth].clone()
 
     # pre-training mode
-    if not (system_tk in whole_sentence or user_token in whole_sentence or assist_token in whole_sentence):
+    if not (
+        system_tk in whole_sentence
+        or user_token in whole_sentence
+        or assist_token in whole_sentence
+    ):
         return labels
 
     labels[:sentence_legth] = -100
@@ -192,6 +192,7 @@ def remove_pretrain_system_messages(example: dict):
 
 
 def main(args: DataProcessArgs):
+    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path)
 
     eos_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.eos)
@@ -299,6 +300,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model_name_or_path", type=str, required=True, help="Model name or path"
+    )
+    parser.add_argument(
+        "--chat-tmpl-path",
+        type=str,
+        default=f"{__file__}/chat_templates/ibm_generic_tmpl.py",
+        help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
     args = parser.parse_args()
     setup_logger(args.logging_level)

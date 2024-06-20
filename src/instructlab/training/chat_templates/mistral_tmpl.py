@@ -1,3 +1,4 @@
+# Third Party
 from tokenizer_utils import SpecialTokens
 
 SPECIAL_TOKENS = SpecialTokens(
@@ -5,8 +6,6 @@ SPECIAL_TOKENS = SpecialTokens(
     eos="</s>",
     user="[INST]",
     assistant="[/INST]",
-    
-
 )
 
 CHAT_TEMPLATE = (

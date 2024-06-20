@@ -42,6 +42,7 @@ class DataProcessArgs(BaseModel):
     data_output_path: str
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
+    chat_tmpl_path: str
 
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
@@ -99,6 +100,9 @@ class TrainingArgs(BaseModel):
 
     # Either the name of a HuggingFace model or a path to a model saved in HuggingFace format.
     model_path: str
+
+    # Specify the chat template / special tokens for training (default is ibm-generic template/tokens)
+    chat_tmpl_path: str = __file__ + "/chat_templates/ibm_generic_tmpl.py"
 
     # this field specifies the filepath to the training dataset before processing
     data_path: str
