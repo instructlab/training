@@ -196,7 +196,10 @@ def main(args: DataProcessArgs):
 
     eos_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.eos)
     pad_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.pad)
-    system_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.system)
+    if SPECIAL_TOKENS.system:
+        system_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.system)
+    else:
+        system_tk = None
     user_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.user)
     assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
     log_rank_0(
