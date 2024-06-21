@@ -1,5 +1,5 @@
-# Third Party
-from tokenizer_utils import SpecialTokens
+# First Party
+from instructlab.training.tokenizer_utils import SpecialTokens
 
 SPECIAL_TOKENS = SpecialTokens(
     system="<|system|>",
