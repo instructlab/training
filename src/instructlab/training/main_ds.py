@@ -401,18 +401,18 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 )
                 weight_norm = float(model.optimizer.single_partition_of_fp32_groups[0].norm())
 
-                print(
-                    f"throughput: {overall_throughput} "
-                    f"samples/s, lr: {current_lr}, "
-                    f"loss: {loss.item()} "
-                    f"cuda_mem_allocated: {cuda_mem_allocated} GB "
-                    f"cuda_malloc_retries: {cuda_malloc_retries} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens} "
-                    f"batch_size: {aggregated_values[1]} "
-                    f"total loss: {aggregated_values[2]/num_loss_counted_tokens} "
-                    f"gradnorm: {global_grad_norm} "
-                    f"weight_norm: {weight_norm}"
-                )
+                # print(
+                #     f"throughput: {overall_throughput} "
+                #     f"samples/s, lr: {current_lr}, "
+                #     f"loss: {loss.item()} "
+                #     f"cuda_mem_allocated: {cuda_mem_allocated} GB "
+                #     f"cuda_malloc_retries: {cuda_malloc_retries} "
+                #     f"num_loss_counted_tokens: {num_loss_counted_tokens} "
+                #     f"batch_size: {aggregated_values[1]} "
+                #     f"total loss: {aggregated_values[2]/num_loss_counted_tokens} "
+                #     f"gradnorm: {global_grad_norm} "
+                #     f"weight_norm: {weight_norm}"
+                # )
                 metric_logger.log_sync(
                     {
                         "epoch": epoch,
@@ -510,17 +510,17 @@ def main(args):
     )
 
     if args.local_rank == 0:
-        print(
-            f"\033[96mnum_gpus: {torch.distributed.get_world_size()}\n"
-            f"avg_sample_len: {dataset.get_lengths().mean()}\n"
-            f"effective_batch_size: {args.effective_batch_size}\n"
-            f"max_batch_len_per_gpu: {args.max_batch_len}\n"
-            f"packing_max_batch_len: {packing_max_batch_len}\n"
-            f"grad_accum: {grad_accum}\n"
-            f"num batches: {len(train_loader)}\n"
-            f"avg_samples_per_batch: {len(dataset)/len(train_loader)}\n"
-            f"samples_per_gpu: {args.samples_per_gpu}\033[0m"
-        )
+        # print(
+        #     f"\033[96mnum_gpus: {torch.distributed.get_world_size()}\n"
+        #     f"avg_sample_len: {dataset.get_lengths().mean()}\n"
+        #     f"effective_batch_size: {args.effective_batch_size}\n"
+        #     f"max_batch_len_per_gpu: {args.max_batch_len}\n"
+        #     f"packing_max_batch_len: {packing_max_batch_len}\n"
+        #     f"grad_accum: {grad_accum}\n"
+        #     f"num batches: {len(train_loader)}\n"
+        #     f"avg_samples_per_batch: {len(dataset)/len(train_loader)}\n"
+        #     f"samples_per_gpu: {args.samples_per_gpu}\033[0m"
+        # )
         metric_logger.log_sync({
             'num_gpus': torch.distributed.get_world_size(),
             'avg_sample_len': dataset.get_lengths().mean(),
