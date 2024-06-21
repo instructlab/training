@@ -11,6 +11,9 @@ import time
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
+from instructlab.dolomite.enums import GradientCheckpointingMethod
+from instructlab.dolomite.gradient_checkpointing import apply_gradient_checkpointing
+from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -45,9 +48,6 @@ from instructlab.training.utils import (
     setup_logger,
 )
 import instructlab.training.data_process as dp
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from instructlab.dolomite.enums import GradientCheckpointingMethod
-from instructlab.dolomite.gradient_checkpointing import apply_gradient_checkpointing
 
 
 def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
@@ -93,7 +93,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
-
         model = GPTDolomiteForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",
@@ -204,7 +203,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # granite gradient checkpointing is handled uniformly
     # for both lora and full here
     if args.is_granite:
-
         block_name = model._no_split_modules[0]
         apply_gradient_checkpointing(
             model,
