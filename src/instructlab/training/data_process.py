@@ -194,7 +194,7 @@ def remove_pretrain_system_messages(example: dict):
 
 def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_path)
+    tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
     eos_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.eos)
     pad_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.pad)
@@ -305,7 +305,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--chat-tmpl-path",
         type=str,
-        default=f"{os.path.dirname(__file__)}/../chat_templates/ibm_generic_tmpl.py",
+        default=f"{os.path.dirname(__file__)}/chat_templates/ibm_generic_tmpl.py",
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
     args = parser.parse_args()

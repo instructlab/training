@@ -440,7 +440,7 @@ def main(args):
 
     setup_logger(args.log_level)
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_name_or_path, CHAT_TEMPLATE, SPECIAL_TOKENS)
+    tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
     # device = torch.device("cuda", args.local_rank)
 
     #### distributed init #####
