@@ -1,5 +1,3 @@
-# File: async_logger.py
-
 import json
 import asyncio
 from datetime import datetime
@@ -17,7 +15,7 @@ class AsyncStructuredLogger:
         asyncio.run_coroutine_threadsafe(self._initialize_log_file(), self.loop)
 
     def _run_event_loop(self, loop):
-        asyncio.set_event_loop(loop)
+        asyncio.set_event_loop(loop) #
         loop.run_forever()
 
     async def _initialize_log_file(self):
@@ -28,27 +26,25 @@ class AsyncStructuredLogger:
                         if line.strip():  # Avoid empty lines
                             self.logs.append(json.loads(line.strip()))
             except FileNotFoundError:
+                # File does not exist but the first log will create it.
                 pass
 
 
     async def log(self, data):
+        '''logs a dictionary as a new line in a jsonl file with a timestamp'''
         if not isinstance(data, dict):
             raise ValueError("Logged data must be a dictionary")
         data['timestamp'] = datetime.now().isoformat()
         self.logs.append(data)
-        await self._write_logs_to_file()
+        await self._write_logs_to_file(data)
 
-    async def _write_logs_to_file(self):
-        temp_file_name = f"{self.file_name}.tmp"
-        async with aiofiles.open(temp_file_name, 'w') as temp_file:
-            await temp_file.write(json.dumps(self.logs[-1], indent=None) + '\n')
-            await temp_file.flush()  # Flush the file buffer
-            os.fsync(temp_file.fileno())  # Sync the file with the storage device
-
-        # Rename the temporary file to the main file name
-        os.replace(temp_file_name, self.file_name)
+    async def _write_logs_to_file(self, data):
+        '''appends to the log instead of writing the whole log each time'''
+        async with aiofiles.open(self.file_name, 'a') as f:
+            await f.write(json.dumps(data, indent=None) + '\n')
 
     def log_sync(self, data: dict):
+        '''runs the log coroutine non-blocking'''
         asyncio.run_coroutine_threadsafe(self.log(data), self.loop)
 
     def __repr__(self):
