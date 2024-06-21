@@ -399,7 +399,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 global_grad_norm = (
                     float(global_grad_norm) if global_grad_norm is not None else None
                 )
-                weight_norm = float(model.optimizer.single_partition_of_fp32_groups[0].norm())
+                weight_norm = float(
+                    model.optimizer.single_partition_of_fp32_groups[0].norm()
+                )
 
                 metric_logger.log_sync(
                     {
@@ -413,12 +415,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "batch_size": int(aggregated_values[1]),
-                        "total_loss": float(aggregated_values[2] / num_loss_counted_tokens),
-                        "gradnorm": global_grad_norm if global_grad_norm is not None else None,
+                        "total_loss": float(
+                            aggregated_values[2] / num_loss_counted_tokens
+                        ),
+                        "gradnorm": (
+                            global_grad_norm if global_grad_norm is not None else None
+                        ),
                         "weight_norm": weight_norm,
                     }
                 )
-
 
             if global_step * batch_size % args.save_samples == 0:
                 save_hf_format_ds(
@@ -448,10 +453,13 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 def main(args):
     # Third Party
     import yaml
-    metric_logger = AsyncStructuredLogger(args.output_dir + "/training_params_and_metrics.jsonl")
+
+    metric_logger = AsyncStructuredLogger(
+        args.output_dir + "/training_params_and_metrics.jsonl"
+    )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_sync({'script_params': vars(args)})
+        metric_logger.log_sync({"script_params": vars(args)})
 
     setup_logger(args.log_level)
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
@@ -498,17 +506,19 @@ def main(args):
     )
 
     if args.local_rank == 0:
-        metric_logger.log_sync({
-            'num_gpus': torch.distributed.get_world_size(),
-            'avg_sample_len': dataset.get_lengths().mean(),
-            'effective_batch_size': args.effective_batch_size,
-            'max_batch_len_per_gpu': args.max_batch_len,
-            'packing_max_batch_len': packing_max_batch_len,
-            'grad_accum': grad_accum,
-            'num_batches': len(train_loader),
-            'avg_samples_per_batch': len(dataset)/len(train_loader),
-            'samples_per_gpu': args.samples_per_gpu
-        })
+        metric_logger.log_sync(
+            {
+                "num_gpus": torch.distributed.get_world_size(),
+                "avg_sample_len": dataset.get_lengths().mean(),
+                "effective_batch_size": args.effective_batch_size,
+                "max_batch_len_per_gpu": args.max_batch_len,
+                "packing_max_batch_len": packing_max_batch_len,
+                "grad_accum": grad_accum,
+                "num_batches": len(train_loader),
+                "avg_samples_per_batch": len(dataset) / len(train_loader),
+                "samples_per_gpu": args.samples_per_gpu,
+            }
+        )
 
     model = setup_model(args, tokenizer, train_loader, grad_accum)
     model = maybe_resume_training(args, model)
