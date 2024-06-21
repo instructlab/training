@@ -5,9 +5,10 @@ import asyncio
 from datetime import datetime
 import aiofiles
 import threading
+import os
 
 class AsyncStructuredLogger:
-    def __init__(self, file_name='training_log.json'):
+    def __init__(self, file_name='training_log.jsonl'):
         self.file_name = file_name
         self.logs = []
         self.loop = asyncio.new_event_loop()
@@ -20,12 +21,15 @@ class AsyncStructuredLogger:
         loop.run_forever()
 
     async def _initialize_log_file(self):
-        try:
-            async with aiofiles.open(self.file_name, 'r') as f:
-                self.logs = json.loads(await f.read())
-        except FileNotFoundError:
-            async with aiofiles.open(self.file_name, 'w') as f:
-                await f.write(json.dumps(self.logs, indent=4))
+            self.logs = []
+            try:
+                async with aiofiles.open(self.file_name, 'r') as f:
+                    async for line in f:
+                        if line.strip():  # Avoid empty lines
+                            self.logs.append(json.loads(line.strip()))
+            except FileNotFoundError:
+                pass
+
 
     async def log(self, data):
         if not isinstance(data, dict):
@@ -35,8 +39,14 @@ class AsyncStructuredLogger:
         await self._write_logs_to_file()
 
     async def _write_logs_to_file(self):
-        async with aiofiles.open(self.file_name, 'w') as f:
-            await f.write(json.dumps(self.logs, indent=4))
+        temp_file_name = f"{self.file_name}.tmp"
+        async with aiofiles.open(temp_file_name, 'w') as temp_file:
+            await temp_file.write(json.dumps(self.logs[-1], indent=None) + '\n')
+            await temp_file.flush()  # Flush the file buffer
+            os.fsync(temp_file.fileno())  # Sync the file with the storage device
+
+        # Rename the temporary file to the main file name
+        os.replace(temp_file_name, self.file_name)
 
     def log_sync(self, data: dict):
         asyncio.run_coroutine_threadsafe(self.log(data), self.loop)

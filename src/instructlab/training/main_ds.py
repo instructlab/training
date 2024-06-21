@@ -317,7 +317,7 @@ def maybe_resume_training(args, model):
     return model
 
 
-def train(args, model, tokenizer, train_loader, grad_accum):
+def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
     model.train()
 
     global_step = 1
@@ -395,6 +395,11 @@ def train(args, model, tokenizer, train_loader, grad_accum):
                 current_lr = model.lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+                global_grad_norm = model.get_global_grad_norm()
+                global_grad_norm = (
+                    float(global_grad_norm) if global_grad_norm is not None else None
+                )
+                weight_norm = float(model.optimizer.single_partition_of_fp32_groups[0].norm())
 
                 print(
                     f"throughput: {overall_throughput} "
@@ -404,8 +409,28 @@ def train(args, model, tokenizer, train_loader, grad_accum):
                     f"cuda_malloc_retries: {cuda_malloc_retries} "
                     f"num_loss_counted_tokens: {num_loss_counted_tokens} "
                     f"batch_size: {aggregated_values[1]} "
-                    f"total loss: {aggregated_values[2]/num_loss_counted_tokens}"
+                    f"total loss: {aggregated_values[2]/num_loss_counted_tokens} "
+                    f"gradnorm: {global_grad_norm} "
+                    f"weight_norm: {weight_norm}"
                 )
+                metric_logger.log_sync(
+                    {
+                        "epoch": epoch,
+                        "step": global_step,
+                        "rank": torch.distributed.get_rank(),
+                        "loss": loss.item(),
+                        "overall_throughput": overall_throughput,
+                        "lr": current_lr,
+                        "cuda_mem_allocated": cuda_mem_allocated,
+                        "cuda_malloc_retries": cuda_malloc_retries,
+                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        "batch_size": int(aggregated_values[1]),
+                        "total_loss": float(aggregated_values[2] / num_loss_counted_tokens),
+                        "gradnorm": global_grad_norm if global_grad_norm is not None else None,
+                        "weight_norm": weight_norm,
+                    }
+                )
+
 
             if global_step * batch_size % args.save_samples == 0:
                 save_hf_format_ds(
@@ -435,7 +460,7 @@ def train(args, model, tokenizer, train_loader, grad_accum):
 def main(args):
     # Third Party
     import yaml
-    metric_logger = AsyncStructuredLogger(args.output_dir + "/training_params_and_metrics.json")
+    metric_logger = AsyncStructuredLogger(args.output_dir + "/training_params_and_metrics.jsonl")
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
         metric_logger.log_sync({'script_params': vars(args)})
@@ -496,11 +521,22 @@ def main(args):
             f"avg_samples_per_batch: {len(dataset)/len(train_loader)}\n"
             f"samples_per_gpu: {args.samples_per_gpu}\033[0m"
         )
+        metric_logger.log_sync({
+            'num_gpus': torch.distributed.get_world_size(),
+            'avg_sample_len': dataset.get_lengths().mean(),
+            'effective_batch_size': args.effective_batch_size,
+            'max_batch_len_per_gpu': args.max_batch_len,
+            'packing_max_batch_len': packing_max_batch_len,
+            'grad_accum': grad_accum,
+            'num_batches': len(train_loader),
+            'avg_samples_per_batch': len(dataset)/len(train_loader),
+            'samples_per_gpu': args.samples_per_gpu
+        })
 
     model = setup_model(args, tokenizer, train_loader, grad_accum)
     model = maybe_resume_training(args, model)
 
-    train(args, model, tokenizer, train_loader, grad_accum)
+    train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
