@@ -104,7 +104,7 @@ class TrainingArgs(BaseModel):
 
     # Specify the chat template / special tokens for training (default is ibm-generic template/tokens)
     chat_tmpl_path: str = os.path.join(
-        os.path.dirname(__file__), "/chat_templates/ibm_generic_tmpl.py"
+        os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
     )
 
     # this field specifies the filepath to the training dataset before processing
