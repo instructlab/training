@@ -651,7 +651,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--chat-tmpl-path",
         type=str,
-        default=f"{os.path.dirname(__file__)}/chat_templates/ibm_generic_tmpl.py",
+        default=os.path.join(
+            os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
+        ),
     )
     args = parser.parse_args()
     set_random_seed(args.seed)

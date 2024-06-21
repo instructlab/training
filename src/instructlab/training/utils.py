@@ -25,10 +25,6 @@ import torch.nn.functional as F
 
 
 def retrieve_chat_template(chat_tmpl_path):
-    # Standard
-    import importlib.util
-    import sys
-
     try:
         spec = importlib.util.spec_from_file_location("spcl_chat_tmpl", chat_tmpl_path)
         module = importlib.util.module_from_spec(spec)
