@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import List
 import logging
+import os
 
 # Third Party
 from datasets import load_dataset
@@ -304,7 +305,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--chat-tmpl-path",
         type=str,
-        default=f"{__file__}/chat_templates/ibm_generic_tmpl.py",
+        default=f"{os.path.dirname(__file__)}/../chat_templates/ibm_generic_tmpl.py",
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
     args = parser.parse_args()
@@ -314,6 +315,7 @@ if __name__ == "__main__":
         data_path=args.data_path,
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
+        chat_tmpl_path=args.chat_tmpl_path,
     )
     main(data_process_args)
 

@@ -4,6 +4,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
+import os
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -102,7 +103,9 @@ class TrainingArgs(BaseModel):
     model_path: str
 
     # Specify the chat template / special tokens for training (default is ibm-generic template/tokens)
-    chat_tmpl_path: str = __file__ + "/chat_templates/ibm_generic_tmpl.py"
+    chat_tmpl_path: str = (
+        os.path.dirname(__file__) + "/chat_templates/ibm_generic_tmpl.py"
+    )
 
     # this field specifies the filepath to the training dataset before processing
     data_path: str
