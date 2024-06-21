@@ -10,46 +10,34 @@ from instructlab.training.utils import log_rank_0
 
 @dataclass
 class SpecialTokens:
-    system: str = field(default="<|system|>")
+    system: str = field(default=None)
     user: str = field(default="<|user|>")
     assistant: str = field(default="<|assistant|>")
     eos: str = field(default="<|endoftext|>")
-    pad: str = field(default="<|pad|>")
+    pad: str = field(default=None)
+    bos: str = field(default="<|begginingoftext|>")
 
 
-SPECIAL_TOKENS = SpecialTokens()
-
-CHAT_TEMPLATE = (
-    "{% for message in messages %}"
-    "{% if message['role'] == 'pretraining' %}"
-    "{{'<|endoftext|>' + message['content'] + '<|endoftext|>'}}"
-    "{% elif message['role'] == 'system' %}"
-    "{{'<|system|>'+ '\n' + message['content'] + '\n'}}"
-    "{% elif message['role'] == 'user' %}"
-    "{{'<|user|>' + '\n' + message['content'] + '\n'}}"
-    "{% elif message['role'] == 'assistant' %}"
-    "{{'<|assistant|>' + '\n' + message['content'] + '<|endoftext|>' + ('' if loop.last else '\n')}}"
-    "{% endif %}"
-    "{% endfor %}"
-)
-
-
-def setup_tokenizer(
-    model_name_or_path, SPECIAL_TOKENS=SPECIAL_TOKENS, CHAT_TEMPLATE=CHAT_TEMPLATE
-):
+def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
-    tokenizer.add_special_tokens(
-        {"eos_token": SPECIAL_TOKENS.eos, "pad_token": SPECIAL_TOKENS.pad}
-    )
+
+    if not SPECIAL_TOKENS.pad:
+        SPECIAL_TOKENS.pad = SPECIAL_TOKENS.eos
     tokenizer.add_special_tokens(
         {
-            "additional_special_tokens": [
-                SPECIAL_TOKENS.system,
-                SPECIAL_TOKENS.user,
-                SPECIAL_TOKENS.assistant,
-            ]
+            "bos_token": SPECIAL_TOKENS.bos,
+            "eos_token": SPECIAL_TOKENS.eos,
+            "pad_token": SPECIAL_TOKENS.pad,
         }
     )
+
+    if SPECIAL_TOKENS.system:
+        add_token_list = [SPECIAL_TOKENS.system]
+    else:
+        add_token_list = []
+    add_token_list.extend([SPECIAL_TOKENS.user, SPECIAL_TOKENS.assistant])
+
+    tokenizer.add_special_tokens({"additional_special_tokens": add_token_list})
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
     ):

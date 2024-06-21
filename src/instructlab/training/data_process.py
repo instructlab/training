@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import List
 import logging
+import os
 
 # Third Party
 from datasets import load_dataset
@@ -10,12 +11,8 @@ import numpy as np
 
 # First Party
 from instructlab.training.config import DataProcessArgs
-from instructlab.training.tokenizer_utils import (
-    SPECIAL_TOKENS,
-    get_sp_token,
-    setup_tokenizer,
-)
-from instructlab.training.utils import log_rank_0, setup_logger
+from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
+from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
 
 
 def check_valid_sample(
@@ -36,18 +33,6 @@ def check_valid_sample(
     special_tokens = [system_tk, assistant_tk, user_tk]
     if not any(token in whole_sentence_tk for token in special_tokens):
         return True
-
-    # first token should be system_token
-    if whole_sentence_tk[0] != system_tk:
-        print("\033[91mfirst token is not a system_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
-
-    # check there's only one system_token
-    if (np.array(whole_sentence_tk) == system_tk).sum() != 1:
-        print("\033[91mthere are more than one system_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
 
     whole_sentence_tk = np.array(whole_sentence_tk)
     user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
@@ -121,7 +106,11 @@ def unmask_only_assistant_responses(
     whole_sentence = chosen_token["input_ids"][:sentence_legth].clone()
 
     # pre-training mode
-    if system_tk not in whole_sentence:
+    if not (
+        system_tk in whole_sentence
+        or user_token in whole_sentence
+        or assist_token in whole_sentence
+    ):
         return labels
 
     labels[:sentence_legth] = -100
@@ -204,11 +193,15 @@ def remove_pretrain_system_messages(example: dict):
 
 
 def main(args: DataProcessArgs):
-    tokenizer = setup_tokenizer(args.model_path)
+    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
+    tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
     eos_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.eos)
     pad_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.pad)
-    system_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.system)
+    if SPECIAL_TOKENS.system:
+        system_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.system)
+    else:
+        system_tk = None
     user_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.user)
     assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
     log_rank_0(
@@ -309,6 +302,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_name_or_path", type=str, required=True, help="Model name or path"
     )
+    parser.add_argument(
+        "--chat-tmpl-path",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
+        ),
+        help="Path to desired chat template and special tokens, defaults to IBM generic.",
+    )
     args = parser.parse_args()
     setup_logger(args.logging_level)
     data_process_args = DataProcessArgs(
@@ -316,6 +317,7 @@ if __name__ == "__main__":
         data_path=args.data_path,
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
+        chat_tmpl_path=args.chat_tmpl_path,
     )
     main(data_process_args)
 

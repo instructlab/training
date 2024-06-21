@@ -24,6 +24,19 @@ import torch
 import torch.nn.functional as F
 
 
+def retrieve_chat_template(chat_tmpl_path):
+    try:
+        spec = importlib.util.spec_from_file_location("spcl_chat_tmpl", chat_tmpl_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["spcl_chat_tmpl"] = module
+        spec.loader.exec_module(module)
+        SPECIAL_TOKENS = module.SPECIAL_TOKENS
+        CHAT_TEMPLATE = module.CHAT_TEMPLATE
+    except:
+        sys.exit(f"Invalid chat template path: {chat_tmpl_path}")
+    return CHAT_TEMPLATE, SPECIAL_TOKENS
+
+
 def add_noisy_embeddings(model, noise_alpha=None):
     if not noise_alpha:
         return model

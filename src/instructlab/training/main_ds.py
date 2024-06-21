@@ -37,6 +37,7 @@ from instructlab.training.utils import (
     patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
+    retrieve_chat_template,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -438,7 +439,8 @@ def main(args):
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
 
     setup_logger(args.log_level)
-    tokenizer = setup_tokenizer(args.model_name_or_path)
+    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
+    tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
     # device = torch.device("cuda", args.local_rank)
 
     #### distributed init #####
@@ -522,6 +524,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
             model_path=train_args.model_path,
             data_path=train_args.data_path,
             max_seq_len=train_args.max_seq_len,
+            chat_tmpl_path=train_args.chat_tmpl_path,
         )
     )
 
@@ -546,6 +549,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
         f"--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
+        f"--chat-tmpl-path={train_args.chat_tmpl_path}",
     ]
 
     if train_args.mock_data:
@@ -644,6 +648,13 @@ if __name__ == "__main__":
         help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
+    parser.add_argument(
+        "--chat-tmpl-path",
+        type=str,
+        default=os.path.join(
+            os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
+        ),
+    )
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
