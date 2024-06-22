@@ -1,4 +1,5 @@
 # Standard
+from functools import partial
 from pathlib import Path
 from typing import Any, List, Optional
 import importlib
@@ -17,6 +18,11 @@ from instructlab.dolomite.hf_models import export_to_huggingface
 from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    CheckpointImpl,
+    apply_activation_checkpointing,
+    checkpoint_wrapper,
+)
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
@@ -465,6 +471,60 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
     dist.barrier()
     log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
+
+
+# this function is for supporting gradient checkpointing for padding free
+# dolomite
+def apply_gradient_checkpointing(
+    model: torch.nn.Module,
+    **kwargs,
+) -> None:
+    def get_module_class_from_name(
+        model: torch.nn.Module, name: str
+    ) -> List[torch.nn.Module]:
+        modules_children = list(model.children())
+
+        if model.__class__.__name__ == name:
+            return model.__class__
+        elif len(modules_children) == 0:
+            return
+        else:
+            for child_module in modules_children:
+                module_class = get_module_class_from_name(child_module, name)
+                if module_class is not None:
+                    return module_class
+
+    def block_checkpointing(
+        model: torch.nn.Module,
+        block_name: str,
+        checkpoint_every: int = 1,
+        use_reentrant: bool = False,
+    ) -> None:
+        block_class = get_module_class_from_name(model, block_name)
+        block_idx = 0
+
+        def _whether_to_checkpoint(submodule: torch.nn.Module) -> bool:
+            nonlocal block_idx
+
+            if isinstance(submodule, block_class):
+                block_idx += 1
+                if (block_idx - 1) % checkpoint_every == 0:
+                    return True
+            return False
+
+        checkpoint_wrapper_function = checkpoint_wrapper
+        if use_reentrant:
+            checkpoint_wrapper_function = partial(
+                checkpoint_wrapper, checkpoint_impl=CheckpointImpl.REENTRANT
+            )
+
+        apply_activation_checkpointing(
+            model,
+            checkpoint_wrapper_fn=checkpoint_wrapper_function,
+            check_fn=_whether_to_checkpoint,
+        )
+
+    block_checkpointing(model, **kwargs)
 
 
 def setup_logger(level="DEBUG"):
