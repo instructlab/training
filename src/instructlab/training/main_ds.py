@@ -11,8 +11,6 @@ import time
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
-from instructlab.dolomite.enums import GradientCheckpointingMethod
-from instructlab.dolomite.gradient_checkpointing import apply_gradient_checkpointing
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
@@ -36,6 +34,7 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
+    apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     patch_target_module,
     prepare_peft_model,
@@ -204,7 +203,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         block_name = model._no_split_modules[0]
         apply_gradient_checkpointing(
             model,
-            GradientCheckpointingMethod.block,
             block_name=block_name,
             use_reentrant=True,  # this should be the HF default mode
         )
