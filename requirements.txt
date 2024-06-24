@@ -7,7 +7,7 @@ torch>=2.3.0a0
 transformers>=4.41.2
 datasets>=2.15.0
 numba
-numpy==1.26.4
+numpy==2.0.0
 rich
 instructlab-dolomite
 trl>=0.9.4
