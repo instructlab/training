@@ -7,7 +7,13 @@ torch>=2.3.0a0
 transformers>=4.41.2
 datasets>=2.15.0
 numba
-numpy==1.26.4
+# Note: numpy ranges copied from instructlab/instructlab
+#
+# HabanaLabs / Intel Gaudi env comes with Python 3.10 and slightly older
+# versions of some dependencies. Use '3.10' as an indicator.
+# Habana installer has NumPy 1.23.5
+numpy>=1.23.5,<2.0.0 ; python_version == '3.10'
+numpy>=1.26.4,<2.0.0 ; python_version != '3.10'
 rich
 instructlab-dolomite
 trl>=0.9.4
