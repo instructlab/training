@@ -11,8 +11,9 @@ import time
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
+
+# pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from instructlab.training.utils import ensure_load_granite_checkpoint
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -21,6 +22,7 @@ import torch
 
 # First Party
 from instructlab.training import config
+from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.config import (
     DataProcessArgs,
     DeepSpeedOptions,
@@ -32,12 +34,12 @@ from instructlab.training.multipack_sampler import (
 )
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
-from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
+    ensure_loadable_granite_checkpoint,
     patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
@@ -78,6 +80,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         }
     return ds_config
 
+
 def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
@@ -92,7 +95,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
-        with ensure_load_granite_checkpoint(args.model_name_or_path) as path:
+        with ensure_loadable_granite_checkpoint(args.model_name_or_path) as path:
             model = GPTDolomiteForCausalLM.from_pretrained(
                 path,
                 attn_implementation="flash_attention_2",

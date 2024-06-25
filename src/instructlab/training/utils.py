@@ -1,6 +1,8 @@
 # Standard
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
+from tempfile import TemporaryDirectory, mktemp
 from typing import Any, List, Optional
 import importlib
 import inspect
@@ -12,13 +14,16 @@ import subprocess
 import sys
 import time
 import warnings
-from tempfile import TemporaryDirectory, mktemp
-from contextlib import contextmanager
 
 # Third Party
-from instructlab.dolomite.hf_models import import_from_huggingface, export_to_huggingface
-from instructlab.dolomite.hf_models import GPTDolomiteConfig
+# pylint: disable=no-name-in-module
+from instructlab.dolomite.hf_models import (
+    GPTDolomiteConfig,
+    export_to_huggingface,
+    import_from_huggingface,
+)
 from rich.logging import RichHandler
+from safetensors.torch import save_file
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -29,7 +34,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
-from safetensors.torch import save_file
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -43,7 +47,7 @@ def retrieve_chat_template(chat_tmpl_path):
         spec.loader.exec_module(module)
         SPECIAL_TOKENS = module.SPECIAL_TOKENS
         CHAT_TEMPLATE = module.CHAT_TEMPLATE
-    except:
+    except:  # pylint: disable=bare-except
         sys.exit(f"Invalid chat template path: {chat_tmpl_path}")
     return CHAT_TEMPLATE, SPECIAL_TOKENS
 
@@ -476,26 +480,30 @@ def prepare_universal_checkpoint_from_latest(output_dir):
     dist.barrier()
     log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
-@contextmanager
-def ensure_load_granite_checkpoint(model_name_or_path: str):
 
+@contextmanager
+def ensure_loadable_granite_checkpoint(model_name_or_path: str):
     if not dist.is_initialized() or dist.get_rank() == 0:
         try:
             GPTDolomiteConfig.from_pretrained(model_name_or_path)
             yield model_name_or_path
-        except: 
-            log_rank_0(f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m", to_print=True)
+        except:  # pylint: disable=bare-except
+            log_rank_0(
+                f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m",
+                to_print=True,
+            )
             # if the load failed then it must not be a granite
             # for now just assume its a llama
             # with TemporaryDirectory("w") as tmpdir:
             # make a temp directory name, but do not create it
-            tmpdir = mktemp() 
+            tmpdir = mktemp()
             import_from_huggingface(model_name_or_path, tmpdir)
             yield tmpdir
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     if dist.is_initialized():
         dist.barrier()
+
 
 # this function is for supporting gradient checkpointing for padding free
 # dolomite
