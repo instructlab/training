@@ -204,6 +204,10 @@ def find_packing_max_batch_len_and_grad_accum(
     while packing_max_batch_len > max_batch_len_per_gpu:
         grad_accum += 1
         total_micro_batch = (effective_batch_size / grad_accum) / num_gpus
+        if int(avg_sample_len * total_micro_batch) < dataset.get_lengths().max():
+            raise RuntimeError(
+                f"Effective batch size is too low for multipack sampling, max sample length={dataset.get_lengths().max()} and min packing length={int(avg_sample_len * total_micro_batch)}"
+            )
         if is_padding:
             addition = find_padding_max_batch_len_addition(
                 avg_sample_len,
