@@ -10,11 +10,11 @@ from instructlab.training.utils import log_rank_0
 
 @dataclass
 class SpecialTokens:
-    system: str = field(default=None)
+    system: str = field(default="")
     user: str = field(default="<|user|>")
     assistant: str = field(default="<|assistant|>")
     eos: str = field(default="<|endoftext|>")
-    pad: str = field(default=None)
+    pad: str = field(default="")
     bos: str = field(default="<|begginingoftext|>")
 
 

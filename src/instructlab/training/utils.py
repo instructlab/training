@@ -47,7 +47,7 @@ def retrieve_chat_template(chat_tmpl_path):
         spec.loader.exec_module(module)
         SPECIAL_TOKENS = module.SPECIAL_TOKENS
         CHAT_TEMPLATE = module.CHAT_TEMPLATE
-    except:  # pylint: disable=bare-except
+    except Exception:
         sys.exit(f"Invalid chat template path: {chat_tmpl_path}")
     return CHAT_TEMPLATE, SPECIAL_TOKENS
 
