@@ -483,26 +483,25 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
 @contextmanager
 def ensure_loadable_granite_checkpoint(model_name_or_path: str):
-    if not dist.is_initialized() or dist.get_rank() == 0:
-        try:
-            GPTDolomiteConfig.from_pretrained(model_name_or_path)
-            yield model_name_or_path
-        except:  # pylint: disable=bare-except
-            log_rank_0(
-                f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m",
-                to_print=True,
-            )
-            # if the load failed then it must not be a granite
-            # for now just assume its a llama
-            # with TemporaryDirectory("w") as tmpdir:
-            # make a temp directory name, but do not create it
-            tmpdir = mktemp()
+    try:
+        GPTDolomiteConfig.from_pretrained(model_name_or_path)
+        yield model_name_or_path
+    except:  # pylint: disable=bare-except
+        log_rank_0(
+            f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m",
+            to_print=True,
+        )
+        # if the load failed then it must not be a granite
+        # for now just assume its a llama
+        # with TemporaryDirectory("w") as tmpdir:
+        # make a temp directory name, but do not create it
+        tmpdir = mktemp()
+        if not dist.is_initialized() or dist.get_rank() == 0:
             import_from_huggingface(model_name_or_path, tmpdir)
-            yield tmpdir
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-    if dist.is_initialized():
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
+        yield tmpdir
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # this function is for supporting gradient checkpointing for padding free
