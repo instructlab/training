@@ -12,6 +12,7 @@ import time
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
+from instructlab.training.utils import ensure_load_granite_checkpoint
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -77,7 +78,6 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         }
     return ds_config
 
-
 def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
@@ -92,13 +92,14 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
-        model = GPTDolomiteForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16,
-            use_padding_free_transformer=True,
-            quantization_config=bnb_config,
-        )
+        with ensure_load_granite_checkpoint(args.model_name_or_path) as path:
+            model = GPTDolomiteForCausalLM.from_pretrained(
+                path,
+                attn_implementation="flash_attention_2",
+                torch_dtype=torch.bfloat16,
+                use_padding_free_transformer=True,
+                quantization_config=bnb_config,
+            )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,

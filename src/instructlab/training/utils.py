@@ -12,9 +12,12 @@ import subprocess
 import sys
 import time
 import warnings
+from tempfile import TemporaryDirectory, mktemp
+from contextlib import contextmanager
 
 # Third Party
-from instructlab.dolomite.hf_models import export_to_huggingface
+from instructlab.dolomite.hf_models import import_from_huggingface, export_to_huggingface
+from instructlab.dolomite.hf_models import GPTDolomiteConfig
 from rich.logging import RichHandler
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
@@ -26,6 +29,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
+from safetensors.torch import save_file
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -472,6 +476,26 @@ def prepare_universal_checkpoint_from_latest(output_dir):
     dist.barrier()
     log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
+@contextmanager
+def ensure_load_granite_checkpoint(model_name_or_path: str):
+
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        try:
+            GPTDolomiteConfig.from_pretrained(model_name_or_path)
+            yield model_name_or_path
+        except: 
+            log_rank_0(f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m", to_print=True)
+            # if the load failed then it must not be a granite
+            # for now just assume its a llama
+            # with TemporaryDirectory("w") as tmpdir:
+            # make a temp directory name, but do not create it
+            tmpdir = mktemp() 
+            import_from_huggingface(model_name_or_path, tmpdir)
+            yield tmpdir
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if dist.is_initialized():
+        dist.barrier()
 
 # this function is for supporting gradient checkpointing for padding free
 # dolomite
@@ -608,13 +632,6 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         output_config_file = output_dir / CONFIG_NAME
 
         if args.is_granite and convert_granite:
-            # guarded import
-            # Standard
-            from tempfile import TemporaryDirectory
-
-            # Third Party
-            from safetensors.torch import save_file
-
             with TemporaryDirectory("w") as tmpdir:
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
                 model_to_save.config.to_json_file(Path(tmpdir) / CONFIG_NAME)
