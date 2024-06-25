@@ -1,9 +1,11 @@
-import json
-import asyncio
+# Standard
 from datetime import datetime
-import aiofiles
+import asyncio
+import json
 import threading
-import os
+
+# Third Party
+import aiofiles
 
 
 class AsyncStructuredLogger:
@@ -39,7 +41,7 @@ class AsyncStructuredLogger:
         data["timestamp"] = datetime.now().isoformat()
         self.logs.append(data)
         await self._write_logs_to_file(data)
-        {{print(f"\033[92m{json.dumps(data, indent=4)}\033[0m")}}
+        print(f"\033[92m{json.dumps(data, indent=4)}\033[0m")
 
     async def _write_logs_to_file(self, data):
         """appends to the log instead of writing the whole log each time"""

@@ -74,10 +74,10 @@ class LoraOptions(BaseModel):
     target_modules: list[str] = Field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
     )
-    
+
     quantize_data_type: QuantizeDataType = QuantizeDataType.NONE
 
-    class Config:  
+    class Config:
         use_enum_values = True
 
 
