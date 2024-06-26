@@ -231,7 +231,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     lr_scheduler = get_scheduler(
-        name="cosine",
+        name=args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader),
@@ -651,6 +651,20 @@ if __name__ == "__main__":
     # parser.add_argument("--samples_per_gpu", type=int, default=8)
     parser.add_argument("--effective_batch_size", type=int, default=3840)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="cosine",
+        help="The scheduler type to use.",
+        choices=[
+            "linear",
+            "cosine",
+            "cosine_with_restarts",
+            "polynomial",
+            "constant",
+            "constant_with_warmup",
+        ],
+    )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--save_samples", type=int)
