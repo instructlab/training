@@ -501,7 +501,8 @@ def ensure_loadable_granite_checkpoint(model_name_or_path: str):
         if dist.is_initialized():
             dist.barrier()
         yield tmpdir
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # this function is for supporting gradient checkpointing for padding free
