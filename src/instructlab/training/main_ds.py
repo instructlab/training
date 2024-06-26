@@ -447,6 +447,13 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+    if args.save_last:
+        save_hf_format_ds(
+            args,
+            model,
+            tokenizer,
+            global_step * args.samples_per_gpu * world_size,
+        )
 
 
 def main(args):
@@ -673,6 +680,9 @@ if __name__ == "__main__":
         type=int,
         help="for saving in ds native format",
         default=None,
+    )
+    parser.add_argument(
+        "--save_last", action="store_true", help="save after finishing training"
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)
