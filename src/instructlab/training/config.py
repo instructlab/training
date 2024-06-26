@@ -94,6 +94,9 @@ class DeepSpeedOptions(BaseModel):
     cpu_offload_optimizer_ratio: float = 1
     cpu_offload_optimizer_pin_memory: bool = False
 
+    # don't save in deepspeed format as a default
+    save_samples: int | None = None
+
 
 class TrainingArgs(BaseModel):
     """

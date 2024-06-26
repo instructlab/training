@@ -246,6 +246,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             grad_accum=grad_accum,
             opts=DeepSpeedOptions(
                 cpu_offload_optimizer=args.cpu_offload_optimizer,
+                cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+                cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+                save_samples=args.save_samples_ds,
             ),
         ),
         lr_scheduler=lr_scheduler,
@@ -595,6 +598,19 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
         if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
             command.append("--lora_quant_bits=4")
 
+    # deepspeed opts
+    if train_args.deepspeed_options.save_samples:
+        command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
+    if train_args.deepspeed_options.cpu_offload_optimizer:
+        command.extend(
+            [
+                "--cpu_offload_optimizer",
+                f"--cpu_offload_optimizer_ratio={train_args.deepspeed_options.cpu_offload_optimizer_ratio}",
+            ]
+        )
+        if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
+            command.append("--cpu_offload_optimizer_pin_memory")
+
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
     try:
@@ -667,6 +683,18 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
+    )
+    parser.add_argument(
+        "--cpu_offload_optimizer_pin_memory",
+        action="store_true",
+        default=False,
+        help="Pin memory when offloading optimizer to CPU. This allows for faster transfers between CPU and GPU. Comes at the cost of higher memory usage and CPU overhead.",
+    )
+    parser.add_argument(
+        "--cpu_offload_optimizer_ratio",
+        type=float,
+        default=1.0,
+        help="Ratio of the optimizer to be offloaded to CPU. The rest will be on GPU(s).",
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument(
