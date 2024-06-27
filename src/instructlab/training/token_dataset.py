@@ -85,6 +85,7 @@ def setup_dataloader(
     is_granite=False,
     max_batch_len=60000,
     packing_max_batch_len=60000,
+    batch_sampler='multipack',
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
@@ -94,14 +95,18 @@ def setup_dataloader(
     world_size = int(os.environ["WORLD_SIZE"])
 
     lengths = dataset.get_lengths()
-    sampler = MultipackDistributedBatchSampler(
-        batch_max_length=packing_max_batch_len,
-        lengths=lengths,
-        num_replicas=world_size,
-        rank=rank,
-        seed=seed,
-        padding=not is_granite,
-    )
+    if batch_sampler == 'multipack':
+        sampler = MultipackDistributedBatchSampler(
+            batch_max_length=packing_max_batch_len,
+            lengths=lengths,
+            num_replicas=world_size,
+            rank=rank,
+            seed=seed,
+            padding=not is_granite,
+        )
+    elif batch_sampler == 'default':
+        sampler = None
+
     dataloader = DataLoader(
         dataset,
         batch_sampler=sampler,

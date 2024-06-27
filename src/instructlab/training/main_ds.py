@@ -346,7 +346,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
     for epoch in range(args.num_epochs):
         torch.distributed.barrier()
-        train_loader.batch_sampler.set_epoch(epoch)
+        torch.distributed.breakpoint()
+        if hasattr(train_loader.batch_sampler, 'set_epoch'):
+            train_loader.batch_sampler.set_epoch(epoch)
 
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
@@ -510,6 +512,7 @@ def main(args):
         is_granite=args.is_granite,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
+        batch_sampler=args.batch_sampler,
         seed=args.seed,
     )
 
@@ -672,6 +675,16 @@ if __name__ == "__main__":
             "polynomial",
             "constant",
             "constant_with_warmup",
+        ],
+    )
+    parser.add_argument(
+        "--batch_sampler",
+        type=str,
+        default="multipack",
+        help="The batch sampler type to use.",
+        choices=[
+            "multipack",
+            "default"
         ],
     )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
