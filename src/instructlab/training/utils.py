@@ -487,6 +487,9 @@ def ensure_loadable_granite_checkpoint(
     tmpdir: str,
 ):
 
+    local_rank = int(os.environ["LOCAL_RANK"])
+    group_rank = int(os.environ["GROUP_RANK"])
+
     try:
         GPTDolomiteConfig.from_pretrained(model_name_or_path)
         yield model_name_or_path
@@ -502,16 +505,19 @@ def ensure_loadable_granite_checkpoint(
         # so now we use a provided tmpdir
         # Assumption: tmpdir should be accessible by all ranks, even those
         # in different nodes
-        tmpdir = Path(tmpdir) / 'tmp'
-        if os.path.exists(tmpdir):
+        tmpdir = Path(tmpdir) / f'tmp.{group_rank}'
+        if (
+            os.path.exists(tmpdir) and
+            (not dist.is_initialized() or local_rank == 0)
+        ):
             # need to delete if it exists because import doesnt like it to
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        if not dist.is_initialized() or local_rank == 0:
             import_from_huggingface(model_name_or_path, tmpdir)
 
         if dist.is_initialized():
-            # the first barrier is to wait for rank 0 to finish converting the model 
+            # the first barrier is to wait for local rank 0 to finish converting the model 
             # and place into tmpdir
             dist.barrier()
 
@@ -522,7 +528,7 @@ def ensure_loadable_granite_checkpoint(
             # the second barrier is to wait for all the models to finish loading
             dist.barrier()
 
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        if not dist.is_initialized() or local_rank == 0:
             # at this point, we can be confident that the tmpdir is no longer needed
             shutil.rmtree(tmpdir, ignore_errors=True)
 
