@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory, mktemp
+from tempfile import TemporaryDirectory
 from typing import Any, List, Optional
 import importlib
 import inspect
@@ -486,7 +486,6 @@ def ensure_loadable_granite_checkpoint(
     model_name_or_path: str,
     tmpdir: str,
 ):
-
     local_rank = int(os.environ["LOCAL_RANK"])
     group_rank = int(os.environ["GROUP_RANK"])
 
@@ -505,11 +504,8 @@ def ensure_loadable_granite_checkpoint(
         # so now we use a provided tmpdir
         # Assumption: tmpdir should be accessible by all ranks, even those
         # in different nodes
-        tmpdir = Path(tmpdir) / f'tmp.{group_rank}'
-        if (
-            os.path.exists(tmpdir) and
-            (not dist.is_initialized() or local_rank == 0)
-        ):
+        tmpdir = Path(tmpdir) / f"tmp.{group_rank}"
+        if os.path.exists(tmpdir) and (not dist.is_initialized() or local_rank == 0):
             # need to delete if it exists because import doesnt like it to
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -517,7 +513,7 @@ def ensure_loadable_granite_checkpoint(
             import_from_huggingface(model_name_or_path, tmpdir)
 
         if dist.is_initialized():
-            # the first barrier is to wait for local rank 0 to finish converting the model 
+            # the first barrier is to wait for local rank 0 to finish converting the model
             # and place into tmpdir
             dist.barrier()
 
