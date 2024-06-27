@@ -95,7 +95,10 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
-        with ensure_loadable_granite_checkpoint(args.model_name_or_path) as path:
+        with ensure_loadable_granite_checkpoint(
+            args.model_name_or_path, 
+            args.output_dir
+        ) as path:
             model = GPTDolomiteForCausalLM.from_pretrained(
                 path,
                 attn_implementation="flash_attention_2",
