@@ -69,7 +69,7 @@ class LoraOptions(BaseModel):
     """
 
     rank: int = 4
-    alpha: float = 32
+    alpha: int = 32
     dropout: float = 0.1
     target_modules: list[str] = Field(
         default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj"]
