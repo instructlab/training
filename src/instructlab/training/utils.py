@@ -483,6 +483,14 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
 @contextmanager
 def ensure_loadable_granite_checkpoint(model_name_or_path: str):
+
+    def temp_filename():
+        # previously we used mktemp, but it caused problems in multi node settings
+        # so now we just fix it and hope it does not clash
+        return "/tmp/tmpin9f06ge"
+
+    # this has to be done per node, so we use local rank
+    local_rank = int(os.environ["LOCAL_RANK"])
     try:
         GPTDolomiteConfig.from_pretrained(model_name_or_path)
         yield model_name_or_path
@@ -493,15 +501,14 @@ def ensure_loadable_granite_checkpoint(model_name_or_path: str):
         )
         # if the load failed then it must not be a granite
         # for now just assume its a llama
-        # with TemporaryDirectory("w") as tmpdir:
         # make a temp directory name, but do not create it
-        tmpdir = mktemp()
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        tmpdir = temp_filename()
+        if not dist.is_initialized() or local_rank == 0:
             import_from_huggingface(model_name_or_path, tmpdir)
         if dist.is_initialized():
             dist.barrier()
         yield tmpdir
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        if not dist.is_initialized() or local_rank == 0:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
