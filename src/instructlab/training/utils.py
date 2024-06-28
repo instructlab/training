@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory, mktemp
+from tempfile import TemporaryDirectory
 from typing import Any, List, Optional
 import importlib
 import inspect
@@ -482,7 +482,13 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
 
 @contextmanager
-def ensure_loadable_granite_checkpoint(model_name_or_path: str):
+def ensure_loadable_granite_checkpoint(
+    model_name_or_path: str,
+    tmpdir: str,
+):
+    local_rank = int(os.environ["LOCAL_RANK"])
+    group_rank = int(os.environ["GROUP_RANK"])
+
     try:
         GPTDolomiteConfig.from_pretrained(model_name_or_path)
         yield model_name_or_path
@@ -493,15 +499,33 @@ def ensure_loadable_granite_checkpoint(model_name_or_path: str):
         )
         # if the load failed then it must not be a granite
         # for now just assume its a llama
-        # with TemporaryDirectory("w") as tmpdir:
         # make a temp directory name, but do not create it
-        tmpdir = mktemp()
-        if not dist.is_initialized() or dist.get_rank() == 0:
+        # previously we used mktemp, but it caused problems in multi node settings
+        # so now we use a provided tmpdir
+        # Assumption: tmpdir should be accessible by all ranks, even those
+        # in different nodes
+        tmpdir = Path(tmpdir) / f"tmp.{group_rank}"
+        if os.path.exists(tmpdir) and (not dist.is_initialized() or local_rank == 0):
+            # need to delete if it exists because import doesnt like it to
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        if not dist.is_initialized() or local_rank == 0:
             import_from_huggingface(model_name_or_path, tmpdir)
+
         if dist.is_initialized():
+            # the first barrier is to wait for local rank 0 to finish converting the model
+            # and place into tmpdir
             dist.barrier()
+
+        # return tmpdir out for loading
         yield tmpdir
-        if not dist.is_initialized() or dist.get_rank() == 0:
+
+        if dist.is_initialized():
+            # the second barrier is to wait for all the models to finish loading
+            dist.barrier()
+
+        if not dist.is_initialized() or local_rank == 0:
+            # at this point, we can be confident that the tmpdir is no longer needed
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 

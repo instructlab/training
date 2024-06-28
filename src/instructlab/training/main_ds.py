@@ -95,7 +95,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     if args.is_granite:
-        with ensure_loadable_granite_checkpoint(args.model_name_or_path) as path:
+        with ensure_loadable_granite_checkpoint(
+            args.model_name_or_path, args.output_dir
+        ) as path:
             model = GPTDolomiteForCausalLM.from_pretrained(
                 path,
                 attn_implementation="flash_attention_2",
@@ -231,7 +233,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     lr_scheduler = get_scheduler(
-        name="cosine",
+        name=args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader),
@@ -447,6 +449,13 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+    if args.save_last:
+        save_hf_format_ds(
+            args,
+            model,
+            tokenizer,
+            global_step * args.samples_per_gpu * world_size,
+        )
 
 
 def main(args):
@@ -651,6 +660,20 @@ if __name__ == "__main__":
     # parser.add_argument("--samples_per_gpu", type=int, default=8)
     parser.add_argument("--effective_batch_size", type=int, default=3840)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="cosine",
+        help="The scheduler type to use.",
+        choices=[
+            "linear",
+            "cosine",
+            "cosine_with_restarts",
+            "polynomial",
+            "constant",
+            "constant_with_warmup",
+        ],
+    )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--save_samples", type=int)
@@ -659,6 +682,9 @@ if __name__ == "__main__":
         type=int,
         help="for saving in ds native format",
         default=None,
+    )
+    parser.add_argument(
+        "--save_last", action="store_true", help="save after finishing training"
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)
