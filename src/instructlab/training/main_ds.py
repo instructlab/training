@@ -346,7 +346,12 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
     for epoch in range(args.num_epochs):
         torch.distributed.barrier()
-        train_loader.batch_sampler.set_epoch(epoch)
+        if args.sampler in ("multipack"):
+            train_loader.batch_sampler.set_epoch(epoch)
+        elif args.sampler in ("distributed"):
+            train_loader.sampler.set_epoch(epoch)
+        else:
+            raise NotADirectoryError
 
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
@@ -510,6 +515,8 @@ def main(args):
         is_granite=args.is_granite,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
+        samples_per_gpu=args.samples_per_gpu,
+        sampler=args.sampler,
         seed=args.seed,
     )
 
@@ -673,6 +680,13 @@ if __name__ == "__main__":
             "constant",
             "constant_with_warmup",
         ],
+    )
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        default="multipack",
+        help="The batch sampler type to use.",
+        choices=["multipack", "distributed"],
     )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
