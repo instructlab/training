@@ -104,10 +104,10 @@ class StreamablePopen(subprocess.Popen):
                 break
 
 
-def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
+def make_collate_fn(pad_token_id, is_granite=False, flatten_with_posid=False, max_batch_len=60000):
     rank = int(os.environ["RANK"])
     if is_granite:
-
+        assert not flatten_with_posid
         def pad_collate_fn(batch):
             lens = np.array([len(item["input_ids"]) for item in batch])
 
@@ -132,6 +132,44 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
             return {
                 "input_ids": input_ids,
                 "labels": labels,
+                "num_loss_counted_tokens": num_loss_counted_tokens,
+            }
+
+    elif flatten_with_posid:
+
+        def pad_collate_fn(batch):
+            lens = np.array([len(item["input_ids"]) for item in batch])
+            max_len = max(lens)
+            
+            input_ids = []
+            labels = []
+            position_ids = []
+            has_label = "labels" in batch[0]
+            
+            for idx in range(len(batch)):
+                input_ids += batch[idx]["input_ids"]
+                if has_label:
+                    labels += [-100] + batch[idx]["labels"][1:]
+                else:
+                    labels += [-100] + batch[idx]["input_ids"][1:]
+                position_ids += list(range(len(batch[idx]["input_ids"])))
+
+            input_ids = torch.cat([x['input_ids'] for x in batch]).unsqueeze(0)
+            labels = torch.cat([x['labels'] for x in batch]).unsqueeze(0)
+            position_ids = torch.tensor(position_ids, dtype=torch.long).unsqueeze(0)
+
+            num_loss_counted_tokens = (labels != -100).sum()
+
+            print(
+                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
+                f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
+                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+            )
+
+            return {
+                "input_ids": input_ids,
+                "labels": labels,
+                "position_ids": position_ids,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
             }
 

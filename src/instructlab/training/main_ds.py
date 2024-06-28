@@ -106,6 +106,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
                 quantization_config=bnb_config,
             )
     else:
+        from .mods.models import hf as mods_models_hf
+        mods_models_hf.llama.inject()
+        mods_models_hf.mistral.inject()
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",
@@ -518,6 +521,7 @@ def main(args):
         samples_per_gpu=args.samples_per_gpu,
         sampler=args.sampler,
         seed=args.seed,
+        flatten_with_posid=args.flatten_with_posid
     )
 
     if args.local_rank == 0:
@@ -744,6 +748,7 @@ if __name__ == "__main__":
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
         ),
     )
+    parser.add_argument("--flatten_with_posid", action="store_true", default=False)
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
