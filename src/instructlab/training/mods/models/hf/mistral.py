@@ -333,6 +333,6 @@ class PaddingFreeMistralFlashAttention2(MistralFlashAttention2):
 
         return attn_output
 
-def inject():
-    logger.warning_once("Injecting PaddingFree FlashAttention2...")
+def inject_padding_free_fa2():
+    logger.warning_once("Injecting PaddingFree to MistralFlashAttention2...")
     MISTRAL_ATTENTION_CLASSES["flash_attention_2"] = PaddingFreeMistralFlashAttention2

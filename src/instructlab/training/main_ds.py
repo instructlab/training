@@ -107,8 +107,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             )
     else:
         from .mods.models import hf as mods_models_hf
-        mods_models_hf.llama.inject()
-        mods_models_hf.mistral.inject()
+        mods_models_hf.inject_padding_free_fa2()
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             attn_implementation="flash_attention_2",

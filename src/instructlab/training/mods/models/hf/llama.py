@@ -209,6 +209,6 @@ class PaddingFreeLlamaFlashAttention2(LlamaFlashAttention2):
 
         return attn_output
     
-def inject():
-    logger.warning_once("Injecting PaddingFree FlashAttention2...")
+def inject_padding_free_fa2():
+    logger.warning_once("Injecting PaddingFree to LlamaFlashAttention2...")
     LLAMA_ATTENTION_CLASSES["flash_attention_2"] = PaddingFreeLlamaFlashAttention2
