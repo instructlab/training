@@ -86,7 +86,7 @@ def setup_dataloader(
     max_batch_len=60000,
     packing_max_batch_len=60000,
     samples_per_gpu=None,
-    sampler='multipack',
+    sampler="multipack",
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
@@ -96,7 +96,7 @@ def setup_dataloader(
     world_size = int(os.environ["WORLD_SIZE"])
 
     lengths = dataset.get_lengths()
-    if sampler == 'multipack':
+    if sampler == "multipack":
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=packing_max_batch_len,
             lengths=lengths,
@@ -105,16 +105,17 @@ def setup_dataloader(
             seed=seed,
             padding=not is_granite,
         )
-        sampler = {'batch_sampler': sampler}
-    elif sampler == 'distributed':
+        sampler = {"batch_sampler": sampler}
+    elif sampler == "distributed":
+        # Third Party
         from torch.utils.data import DistributedSampler
+
         sampler = (
-            DistributedSampler(dataset) if 
-            torch.distributed.is_initialized() else None
+            DistributedSampler(dataset) if torch.distributed.is_initialized() else None
         )
         sampler = {
-            'sampler': sampler,
-            'batch_size': samples_per_gpu,
+            "sampler": sampler,
+            "batch_size": samples_per_gpu,
         }
     else:
         raise NotImplementedError

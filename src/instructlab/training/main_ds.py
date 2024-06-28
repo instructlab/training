@@ -346,9 +346,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
     for epoch in range(args.num_epochs):
         torch.distributed.barrier()
-        if args.sampler in ('multipack'):
+        if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
-        elif args.sampler in ('distributed'):
+        elif args.sampler in ("distributed"):
             train_loader.sampler.set_epoch(epoch)
         else:
             raise NotADirectoryError
@@ -686,10 +686,7 @@ if __name__ == "__main__":
         type=str,
         default="multipack",
         help="The batch sampler type to use.",
-        choices=[
-            "multipack",
-            "distributed"
-        ],
+        choices=["multipack", "distributed"],
     )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
