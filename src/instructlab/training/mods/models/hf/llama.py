@@ -183,7 +183,7 @@ class PaddingFreeLlamaFlashAttention2(LlamaFlashAttention2):
                     query_states, key_states, value_states, dropout, softmax_scale=softmax_scale, causal=causal
                 )
             else:
-                logging.warning_once("Using PaddingFree FlashAttention2!")
+                logger.warning_once("Using PaddingFree FlashAttention2!")
                 batch_size = query_states.size(0)
                 query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = prepare_fa2_from_position_ids(
                     query_states, key_states, value_states, position_ids, query_length
@@ -210,5 +210,5 @@ class PaddingFreeLlamaFlashAttention2(LlamaFlashAttention2):
         return attn_output
     
 def inject():
-    logging.warning_once("Injecting PaddingFree FlashAttention2...")
+    logger.warning_once("Injecting PaddingFree FlashAttention2...")
     LLAMA_ATTENTION_CLASSES["flash_attention_2"] = PaddingFreeLlamaFlashAttention2

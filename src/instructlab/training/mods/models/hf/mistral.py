@@ -292,7 +292,7 @@ class PaddingFreeMistralFlashAttention2(MistralFlashAttention2):
                         window_size=(self.config.sliding_window, self.config.sliding_window),
                     )
             else:
-                logging.warning_once("Using PaddingFree FlashAttention2!")
+                logger.warning_once("Using PaddingFree FlashAttention2!")
                 batch_size = query_states.size(0)
                 query_states, key_states, value_states, indices_q, cu_seq_lens, max_seq_lens = prepare_fa2_from_position_ids(
                     query_states, key_states, value_states, position_ids, query_length
@@ -334,5 +334,5 @@ class PaddingFreeMistralFlashAttention2(MistralFlashAttention2):
         return attn_output
 
 def inject():
-    logging.warning_once("Injecting PaddingFree FlashAttention2...")
+    logger.warning_once("Injecting PaddingFree FlashAttention2...")
     MISTRAL_ATTENTION_CLASSES["flash_attention_2"] = PaddingFreeMistralFlashAttention2
