@@ -505,13 +505,13 @@ def main(args):
             pad_id=tokenizer.pad_token_id,
             seed=args.seed,
         )
-        sampler = "multipack"
+        args.sampler = "multipack"
     except RuntimeError:
         # fallback to grad accum = 1
         # NOTE: packing max batch len will not be used
         packing_max_batch_len = None
         grad_accum = 1
-        sampler = "distributed"
+        args.sampler = "distributed"
 
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
@@ -525,7 +525,7 @@ def main(args):
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
         samples_per_gpu=args.samples_per_gpu,
-        sampler=sampler,
+        sampler=args.sampler,
         seed=args.seed,
     )
 
