@@ -97,6 +97,7 @@ def setup_dataloader(
     world_size = int(os.environ["WORLD_SIZE"])
 
     lengths = dataset.get_lengths()
+
     if sampler == "multipack":
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=packing_max_batch_len,
@@ -104,7 +105,7 @@ def setup_dataloader(
             num_replicas=world_size,
             rank=rank,
             seed=seed,
-            padding=not is_granite,
+            padding=not (is_granite or flatten_with_posid),
         )
         sampler = {"batch_sampler": sampler}
     elif sampler == "distributed":
