@@ -210,19 +210,19 @@ def main(args: DataProcessArgs):
 
     data = load_dataset("json", data_files=args.data_path, split="train")
     print("\033[92mremoving pretraining samples system msg\033[0m")
-    data = data.map(remove_pretrain_system_messages, num_proc=72)
+    data = data.map(remove_pretrain_system_messages, num_proc=16)
 
     logging.info(f"tokenizing the dataset with {args.model_path} tokenizer...")
     data_with_input_ids = data.map(
         lambda x: {
             "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True)
         },
-        num_proc=72,
+        num_proc=16,
     )
 
     print("\033[38;2;255;165;0mten largest length percentiles:")
     lens = np.array(
-        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)[
+        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=16)[
             "len"
         ]
     )
@@ -256,7 +256,7 @@ def main(args: DataProcessArgs):
             eos_tk,
             args.max_seq_len,
         ),
-        num_proc=72,
+        num_proc=16,
     )
     log_rank_0(
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
@@ -269,7 +269,7 @@ def main(args: DataProcessArgs):
                 x["input_ids"], user_tk, assistant_tk
             )
         },
-        num_proc=72,
+        num_proc=16,
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
