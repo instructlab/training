@@ -143,6 +143,8 @@ class TrainingArgs(BaseModel):
         )
     )
 
+    disable_flash_attn: bool = False
+
     # TODO(osilkin): support quantized full fine-tuning:
     # https://github.com/instructlab/training/issues/28
     # quantize_dtype: QuantizeDataType = QuantizeDataType.NONE
