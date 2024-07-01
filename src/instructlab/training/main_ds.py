@@ -508,7 +508,7 @@ def main(args):
         args.sampler = "multipack"
     except RuntimeError as e:
         if os.environ["LOCAL_RANK"] == "0":
-            print (f"\033[38;5;120m{e}\033[0m")
+            print(f"\033[38;5;120m{e}\033[0m")
 
         # fallback to grad accum = 1
         # NOTE: packing max batch len will not be used
