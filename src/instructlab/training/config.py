@@ -10,6 +10,7 @@ import os
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# public API
 class DeepSpeedOffloadStrategy(Enum):
     """
     Defines the offload strategy for DeepSpeed.
@@ -24,6 +25,7 @@ class DeepSpeedOffloadStrategy(Enum):
     NONE = None
 
 
+# public API
 class QuantizeDataType(Enum):
     """
     Defines what datatype we use during quantization.
@@ -34,6 +36,7 @@ class QuantizeDataType(Enum):
     NONE = None
 
 
+# public API
 class DataProcessArgs(BaseModel):
     """
     All the arguments consumed by the training data pre-process script.
@@ -49,6 +52,7 @@ class DataProcessArgs(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+# public API
 class TorchrunArgs(BaseModel):
     """
     Representation of the arguments being used by torchrun.
@@ -63,6 +67,7 @@ class TorchrunArgs(BaseModel):
     rdzv_endpoint: str
 
 
+# public API
 class LoraOptions(BaseModel):
     """
     Options to specify when training using a LoRA.
@@ -81,6 +86,7 @@ class LoraOptions(BaseModel):
         use_enum_values = True
 
 
+# public API
 class DeepSpeedOptions(BaseModel):
     """
     Represents the available options we support when training with the DeepSpeed optimizer.
@@ -98,6 +104,7 @@ class DeepSpeedOptions(BaseModel):
     save_samples: int | None = None
 
 
+# public API
 class TrainingArgs(BaseModel):
     """
     This class represents the arguments being used by the training script.

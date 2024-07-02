@@ -6,7 +6,7 @@ __all__ = (
     "QuantizeDataType",
     "TorchrunArgs",
     "TrainingArgs",
-    "run_training",  # pylint: disable=undefined-all-variable
+    "run_training",
 )
 
 # Local
@@ -21,18 +21,10 @@ from .config import (
 )
 
 
-def __dir__():
-    return globals().keys() | {"run_training"}
+# defer import of main_ds
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
+    """Wrapper around the main training job that calls torchrun."""
+    # Local
+    from .main_ds import run_training
 
-
-def __getattr__(name):
-    # lazy import run_training
-    if name == "run_training":
-        # pylint: disable=global-statement,import-outside-toplevel
-        global run_training
-        # Local
-        from .main_ds import run_training
-
-        return run_training
-
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return run_training(torch_args=torch_args, train_args=train_args)
