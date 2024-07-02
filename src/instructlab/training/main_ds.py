@@ -501,7 +501,7 @@ def main(args):
         avg_sample_len=dataset.get_lengths().mean(),
         effective_batch_size=args.effective_batch_size,
         max_batch_len_per_gpu=args.max_batch_len,
-        is_padding=not args.is_granite,
+        is_padding=not (args.is_granite or args.flatten_with_posid),
         dataset=dataset,
         pad_id=tokenizer.pad_token_id,
         seed=args.seed,
