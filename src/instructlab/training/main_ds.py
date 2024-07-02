@@ -228,12 +228,15 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # need to use this only when the CPU offload optimizer is enabled
-    optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
     if args.cpu_offload_optimizer:
         print(
-            "\033[33m!!! CPU offload optimizer enabled, switching optimizer to DeepSpeedCPUAdam !!!\033[0m"
+            "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
         )
         optimizer = DeepSpeedCPUAdam(
+            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        )
+    else:
+        optimizer = FusedAdam(
             model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
         )
 
