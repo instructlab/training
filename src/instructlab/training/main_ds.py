@@ -556,7 +556,8 @@ def main(args):
     torch.distributed.destroy_process_group()
 
 
-def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
+# public API
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
