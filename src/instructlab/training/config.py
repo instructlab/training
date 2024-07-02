@@ -4,6 +4,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
+from typing import Optional
 import os
 
 # Third Party
@@ -96,9 +97,9 @@ class DeepSpeedOptions(BaseModel):
     Defaults are all taken from the above docs.
     """
 
-    cpu_offload_optimizer: bool = False
+    cpu_offload_optimizer: Optional[bool] = False
     cpu_offload_optimizer_ratio: float = 1
-    cpu_offload_optimizer_pin_memory: bool = False
+    cpu_offload_optimizer_pin_memory: Optional[bool] = False
 
     # don't save in deepspeed format as a default
     save_samples: int | None = None
@@ -139,7 +140,7 @@ class TrainingArgs(BaseModel):
     is_padding_free: bool
     random_seed: int = 42
 
-    mock_data: bool = False
+    mock_data: Optional[bool] = False
     mock_data_len: int = 0
 
     deepspeed_options: DeepSpeedOptions = Field(
@@ -149,6 +150,8 @@ class TrainingArgs(BaseModel):
             cpu_offload_optimizer_pin_memory=False,
         )
     )
+
+    disable_flash_attn: Optional[bool] = False
 
     # TODO(osilkin): support quantized full fine-tuning:
     # https://github.com/instructlab/training/issues/28

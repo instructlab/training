@@ -94,24 +94,29 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
         )
 
+    base_model_args = {
+        "pretrained_model_name_or_path": args.model_name_or_path,
+        "torch_dtype": torch.bfloat16,
+        "quantization_config": bnb_config,
+    }
+    if not args.disable_flash_attn:
+        base_model_args["attn_implementation"] = "flash_attention_2"
+    elif args.is_granite:
+        raise RuntimeError(
+            "ERROR: Trying to use padding-free transformer without flash attention is not supported"
+        )
+
     if args.is_granite:
         with ensure_loadable_granite_checkpoint(
             args.model_name_or_path, args.output_dir
         ) as path:
+            base_model_args["pretrained_model_name_or_path"] = path
             model = GPTDolomiteForCausalLM.from_pretrained(
-                path,
-                attn_implementation="flash_attention_2",
-                torch_dtype=torch.bfloat16,
+                **base_model_args,
                 use_padding_free_transformer=True,
-                quantization_config=bnb_config,
             )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16,
-            quantization_config=bnb_config,
-        )
+        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
     if len(tokenizer) > model.config.vocab_size:
         print(
@@ -613,6 +618,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.is_padding_free:
         command.append("--is_granite")
 
+    if train_args.disable_flash_attn:
+        if train_args.is_padding_free:
+            raise RuntimeError(
+                "ERROR: Trying to use padding-free transformer without flash attention is not supported"
+            )
+        command.append("--disable_flash_attn")
+
     if train_args.lora:
         command.extend(
             [
@@ -750,6 +762,7 @@ if __name__ == "__main__":
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
         ),
     )
+    parser.add_argument("--disable_flash_attn", action="store_true")
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
