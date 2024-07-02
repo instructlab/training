@@ -87,10 +87,11 @@ def setup_dataloader(
     packing_max_batch_len=60000,
     samples_per_gpu=None,
     sampler="multipack",
+    flatten_with_posid=False,
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
-        pad_token_id, is_granite=is_granite, max_batch_len=max_batch_len
+        pad_token_id, is_granite=is_granite, max_batch_len=max_batch_len, flatten_with_posid=flatten_with_posid
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
