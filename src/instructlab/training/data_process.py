@@ -2,7 +2,8 @@
 from pathlib import Path
 from typing import List
 import logging
-import os
+from functools import partial
+
 
 # Third Party
 from datasets import load_dataset
@@ -192,6 +193,28 @@ def remove_pretrain_system_messages(example: dict):
     return {"messages": messages}
 
 
+def process_messages_format(example: dict, model_path: str):
+    messages = []
+    if 'granite' in model_path:
+        SYS_PROMPT = 'I am, Red Hat® Instruct Model based on Granite 7B, \
+                    an AI language model developed by Red Hat and IBM Research\
+                    , based on the Granite-7b-base language model. My primary \
+                    function is to be a chat assistant.'
+    elif 'mistral' in model_path:
+        SYS_PROMPT = 'You are an AI language model developed by IBM Research. \
+                    You are a cautious assistant. You carefully follow instructions. \
+                    You are helpful and harmless and you follow ethical guidelines and \
+                    promote positive behavior.'
+    
+    # system prompt
+    messages.append({'content': SYS_PROMPT, 'role': 'system'})
+    # user prompt (context doc) and input
+    messages.append({'content': example['answer_doc'] + '\n' + example['inputs'], 'role': 'user'})
+    messages.append({'content': example['targets'], 'rejected': example['rejected'].split('This answer is incorrect')[0].strip(), 'role': 'assistant_w_rejected'})
+    
+    return {"messages": messages}
+
+
 def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
@@ -210,6 +233,12 @@ def main(args: DataProcessArgs):
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
+
+    # if data is not preprocessed to be in the messages format, process it
+    if "messages" not in data.column_names:
+        logging.info('data is not in "messages" format, processing it...')
+        data = data.map(partial(process_messages_format, model_path=args.model_path), num_proc=72)
+
     print("\033[92mremoving pretraining samples system msg\033[0m")
     data = data.map(remove_pretrain_system_messages, num_proc=72)
 
