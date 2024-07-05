@@ -204,8 +204,9 @@ def main(args: DataProcessArgs):
         system_tk = None
     user_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.user)
     assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
+    contrastive_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.contrastive_sep)
     log_rank_0(
-        f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
+        f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}, contrastive: {contrastive_tk}"
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
