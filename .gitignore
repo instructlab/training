@@ -4,6 +4,7 @@
 
 # add sample data
 sample-data
+.vscode/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
