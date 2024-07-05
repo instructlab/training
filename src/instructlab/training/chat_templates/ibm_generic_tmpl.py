@@ -7,6 +7,7 @@ SPECIAL_TOKENS = SpecialTokens(
     assistant="<|assistant|>",
     eos="<|endoftext|>",
     pad="<|pad|>",
+    contrastive_sep="<|contrastive_sep|>",
 )
 
 CHAT_TEMPLATE = (

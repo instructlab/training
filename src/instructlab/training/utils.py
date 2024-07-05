@@ -192,94 +192,188 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False):
+def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, beta=0., gamma=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
     if is_granite:
 
-        def get_autoregressive_language_modeling_loss(
-            lm_logits: torch.Tensor,
-            labels: torch.Tensor,
-            cu_seqlens: torch.Tensor,
-        ) -> torch.Tensor:
-            loss = None
-            # Shift so that tokens < n predict n
-            if labels is not None:
-                if model._use_padding_free_transformer:
-                    shift_logits = lm_logits[:-1, :]
-                    shift_labels = labels[1:].to(shift_logits.device)
+        if contrastive_loss:
+            # we call it autoregressive lm loss, but it's actually contrastive loss
+            def get_autoregressive_language_modeling_loss(
+                lm_logits: torch.Tensor,
+                labels: torch.Tensor,
+                cu_seqlens: torch.Tensor,
+            ) -> torch.Tensor:
+                loss = None
+                if labels is not None:
+                    if model._use_padding_free_transformer:
+                        raise NotImplementedError("Padding free transformer not supported for contrastive loss")
+                    else:
+                        # chunk logits, labels, and cu_seqlens into halves (positives and negatives)
+                        shift_logits_pos, shift_logits_neg = torch.chunk(lm_logits[..., :-1, :].contiguous(), 2, dim=0)
+                        shift_labels_pos, shift_labels_neg = torch.chunk(labels[..., 1:].contiguous().to(shift_logits_pos.device), 2, dim=0)
 
-                    # this is needed so that the last token of current example doesn't predict first token of next example
-                    drop_loss_positions = cu_seqlens[1:-1] - 1
-                    shift_labels[drop_loss_positions] = -100
-                else:
-                    shift_logits = lm_logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous().to(shift_logits.device)
+                        # define beta & gamma for simpo
+                        
+                        # simpo loss implemented (no reference model)
+                        pos_loss_mask = (shift_labels_pos != -100)
+                        shift_labels_pos[~pos_loss_mask] = 0
+                        pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), 2, shift_labels_pos.unsqueeze(2)).squeeze(2)
+                        pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
 
-                # Flatten the tokens
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(
-                    shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-                )
+                        neg_loss_mask = (shift_labels_neg != -100)
+                        shift_labels_neg[~neg_loss_mask] = 0
+                        neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), 2, shift_labels_neg.unsqueeze(2)).squeeze(2)
+                        neg_logp = (neg_logp * neg_loss_mask).sum() / neg_loss_mask.sum(-1)
+                        
+                        pi_logratios = pos_logp - neg_logp
+                        gamma_logratios = gamma / beta
+                        logits = pi_logratios - gamma_logratios
 
-            return loss
+                        loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+                        pos_rewards = beta * pos_logp.detach()
+                        neg_rewards = beta * neg_logp.detach()
+                        
+                        return loss
+            model.get_autoregressive_language_modeling_loss = (
+                get_autoregressive_language_modeling_loss
+            )
 
-        model.get_autoregressive_language_modeling_loss = (
-            get_autoregressive_language_modeling_loss
-        )
+        else:
+            def get_autoregressive_language_modeling_loss(
+                lm_logits: torch.Tensor,
+                labels: torch.Tensor,
+                cu_seqlens: torch.Tensor,
+            ) -> torch.Tensor:
+                loss = None
+                # Shift so that tokens < n predict n
+                if labels is not None:
+                    if model._use_padding_free_transformer:
+                        shift_logits = lm_logits[:-1, :]
+                        shift_labels = labels[1:].to(shift_logits.device)
+
+                        # this is needed so that the last token of current example doesn't predict first token of next example
+                        drop_loss_positions = cu_seqlens[1:-1] - 1
+                        shift_labels[drop_loss_positions] = -100
+                    else:
+                        shift_logits = lm_logits[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous().to(shift_logits.device)
+
+                    # Flatten the tokens
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+                    loss = loss_fct(
+                        shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+                    )
+
+                return loss
+
+            model.get_autoregressive_language_modeling_loss = (
+                get_autoregressive_language_modeling_loss
+            )
         return model
     else:
 
-        def reduce_sum_forward(
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-            **deprecated_arguments,
-        ):
-            output = model.__original_forward__(
-                input_ids,
-                attention_mask,
-                position_ids,
-                past_key_values,
-                inputs_embeds,
-                labels,
-                use_cache,
-                output_attentions,
-                output_hidden_states,
-                return_dict,
-            )
+        if contrastive_loss:
+            def contrastive_forward(
+                input_ids: torch.LongTensor = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_values: Optional[List[torch.FloatTensor]] = None,
+                inputs_embeds: Optional[torch.FloatTensor] = None,
+                labels: Optional[torch.LongTensor] = None,
+                use_cache: Optional[bool] = None,
+                output_attentions: Optional[bool] = None,
+                output_hidden_states: Optional[bool] = None,
+                return_dict: Optional[bool] = None,
+                **deprecated_arguments,
+            ):
+                output = model.__original_forward__(
+                    input_ids,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    inputs_embeds,
+                    labels,
+                    use_cache,
+                    output_attentions,
+                    output_hidden_states,
+                    return_dict,
+                )
 
-            return_dict = isinstance(output, dict)
-            logits = output.logits if return_dict else output[0]
-            loss = None
-            if labels is not None:
-                # Shift so that tokens < n predict n
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                # Flatten the tokens
-                shift_logits = shift_logits.view(-1, model.config.vocab_size)
-                shift_labels = shift_labels.view(-1)
-                # Ensure tensors are on the same device
-                shift_labels = shift_labels.to(shift_logits.device)
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(shift_logits, shift_labels)
+                return_dict = isinstance(output, dict)
+                logits = output.logits if return_dict else output[0]
+                loss = None
+                if labels is not None:
+                    # Shift so that tokens < n predict n
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    # Flatten the tokens
+                    shift_logits = shift_logits.view(-1, model.config.vocab_size)
+                    shift_labels = shift_labels.view(-1)
+                    # Ensure tensors are on the same device
+                    shift_labels = shift_labels.to(shift_logits.device)
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+                    loss = loss_fct(shift_logits, shift_labels)
 
-            if not return_dict:
-                return ((loss,) + output) if loss is not None else output
+                if not return_dict:
+                    return ((loss,) + output) if loss is not None else output
 
-            output.loss = loss
-            return output
+                output.loss = loss
+                return output
+            
+            model.__original_forward__ = model.forward
+            model.forward = contrastive_forward
+        else:
+            def reduce_sum_forward(
+                input_ids: torch.LongTensor = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                past_key_values: Optional[List[torch.FloatTensor]] = None,
+                inputs_embeds: Optional[torch.FloatTensor] = None,
+                labels: Optional[torch.LongTensor] = None,
+                use_cache: Optional[bool] = None,
+                output_attentions: Optional[bool] = None,
+                output_hidden_states: Optional[bool] = None,
+                return_dict: Optional[bool] = None,
+                **deprecated_arguments,
+            ):
+                output = model.__original_forward__(
+                    input_ids,
+                    attention_mask,
+                    position_ids,
+                    past_key_values,
+                    inputs_embeds,
+                    labels,
+                    use_cache,
+                    output_attentions,
+                    output_hidden_states,
+                    return_dict,
+                )
 
-        model.__original_forward__ = model.forward
-        model.forward = reduce_sum_forward
+                return_dict = isinstance(output, dict)
+                logits = output.logits if return_dict else output[0]
+                loss = None
+                if labels is not None:
+                    # Shift so that tokens < n predict n
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                    # Flatten the tokens
+                    shift_logits = shift_logits.view(-1, model.config.vocab_size)
+                    shift_labels = shift_labels.view(-1)
+                    # Ensure tensors are on the same device
+                    shift_labels = shift_labels.to(shift_logits.device)
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+                    loss = loss_fct(shift_logits, shift_labels)
+
+                if not return_dict:
+                    return ((loss,) + output) if loss is not None else output
+
+                output.loss = loss
+                return output
+
+            model.__original_forward__ = model.forward
+            model.forward = reduce_sum_forward
         return model
 
 
