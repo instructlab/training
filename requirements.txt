@@ -1,5 +1,4 @@
 packaging>=20.9
-wheel>=0.43
 pyyaml
 py-cpuinfo
 # we set this to be above 0a0 so that it doesn't
