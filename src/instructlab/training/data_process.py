@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 import logging
 from functools import partial
+import os
 
 
 # Third Party
@@ -23,15 +24,18 @@ def check_valid_sample(
     assistant_tk: int,
     user_tk: int,
     eos_tk: int,
+    contrastive_tk: int,
     max_len: int = 1024,
 ):
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
     if whole_sentence_tk[-1] != eos_tk:
+        print(f"\033[91mthe last token is not eos\033[0m")
+        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
 
-    special_tokens = [system_tk, assistant_tk, user_tk]
+    special_tokens = [system_tk, assistant_tk, user_tk, contrastive_tk]
     if not any(token in whole_sentence_tk for token in special_tokens):
         return True
 
@@ -39,6 +43,7 @@ def check_valid_sample(
     user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
     assistant_token_index = (whole_sentence_tk == assistant_tk).nonzero()[0]
     eos_token_index = (whole_sentence_tk == eos_tk).nonzero()[0]
+    contrastive_token_index = (whole_sentence_tk == contrastive_tk).nonzero()[0]
 
     # check that there are at least one user_token, assistant_token and eos_token
     if (
@@ -49,6 +54,12 @@ def check_valid_sample(
         print(f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
+
+    # if there is contrastive token, then sub-sample assistant_token_index by the number of contrastive tokens
+    # and then do alternating pattern check
+    if len(contrastive_token_index) > 0:
+        # select every second assistant_token_index
+        assistant_token_index = assistant_token_index[::(len(contrastive_token_index)+1)]
 
     # check that user_index_token is less than all other indices
     if len(user_token_index) != len(assistant_token_index):
@@ -146,7 +157,7 @@ def unmask_only_assistant_responses(
 
 
 def unmask_only_assistant_responses_from_list(
-    sentence_tk: List[int], user_token: int, assist_token: int
+    sentence_tk: List[int], user_token: int, assist_token: int, contrastive_token: int,
 ) -> List[int]:
     sentence_tk = np.array(sentence_tk)
     assert sentence_tk.ndim == 1
@@ -158,10 +169,17 @@ def unmask_only_assistant_responses_from_list(
 
     user_ids = (sentence_tk == user_token).nonzero()[0]
     assist_ids = (sentence_tk == assist_token).nonzero()[0]
+    contrastive_ids = (sentence_tk == contrastive_token).nonzero()[0]
+    num_contrastive = len(contrastive_ids) + 1
 
-    # Find the first user_id that is greater than each assist_id
-    valid_assist_mask = assist_ids[:, None] < user_ids
-    first_user_ids_after_assist_ids = user_ids[valid_assist_mask.argmax(axis=1)]
+
+    end_assist_ids = user_ids
+    # more than 1 sample per user query, then the end of the assistant response is the next contrastive token, not user tokens
+    if num_contrastive > 1:
+        end_assist_ids = contrastive_ids
+
+    valid_assist_mask = assist_ids[:, None] < end_assist_ids
+    first_user_ids_after_assist_ids = end_assist_ids[valid_assist_mask.argmax(axis=1)]
 
     # Filter out assist_ids that do not have a corresponding user_id
     valid_assist_ids = assist_ids[first_user_ids_after_assist_ids != 0]
@@ -171,7 +189,11 @@ def unmask_only_assistant_responses_from_list(
 
     # Assign labels for each valid assist_id-user_id pair (without including the assist_id nor the user_id)
     for assist_id, user_id in zip(valid_assist_ids, valid_user_ids):
-        labels[assist_id + 1 : user_id] = sentence_tk[assist_id + 1 : user_id]
+        # include the contrastive token as separator
+        if num_contrastive > 1:
+            labels[assist_id + 1: user_id+1] = sentence_tk[assist_id + 1: user_id+1]
+        else:
+            labels[assist_id + 1 : user_id] = sentence_tk[assist_id + 1 : user_id]
 
     # Assert that the conversation ends with an assistant token
     assert (
@@ -196,15 +218,9 @@ def remove_pretrain_system_messages(example: dict):
 def process_messages_format(example: dict, model_path: str):
     messages = []
     if 'granite' in model_path:
-        SYS_PROMPT = 'I am, Red Hat® Instruct Model based on Granite 7B, \
-                    an AI language model developed by Red Hat and IBM Research\
-                    , based on the Granite-7b-base language model. My primary \
-                    function is to be a chat assistant.'
+        SYS_PROMPT = 'I am, Red Hat® Instruct Model based on Granite 7B, an AI language model developed by Red Hat and IBM Research, based on the Granite-7b-base language model. My primary function is to be a chat assistant.'
     elif 'mistral' in model_path:
-        SYS_PROMPT = 'You are an AI language model developed by IBM Research. \
-                    You are a cautious assistant. You carefully follow instructions. \
-                    You are helpful and harmless and you follow ethical guidelines and \
-                    promote positive behavior.'
+        SYS_PROMPT = 'You are an AI language model developed by IBM Research. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.'
     
     # system prompt
     messages.append({'content': SYS_PROMPT, 'role': 'system'})
@@ -236,7 +252,9 @@ def main(args: DataProcessArgs):
 
     # if data is not preprocessed to be in the messages format, process it
     if "messages" not in data.column_names:
-        logging.info('data is not in "messages" format, processing it...')
+        logging.info('data is not in "messages" format, filtering it first...')
+        data = data.filter(lambda x: x["rejected"] != "", num_proc=72)
+        logging.info('packing it into "messages" format...')
         data = data.map(partial(process_messages_format, model_path=args.model_path), num_proc=72)
 
     print("\033[92mremoving pretraining samples system msg\033[0m")
@@ -250,44 +268,45 @@ def main(args: DataProcessArgs):
         num_proc=72,
     )
 
-    print("\033[38;2;255;165;0mten largest length percentiles:")
-    lens = np.array(
-        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)[
-            "len"
-        ]
-    )
-    biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
-    for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90+i*1}th: {q}")
-    print("\033[0m")
+    # print("\033[38;2;255;165;0mten largest length percentiles:")
+    # lens = np.array(
+    #     data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)[
+    #         "len"
+    #     ]
+    # )
+    # biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
+    # for i, q in enumerate(biggest_10_percent):
+    #     print(f"quantile {90+i*1}th: {q}")
+    # print("\033[0m")
 
-    num_dropped_samples = np.sum(lens > args.max_seq_len)
-    print(
-        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
-    )
-    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    # num_dropped_samples = np.sum(lens > args.max_seq_len)
+    # print(
+    #     f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    # )
+    # print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
 
-    lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
-    for i, q in enumerate(lowest_10_percent):
-        print(f"quantile {i}th: {q}")
-    num_dropped_samples = np.sum(lens < 20)
-    print(
-        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
-    )
+    # lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
+    # for i, q in enumerate(lowest_10_percent):
+    #     print(f"quantile {i}th: {q}")
+    # num_dropped_samples = np.sum(lens < 20)
+    # print(
+    #     f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    # )
 
-    logging.info("checking the validity of the samples...")
-    data_with_input_ids = data_with_input_ids.filter(
-        lambda x: check_valid_sample(
-            tokenizer,
-            x["input_ids"],
-            system_tk,
-            assistant_tk,
-            user_tk,
-            eos_tk,
-            args.max_seq_len,
-        ),
-        num_proc=72,
-    )
+    # logging.info("checking the validity of the samples...")
+    # data_with_input_ids = data_with_input_ids.filter(
+    #     lambda x: check_valid_sample(
+    #         tokenizer,
+    #         x["input_ids"],
+    #         system_tk,
+    #         assistant_tk,
+    #         user_tk,
+    #         eos_tk,
+    #         contrastive_tk,
+    #         args.max_seq_len,
+    #     ),
+    #     num_proc=72,
+    # )
     log_rank_0(
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
@@ -296,10 +315,10 @@ def main(args: DataProcessArgs):
     data_with_labels = data_with_input_ids.map(
         lambda x: {
             "labels": unmask_only_assistant_responses_from_list(
-                x["input_ids"], user_tk, assistant_tk
+                x["input_ids"], user_tk, assistant_tk, contrastive_tk
             )
         },
-        num_proc=72,
+        num_proc=1,
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])

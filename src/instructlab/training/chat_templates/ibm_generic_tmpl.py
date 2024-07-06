@@ -19,7 +19,7 @@ CHAT_TEMPLATE = (
     "{% elif message['role'] == 'user' %}"
     "{{'<|user|>' + '\n' + message['content'] + '\n'}}"
     "{% elif message['role'] == 'assistant_w_rejected' %}"
-    "{{'<|assistant|>' + '\n' + message['content'] + '\n' + '<|contrastive_sep|>' + '<|assistant|>' + '\n' + message['rejected'] + ('' if loop.last else '\n')}}"
+    "{{'<|assistant|>' + '\n' + message['content'] + ('<|endoftext|>' if loop.last else '') + '<|contrastive_sep|>' + '<|assistant|>' + '\n' + message['rejected'] + ('<|endoftext|>' if loop.last else '\n')}}"
     "{% elif message['role'] == 'assistant' %}"
     "{{'<|assistant|>' + '\n' + message['content'] + '<|endoftext|>' + ('' if loop.last else '\n')}}"
     "{% endif %}"
