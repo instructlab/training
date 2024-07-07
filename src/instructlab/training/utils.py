@@ -192,7 +192,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, beta=0., gamma=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, contrastive_tok=None, pad_tok=None, beta=0., gamma=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -288,6 +288,45 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                 return_dict: Optional[bool] = None,
                 **deprecated_arguments,
             ):
+                # TODO: we can make it a bit more efficient by removing the original padding
+                prompt_end_idxs = [(l != -100).nonzero(as_tuple=True)[0][0].item() for l in labels] # list of prompt end indices
+                contrastive_tok_idxs = [(l == contrastive_tok).nonzero(as_tuple=True)[0][0].item() for l in labels] # list of contrastive token indices
+                
+                # positive samples -- select up to the contrastive token
+                pos_input_ids = [i[:idx] for i, idx in zip(input_ids, contrastive_tok_idxs)]
+                pos_attention_mask = [i[:idx] for i, idx in zip(attention_mask, contrastive_tok_idxs)]
+
+                # negative samples -- select up to the prompt end and select from after contrastive token
+                neg_input_ids = [i[:pei] + i[cti+1:] for i, cti, pei in zip(input_ids, contrastive_tok_idxs, prompt_end_idxs)]
+                neg_attention_mask = [i[:pei] + i[cti+1:] for i, cti, pei in zip(attention_mask, contrastive_tok_idxs, prompt_end_idxs)]
+
+                # pad to max length in batch
+                max_len = max([len(i) for i in pos_input_ids + neg_input_ids])
+                
+                input_ids = torch.stack(
+                    [
+                        F.pad(
+                            item["input_ids"],
+                            (max_len - len(item["input_ids"]), 0),
+                            mode="constant",
+                            value=pad_tok,
+                        )
+                        for item in pos_input_ids + neg_input_ids
+                    ]
+                ).cuda()
+
+                attention_mask = torch.stack(
+                    [
+                        F.pad(
+                            item["attention_mask"],
+                            (max_len - len(item["attention_mask"]), 0),
+                            mode="constant",
+                            value=0,
+                        )
+                        for item in pos_attention_mask + neg_attention_mask
+                    ]
+                ).cuda()
+
                 output = model.__original_forward__(
                     input_ids,
                     attention_mask,
@@ -303,23 +342,42 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
 
                 return_dict = isinstance(output, dict)
                 logits = output.logits if return_dict else output[0]
-                loss = None
+                loss, pos_rewards, neg_rewards = None
+
+
                 if labels is not None:
                     # Shift so that tokens < n predict n
-                    shift_logits = logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous()
-                    # Flatten the tokens
-                    shift_logits = shift_logits.view(-1, model.config.vocab_size)
-                    shift_labels = shift_labels.view(-1)
-                    # Ensure tensors are on the same device
-                    shift_labels = shift_labels.to(shift_logits.device)
-                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                    loss = loss_fct(shift_logits, shift_labels)
+                    shift_logits_pos, shift_logits_neg = torch.chunk(logits[..., :-1, :].contiguous(), 2, dim=0)
+                    shift_labels_pos, shift_labels_neg = torch.chunk(labels[..., 1:].contiguous().to(shift_logits_pos.device), 2, dim=0)
+
+                    # define beta & gamma for simpo
+                    
+                    # simpo loss implemented (no reference model)
+                    pos_loss_mask = (shift_labels_pos != -100)
+                    shift_labels_pos[~pos_loss_mask] = 0
+                    pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), 2, shift_labels_pos.unsqueeze(2)).squeeze(2)
+                    pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
+
+                    neg_loss_mask = (shift_labels_neg != -100)
+                    shift_labels_neg[~neg_loss_mask] = 0
+                    neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), 2, shift_labels_neg.unsqueeze(2)).squeeze(2)
+                    neg_logp = (neg_logp * neg_loss_mask).sum() / neg_loss_mask.sum(-1)
+                    
+                    pi_logratios = pos_logp - neg_logp
+                    gamma_logratios = gamma / beta
+                    logits = pi_logratios - gamma_logratios
+
+                    loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+                    pos_rewards = beta * pos_logp.detach()
+                    neg_rewards = beta * neg_logp.detach()
 
                 if not return_dict:
                     return ((loss,) + output) if loss is not None else output
 
                 output.loss = loss
+                output.pos_rewards = pos_rewards
+                output.neg_rewards = neg_rewards
+
                 return output
             
             model.__original_forward__ = model.forward

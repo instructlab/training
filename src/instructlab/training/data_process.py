@@ -268,45 +268,45 @@ def main(args: DataProcessArgs):
         num_proc=72,
     )
 
-    # print("\033[38;2;255;165;0mten largest length percentiles:")
-    # lens = np.array(
-    #     data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)[
-    #         "len"
-    #     ]
-    # )
-    # biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
-    # for i, q in enumerate(biggest_10_percent):
-    #     print(f"quantile {90+i*1}th: {q}")
-    # print("\033[0m")
+    print("\033[38;2;255;165;0mten largest length percentiles:")
+    lens = np.array(
+        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)[
+            "len"
+        ]
+    )
+    biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
+    for i, q in enumerate(biggest_10_percent):
+        print(f"quantile {90+i*1}th: {q}")
+    print("\033[0m")
 
-    # num_dropped_samples = np.sum(lens > args.max_seq_len)
-    # print(
-    #     f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
-    # )
-    # print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    num_dropped_samples = np.sum(lens > args.max_seq_len)
+    print(
+        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
+    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
 
-    # lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
-    # for i, q in enumerate(lowest_10_percent):
-    #     print(f"quantile {i}th: {q}")
-    # num_dropped_samples = np.sum(lens < 20)
-    # print(
-    #     f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
-    # )
+    lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
+    for i, q in enumerate(lowest_10_percent):
+        print(f"quantile {i}th: {q}")
+    num_dropped_samples = np.sum(lens < 20)
+    print(
+        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
 
-    # logging.info("checking the validity of the samples...")
-    # data_with_input_ids = data_with_input_ids.filter(
-    #     lambda x: check_valid_sample(
-    #         tokenizer,
-    #         x["input_ids"],
-    #         system_tk,
-    #         assistant_tk,
-    #         user_tk,
-    #         eos_tk,
-    #         contrastive_tk,
-    #         args.max_seq_len,
-    #     ),
-    #     num_proc=72,
-    # )
+    logging.info("checking the validity of the samples...")
+    data_with_input_ids = data_with_input_ids.filter(
+        lambda x: check_valid_sample(
+            tokenizer,
+            x["input_ids"],
+            system_tk,
+            assistant_tk,
+            user_tk,
+            eos_tk,
+            contrastive_tk,
+            args.max_seq_len,
+        ),
+        num_proc=72,
+    )
     log_rank_0(
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
@@ -318,7 +318,7 @@ def main(args: DataProcessArgs):
                 x["input_ids"], user_tk, assistant_tk, contrastive_tk
             )
         },
-        num_proc=1,
+        num_proc=72,
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
