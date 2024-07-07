@@ -310,7 +310,7 @@ def prepare_peft_model(
         PeftConfig,
         PeftModel,
         get_peft_model,
-        prepare_model_for_kbit_training,
+        # prepare_model_for_kbit_training,
     )
     from trl.trainer.utils import peft_module_casting_to_bf16
 
