@@ -226,7 +226,7 @@ def process_messages_format(example: dict, model_path: str):
     messages.append({'content': SYS_PROMPT, 'role': 'system'})
     # user prompt (context doc) and input
     messages.append({'content': example['answer_doc'] + '\n' + example['inputs'], 'role': 'user'})
-    messages.append({'content': example['targets'], 'rejected': example['rejected'].split('This answer is incorrect')[0].strip(), 'role': 'assistant_w_rejected'})
+    messages.append({'content': example['targets'], 'role': 'assistant'})
     
     return {"messages": messages}
 
