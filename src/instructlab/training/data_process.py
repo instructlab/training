@@ -191,7 +191,9 @@ def unmask_only_assistant_responses_from_list(
 
     return labels.tolist()
 
-def create_labels_with_pretrain_mode(sentence_tk, user_token, assist_token, system_token, pretrain_token, pretrain_end_token):
+def create_labels_with_pretrain_mode(rec, user_token, assist_token, system_token, pretrain_token='<|pretrain|>', pretrain_end_token='<|/pretrain|>'):
+
+    sentence_tk = rec['input_ids']
 
     def unmask(token, special_tokens):
         if token in special_tokens:
@@ -318,6 +320,8 @@ def main(args: DataProcessArgs):
     )
 
     logging.info("unmasking the assistant responses...")
+    import IPython; IPython.embed();
+    exit()
     data_with_labels = data_with_input_ids.map(
         # lambda x: {
         #     "labels": unmask_only_assistant_responses_from_list(
@@ -325,8 +329,11 @@ def main(args: DataProcessArgs):
         #     )
         # },
         create_labels_with_pretrain_mode,
+        fn_kwargs={'user_token': user_tk, 'assist_token':assistant_tk, 'system_token': system_tk},
         num_proc=16,
     )
+    import IPython; IPython.embed();
+    exit()
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
     # use path to get the stem of the file
