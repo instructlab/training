@@ -1,5 +1,6 @@
 # Standard
 from contextlib import contextmanager
+from copy import copy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -663,10 +664,14 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         output_model_file = output_dir / WEIGHTS_NAME
         output_config_file = output_dir / CONFIG_NAME
 
+        tmp_conf = copy(model_to_save.config)
+        if not tmp_conf.architectures:
+            tmp_conf.architectures = ["LlamaForCausalLM"]
+
         if args.is_granite and convert_granite:
             with TemporaryDirectory("w") as tmpdir:
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
-                model_to_save.config.to_json_file(Path(tmpdir) / CONFIG_NAME)
+                tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
                 tokenizer.save_pretrained(tmpdir)
                 # export doesnt like the directory to exist
                 shutil.rmtree(output_dir)
@@ -678,7 +683,7 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
                 )
         else:
             torch.save(model_state, str(output_model_file))
-            model_to_save.config.to_json_file(str(output_config_file))
+            tmp_conf.to_json_file(str(output_config_file))
             tokenizer.save_pretrained(str(output_dir))
 
     dist.barrier()
