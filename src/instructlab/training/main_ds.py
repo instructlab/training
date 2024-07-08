@@ -355,7 +355,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(6, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -377,16 +377,21 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             )
             loss = output.loss
 
+            # aggregated_values[2] = #loss.item()
+            # TODO: make sure this is the right batch size
+            aggregated_values[3] = loss.shape[0]
+            
+            loss = loss.sum()
             aggregated_values[2] = loss.item()
+            
+            aggregated_values[4] = output.pos_rewards.item()
+            aggregated_values[5] = output.neg_rewards.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
 
             num_loss_counted_tokens = aggregated_values[0]
-            
-            # TODO: disabled this, but check this w aldo
-            # loss = (
-            #     loss / num_loss_counted_tokens * world_size
-            # )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+
+            loss = loss / aggregated_values[3] * world_size
 
             print(
                 f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -429,6 +434,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         ),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
+                        "pos_reward": float(aggregated_values[4]) / aggregated_values[3],
+                        "neg_reward": float(aggregated_values[5]) / aggregated_values[3],
                     }
                 )
 

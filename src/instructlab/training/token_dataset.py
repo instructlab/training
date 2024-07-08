@@ -87,6 +87,7 @@ def setup_dataloader(
     packing_max_batch_len=60000,
     seed=47,
 ) -> DataLoader:
+    # TODO: pass contrastive tok
     collate_fn = make_collate_fn(
         pad_token_id, is_granite=is_granite, max_batch_len=max_batch_len
     )
