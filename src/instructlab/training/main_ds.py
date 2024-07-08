@@ -33,7 +33,8 @@ from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
-from instructlab.training.tokenizer_utils import setup_tokenizer
+from instructlab.training.tokenizer_utils import setup_tokenizer, get_sp_token
+from instructlab.training.tokenizer_utils import SpecialTokens
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
@@ -158,7 +159,10 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         "GemmaForCausalLM",
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
-    model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
+    contrastive_tok = get_sp_token(tokenizer, SpecialTokens.contrastive_sep)
+    pad_tok = get_sp_token(tokenizer, SpecialTokens.pad)
+
+    model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite, contrastive_loss=args.contrastive_loss, contrastive_tok=contrastive_tok, beta=args.beta, gamma_beta_ratio=args.gamma_beta_ratio, label_smoothing=args.label_smoothing)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
     # handling of gradient checkpointing
@@ -378,9 +382,11 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             all_reduce(aggregated_values, op=ReduceOp.SUM)
 
             num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+            
+            # TODO: disabled this, but check this w aldo
+            # loss = (
+            #     loss / num_loss_counted_tokens * world_size
+            # )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
 
             print(
                 f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -730,7 +736,15 @@ if __name__ == "__main__":
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
         ),
     )
+
+    # contrastive arguments
+    parser.add_argument("--contrastive_loss", action="store_true", default=False)
+    parser.add_argument("--beta", type=float, default=2.0, help="beta for dpo/simpo -- controls reward scaling btw winning and losing)")
+    parser.add_argument("--gamma_beta_ratio", type=float, default=0.5, help="controls target reward margin")
+    parser.add_argument("--label_smoothing", type=float, default=0.0, help="label smoothing for contrastive loss")
+    
     args = parser.parse_args()
+
     set_random_seed(args.seed)
     main(args)
 

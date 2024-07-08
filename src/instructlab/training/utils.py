@@ -192,7 +192,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, contrastive_tok=None, pad_tok=None, beta=0., gamma=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -213,8 +213,6 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                         # chunk logits, labels, and cu_seqlens into halves (positives and negatives)
                         shift_logits_pos, shift_logits_neg = torch.chunk(lm_logits[..., :-1, :].contiguous(), 2, dim=0)
                         shift_labels_pos, shift_labels_neg = torch.chunk(labels[..., 1:].contiguous().to(shift_logits_pos.device), 2, dim=0)
-
-                        # define beta & gamma for simpo
                         
                         # simpo loss implemented (no reference model)
                         pos_loss_mask = (shift_labels_pos != -100)
@@ -349,8 +347,6 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     # Shift so that tokens < n predict n
                     shift_logits_pos, shift_logits_neg = torch.chunk(logits[..., :-1, :].contiguous(), 2, dim=0)
                     shift_labels_pos, shift_labels_neg = torch.chunk(labels[..., 1:].contiguous().to(shift_logits_pos.device), 2, dim=0)
-
-                    # define beta & gamma for simpo
                     
                     # simpo loss implemented (no reference model)
                     pos_loss_mask = (shift_labels_pos != -100)
@@ -364,13 +360,14 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     neg_logp = (neg_logp * neg_loss_mask).sum() / neg_loss_mask.sum(-1)
                     
                     pi_logratios = pos_logp - neg_logp
-                    gamma_logratios = gamma / beta
+                    gamma_logratios = gamma_beta_ratio
                     logits = pi_logratios - gamma_logratios
 
                     loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
                     pos_rewards = beta * pos_logp.detach()
                     neg_rewards = beta * neg_logp.detach()
 
+                # TODO: how to handle these rewards when not return_dict
                 if not return_dict:
                     return ((loss,) + output) if loss is not None else output
 
