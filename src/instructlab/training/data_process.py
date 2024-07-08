@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import List
 import logging
 import os
+from functools import partial
 
 # Third Party
 from datasets import load_dataset
@@ -22,17 +23,23 @@ def check_valid_sample(
     assistant_tk: int,
     user_tk: int,
     eos_tk: int,
+    pretrain_tk: int,
     max_len: int = 1024,
 ):
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
-        return False
-    # last token should be eos_token
-    if whole_sentence_tk[-1] != eos_tk:
         return False
 
     special_tokens = [system_tk, assistant_tk, user_tk]
     if not any(token in whole_sentence_tk for token in special_tokens):
         return True
+    
+    #TODO: check also for the ending token and everything that is not wrapped should go over the same process as bellow.
+    if pretrain_tk in whole_sentence_tk:
+        return True
+    
+    # last token should be eos_token
+    if whole_sentence_tk[-1] != eos_tk:
+        return False
 
     whole_sentence_tk = np.array(whole_sentence_tk)
     user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
@@ -191,14 +198,13 @@ def unmask_only_assistant_responses_from_list(
 
     return labels.tolist()
 
-def create_labels_with_pretrain_mode(rec, user_token, assist_token, system_token, pretrain_token='<|pretrain|>', pretrain_end_token='<|/pretrain|>'):
-
-    sentence_tk = rec['input_ids']
+def create_labels_with_pretrain_mode(example, user_token, assist_token, system_token, pretrain_token, pretrain_end_token):
+    sentence_tk = example["input_ids"]
 
     def unmask(token, special_tokens):
         if token in special_tokens:
-            return token
-        return -100
+            return -100
+        return token
 
     def mask(token, *args):
         return -100
@@ -209,7 +215,7 @@ def create_labels_with_pretrain_mode(rec, user_token, assist_token, system_token
             mask_function = unmask
         elif token == pretrain_end_token:
             in_pretraining = False
-            mask_function = None
+            mask_function = mask
         if not in_pretraining:
             if token == assist_token: # unmasking because of assistant
                 mask_function = unmask
@@ -230,9 +236,10 @@ def create_labels_with_pretrain_mode(rec, user_token, assist_token, system_token
     final_sentence_tk = [token for i, token in enumerate(sentence_tk) if i not in pretrain_indices]
     final_labels = [label for i, label in enumerate(labels) if i not in pretrain_indices]
 
-    # Assert no assistant, system, or user tokens are unmasked
     for label, token in zip(final_labels, final_sentence_tk):
-        assert label == -100 or token not in [user_token, assist_token, system_token]
+        assert label == -100 or token not in [user_token, assist_token, system_token], f"Token {token} is unmasked, special tokens should not be unmasked."
+        assert token not in [pretrain_token, pretrain_end_token], f"Token {token} is a pretraining token, it should not be in the final sentence."
+        assert label == token or label == -100, f"unless masked, label should be the same as the token."
 
     return {'labels':final_labels, 'input_ids':final_sentence_tk}
 
@@ -311,6 +318,7 @@ def main(args: DataProcessArgs):
             assistant_tk,
             user_tk,
             eos_tk,
+            get_sp_token(tokenizer, '<|pretrain|>'),
             args.max_seq_len,
         ),
         num_proc=16,
@@ -319,21 +327,19 @@ def main(args: DataProcessArgs):
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
 
-    logging.info("unmasking the assistant responses...")
-    import IPython; IPython.embed();
-    exit()
-    data_with_labels = data_with_input_ids.map(
-        # lambda x: {
-        #     "labels": unmask_only_assistant_responses_from_list(
-        #         x["input_ids"], user_tk, assistant_tk
-        #     )
-        # },
+    create_labels_with_pretrain_mode_ = partial(
         create_labels_with_pretrain_mode,
-        fn_kwargs={'user_token': user_tk, 'assist_token':assistant_tk, 'system_token': system_tk},
+        user_token=user_tk, 
+        assist_token=assistant_tk, 
+        system_token=system_tk, 
+        pretrain_token=get_sp_token(tokenizer, '<|pretrain|>'),
+        pretrain_end_token=get_sp_token(tokenizer, '<|/pretrain|>'),
+    )
+    logging.info("unmasking the assistant responses...")
+    data_with_labels = data_with_input_ids.map(
+        create_labels_with_pretrain_mode_,
         num_proc=16,
     )
-    import IPython; IPython.embed();
-    exit()
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
     # use path to get the stem of the file
