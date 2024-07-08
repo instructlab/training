@@ -153,13 +153,14 @@ def unmask_only_assistant_responses(
 
 
 def unmask_only_assistant_responses_from_list(
-    sentence_tk: List[int], user_token: int, assist_token: int
+    sentence_tk: List[int], user_token: int, assist_token: int, pretrain_token: int = None, pretrain_end_token: int = None
 ) -> List[int]:
     sentence_tk = np.array(sentence_tk)
     assert sentence_tk.ndim == 1
 
-    if user_token not in sentence_tk or assist_token not in sentence_tk:
-        return sentence_tk.tolist()
+    # if user_token not in sentence_tk or assist_token not in sentence_tk:
+    #     return sentence_tk.tolist()
+
 
     labels = np.full_like(sentence_tk, -100)
 
@@ -189,6 +190,49 @@ def unmask_only_assistant_responses_from_list(
     labels[assist_ids[-1] + 1 :] = sentence_tk[assist_ids[-1] + 1 :]
 
     return labels.tolist()
+
+def create_labels_with_pretrain_mode(sentence_tk, user_token, assist_token, system_token, pretrain_token, pretrain_end_token):
+
+    def unmask(token, special_tokens):
+        if token in special_tokens:
+            return token
+        return -100
+
+    def mask(token, *args):
+        return -100
+    
+    def update_mask_function(token, in_pretraining, mask_function):
+        if token == pretrain_token:
+            in_pretraining = True
+            mask_function = unmask
+        elif token == pretrain_end_token:
+            in_pretraining = False
+            mask_function = None
+        if not in_pretraining:
+            if token == assist_token: # unmasking because of assistant
+                mask_function = unmask
+            elif token in [user_token, system_token]: # masking because of user or system
+                mask_function = mask
+        return in_pretraining, mask_function
+        
+    labels = [-100] * len(sentence_tk)
+    in_pretraining = False
+    mask_function = None
+
+    for i, token in enumerate(sentence_tk):
+        in_pretraining, mask_function = update_mask_function(token, in_pretraining, mask_function)
+        labels[i] = mask_function(token, [user_token, assist_token, system_token])
+
+    # Find indices of pretrain tokens and remove them from sentence and labels
+    pretrain_indices = [i for i, token in enumerate(sentence_tk) if token in [pretrain_token, pretrain_end_token]]
+    final_sentence_tk = [token for i, token in enumerate(sentence_tk) if i not in pretrain_indices]
+    final_labels = [label for i, label in enumerate(labels) if i not in pretrain_indices]
+
+    # Assert no assistant, system, or user tokens are unmasked
+    for label, token in zip(final_labels, final_sentence_tk):
+        assert label == -100 or token not in [user_token, assist_token, system_token]
+
+    return final_labels
 
 
 def remove_pretrain_system_messages(example: dict):
@@ -220,8 +264,8 @@ def main(args: DataProcessArgs):
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
-    print("\033[92mremoving pretraining samples system msg\033[0m")
-    data = data.map(remove_pretrain_system_messages, num_proc=16)
+    # print("\033[92mremoving pretraining samples system msg\033[0m")
+    # data = data.map(remove_pretrain_system_messages, num_proc=16)
 
     logging.info(f"tokenizing the dataset with {args.model_path} tokenizer...")
     data_with_input_ids = data.map(
