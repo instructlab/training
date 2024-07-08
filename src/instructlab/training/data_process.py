@@ -232,7 +232,7 @@ def create_labels_with_pretrain_mode(sentence_tk, user_token, assist_token, syst
     for label, token in zip(final_labels, final_sentence_tk):
         assert label == -100 or token not in [user_token, assist_token, system_token]
 
-    return final_labels
+    return {'labels':final_labels, 'input_ids':final_sentence_tk}
 
 
 def remove_pretrain_system_messages(example: dict):
@@ -319,11 +319,12 @@ def main(args: DataProcessArgs):
 
     logging.info("unmasking the assistant responses...")
     data_with_labels = data_with_input_ids.map(
-        lambda x: {
-            "labels": unmask_only_assistant_responses_from_list(
-                x["input_ids"], user_tk, assistant_tk
-            )
-        },
+        # lambda x: {
+        #     "labels": unmask_only_assistant_responses_from_list(
+        #         x["input_ids"], user_tk, assistant_tk
+        #     )
+        # },
+        create_labels_with_pretrain_mode,
         num_proc=16,
     )
     # extract only labels and messages formatted into a new dataset
