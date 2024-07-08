@@ -241,7 +241,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
+        name="constant_with_warmup",
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader),
@@ -536,7 +536,7 @@ def main(args):
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
         samples_per_gpu=args.samples_per_gpu,
-        sampler=args.sampler,
+        sampler="distributed",#args.sampler,
         seed=args.seed,
     )
 

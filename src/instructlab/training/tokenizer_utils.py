@@ -16,6 +16,8 @@ class SpecialTokens:
     eos: str = field(default="<|endoftext|>")
     pad: str = field(default="")
     bos: str = field(default="<|begginingoftext|>")
+    # pretrain: str = field(default="<|pretrain|>")
+    # pretrain_end: str = field(default="<|pretrain_end|>")
 
 
 def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):

@@ -12,7 +12,7 @@ SPECIAL_TOKENS = SpecialTokens(
 CHAT_TEMPLATE = (
     "{% for message in messages %}"
     "{% if message['role'] == 'pretraining' %}"
-    "{{'<|endoftext|>' + message['content'] + '<|endoftext|>'}}"
+    "{{'<|pretrain|>' + message['content'] + '<|endoftext|>' + '<|/pretrain|>' }}"
     "{% elif message['role'] == 'system' %}"
     "{{'<|system|>'+ '\n' + message['content'] + '\n'}}"
     "{% elif message['role'] == 'user' %}"

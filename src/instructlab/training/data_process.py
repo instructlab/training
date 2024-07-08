@@ -98,6 +98,14 @@ def unmask_only_assistant_responses(
     the initial prompt and any tokens not part of the assistant's responses. The resulting labels
     tensor can be used in a language model that is trained to generate text by predicting the next
     token in a sequence.
+
+    TODOs:
+    - use special tokens <pretrain> and <pretrain_end> to mask the pretraining messages
+        - everything between <pretrain> and <pretrain_end> should be non-masked except the user and assistant tokens and system_tk
+    - remove the <pretrain> and <pretrain_end> tokens from the input_ids
+    - whatever is not wrapped in <pretrain> and <pretrain_end> should continue same behavior.
+    - remove <pretrain> and <pretrain_end> from the tokenizer.
+    - make sure <pretrain> and <pretrain_end> are added at the end.
     """
 
     assert chosen_token["input_ids"].dim() == 1
@@ -206,6 +214,9 @@ def main(args: DataProcessArgs):
     assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
     log_rank_0(
         f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
+    )
+    tokenizer.add_special_tokens(
+        {"additional_special_tokens": ['<|pretrain|>', '<|/pretrain|>']}
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
