@@ -241,7 +241,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         )
 
     lr_scheduler = get_scheduler(
-        name="constant_with_warmup",
+        name=args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader),
