@@ -368,6 +368,7 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     pos_rewards = beta * pos_logp.detach().sum()
                     neg_rewards = beta * neg_logp.detach().sum()
                     
+                print('loss shape at return', loss.shape)
 
                 # TODO: may need to handle augmenting the returned output with pos_rewards and neg_rewards
                 if not return_dict:
@@ -377,8 +378,6 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                 output.pos_rewards = pos_rewards
                 output.neg_rewards = neg_rewards
                 output.reward_acc = reward_acc
-
-                print('loss shape at return', loss.shape)
 
                 return output
             
