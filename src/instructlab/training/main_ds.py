@@ -374,6 +374,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 **batch,
                 use_cache=False,
             )
+            print('output', output)
             loss = output.loss
 
             # mini-batch size (per gpu)
