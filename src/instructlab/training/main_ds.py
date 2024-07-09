@@ -376,8 +376,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             )
             loss = output.loss
 
-            mini_bs = loss.shape[0]
             print('minibs', mini_bs)
+            mini_bs = loss.shape[0]
+            
             aggregated_values[3] = loss.shape[0]
             
             loss = loss.sum()
