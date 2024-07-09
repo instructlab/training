@@ -378,6 +378,8 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                 output.neg_rewards = neg_rewards
                 output.reward_acc = reward_acc
 
+                print('loss shape at return', loss.shape)
+
                 return output
             
             model.__original_forward__ = model.forward
