@@ -34,7 +34,6 @@ from instructlab.training.multipack_sampler import (
 )
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer, get_sp_token
-from instructlab.training.tokenizer_utils import SpecialTokens
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
@@ -82,7 +81,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
     return ds_config
 
 
-def setup_model(args, tokenizer, train_loader, grad_accum):
+def setup_model(args, tokenizer, special_tokens, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         # Third Party
@@ -159,8 +158,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         "GemmaForCausalLM",
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
-    contrastive_tok = get_sp_token(tokenizer, SpecialTokens.contrastive_sep)
-    pad_tok = get_sp_token(tokenizer, SpecialTokens.pad)
+    contrastive_tok = get_sp_token(tokenizer, special_tokens.contrastive_sep)
+    pad_tok = get_sp_token(tokenizer, special_tokens.pad)
 
     model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite, contrastive_loss=args.contrastive_loss, contrastive_tok=contrastive_tok, beta=args.beta, gamma_beta_ratio=args.gamma_beta_ratio, label_smoothing=args.label_smoothing)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
@@ -355,7 +354,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(6, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(7, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -377,8 +376,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             )
             loss = output.loss
 
-            # aggregated_values[2] = #loss.item()
-            # TODO: make sure this is the right batch size
+            mini_bs = loss.shape[0]
             aggregated_values[3] = loss.shape[0]
             
             loss = loss.sum()
@@ -386,6 +384,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             
             aggregated_values[4] = output.pos_rewards.item()
             aggregated_values[5] = output.neg_rewards.item()
+            aggregated_values[6] = output.reward_acc.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
 
@@ -397,7 +396,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             )
             print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, reward_acc = {output.reward_acc.item() / mini_bs}, "
             )
 
             model.backward(loss)
@@ -509,6 +508,8 @@ def main(args):
         max_batch_len_per_gpu=args.max_batch_len,
         is_padding=not args.is_granite,
         dataset=dataset,
+        tokenizer=tokenizer,
+        special_tokens=SPECIAL_TOKENS,
         pad_id=tokenizer.pad_token_id,
         seed=args.seed,
     )
@@ -518,8 +519,9 @@ def main(args):
 
     train_loader = setup_dataloader(
         dataset,
-        tokenizer.pad_token_id,
-        num_workers=8,
+        tokenizer,
+        SPECIAL_TOKENS,
+        num_workers=1, # TODO: revert back to 1
         is_granite=args.is_granite,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
@@ -541,7 +543,7 @@ def main(args):
             }
         )
 
-    model = setup_model(args, tokenizer, train_loader, grad_accum)
+    model = setup_model(args, tokenizer, SPECIAL_TOKENS, train_loader, grad_accum)
     model = maybe_resume_training(args, model)
 
     train(args, model, tokenizer, train_loader, grad_accum, metric_logger)

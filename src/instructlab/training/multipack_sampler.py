@@ -73,6 +73,8 @@ def simulate_buckets(
     goal,
     num_gpus,
     grad_accum,
+    tokenizer,
+    special_tokens,
     pad_id,
     max_batch_len,
     lengths,
@@ -88,7 +90,7 @@ def simulate_buckets(
         (base_avg + addition) * ((goal / num_gpus) / grad_accum)
     )
 
-    collate_fn = make_collate_fn(pad_id, is_granite=False, max_batch_len=max_batch_len)
+    collate_fn = make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=max_batch_len)
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
@@ -103,7 +105,7 @@ def simulate_buckets(
     simulation_loader = DataLoader(
         dataset,
         batch_sampler=sampler,
-        num_workers=8,
+        num_workers=1, # TODO: fix this back to 8
         collate_fn=collate_fn,
     )
 
@@ -112,7 +114,7 @@ def simulate_buckets(
 
 
 def find_padding_max_batch_len_addition(
-    base_avg, goal, dataset, num_gpus, grad_accum, pad_id, max_batch_len, seed
+    base_avg, goal, dataset, num_gpus, grad_accum, tokenizer, special_tokens, pad_id, max_batch_len, seed
 ):
     """
     Do a modified binary search to find optimal padding addition for
@@ -140,6 +142,8 @@ def find_padding_max_batch_len_addition(
             goal,
             num_gpus,
             grad_accum,
+            tokenizer,
+            special_tokens,
             pad_id,
             max_batch_len,
             lengths,
@@ -173,6 +177,8 @@ def find_packing_max_batch_len_and_grad_accum(
     max_batch_len_per_gpu,
     is_padding,
     dataset,
+    tokenizer,
+    special_tokens,
     pad_id,
     seed,
 ):
@@ -215,6 +221,8 @@ def find_packing_max_batch_len_and_grad_accum(
                 dataset,
                 num_gpus,
                 grad_accum,
+                tokenizer,
+                special_tokens,
                 pad_id,
                 max_batch_len_per_gpu,
                 seed,

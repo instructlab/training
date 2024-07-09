@@ -1,11 +1,13 @@
 # Standard
 import os
+from typing import Any
 
 # Third Party
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 import torch
+import transformers
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
@@ -80,7 +82,8 @@ def setup_dataset(
 
 def setup_dataloader(
     dataset: Dataset,
-    pad_token_id: int,
+    tokenizer: transformers.PreTrainedTokenizer,
+    special_tokens: Any,
     num_workers: int = 8,
     is_granite=False,
     max_batch_len=60000,
@@ -89,7 +92,7 @@ def setup_dataloader(
 ) -> DataLoader:
     # TODO: pass contrastive tok
     collate_fn = make_collate_fn(
-        pad_token_id, is_granite=is_granite, max_batch_len=max_batch_len
+        tokenizer, special_tokens, is_granite=is_granite, max_batch_len=max_batch_len
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])

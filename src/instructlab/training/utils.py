@@ -39,6 +39,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+# duplicate function from tokenizer (b/c of circular import)
+def get_sp_token(tokenizer, sp_string):
+    sp_token = tokenizer.encode(sp_string, add_special_tokens=False)
+    assert 1 == len(sp_token)
+    return sp_token[0]
+
 
 def retrieve_chat_template(chat_tmpl_path):
     try:
@@ -105,7 +111,10 @@ class StreamablePopen(subprocess.Popen):
                 break
 
 
-def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000, contrastive_tok=None):
+def make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=60000):
+    pad_token_id = get_sp_token(tokenizer, special_tokens.pad)
+    contrastive_tok_id = get_sp_token(tokenizer, special_tokens.contrastive_sep)
+
     rank = int(os.environ["RANK"])
     if is_granite:
 
@@ -140,27 +149,28 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000, contras
 
         def pad_collate_fn(batch):
             def process_for_contrastive(item):
-                labels = np.array(item['labels'])
-                input_ids = np.array(item['input_ids'])
+                labels = item['labels']
+                input_ids = item['input_ids']
 
-                prompt_end_idx = (labels != -100).nonzero(as_tuple=True)[0][0].item() # it will give me position of first assistant token
-                contrastive_tok_idx = (labels == contrastive_tok).nonzero(as_tuple=True)[0][0].item() # it will give me position of contrastive token
+                prompt_end_idx = (labels != -100).nonzero(as_tuple=True)[0][0].item() # position of (first assistant token + 1)
+                contrastive_tok_idx = (labels == contrastive_tok_id).nonzero(as_tuple=True)[0][0].item() # me position of contrastive token
 
-                pos_input_idxs = np.arange(contrastive_tok_idx)
-                neg_input_idxs = np.arange(prompt_end_idx) + np.arange(contrastive_tok_idx+1, len(input_ids))
+                pos_input_idxs = torch.arange(contrastive_tok_idx)
+                neg_input_idxs = torch.cat([torch.arange(prompt_end_idx), torch.arange(contrastive_tok_idx+2, len(input_ids))])
 
                 pos_input_ids = input_ids[pos_input_idxs]
                 pos_labels = labels[pos_input_idxs]
                 neg_input_ids = input_ids[neg_input_idxs]
                 neg_labels = labels[neg_input_idxs]
 
-                return (
-                        {'input_ids': pos_input_ids.tolist(), 'labels': pos_labels.tolist()},
-                        {'input_ids': neg_input_ids.tolist(), 'labels': neg_labels.tolist()}
-                        )
+                # print('POSITIVE', tokenizer.decode(pos_input_ids))
+                # print('NEGATIVE', tokenizer.decode(neg_input_ids))
+                return [
+                        {'input_ids': pos_input_ids, 'labels': pos_labels, 'attention_mask': torch.ones_like(pos_input_ids)},
+                        {'input_ids': neg_input_ids, 'labels': neg_labels, 'attention_mask': torch.ones_like(neg_input_ids)}
+                ]
 
-
-            batch_processed = list(chain([process_for_contrastive(item) for item in batch]))
+            batch_processed = list(chain(*[process_for_contrastive(item) for item in batch]))
             batch = batch_processed[::2] + batch_processed[1::2]
             # TODO: debug and make sure
             lens = np.array([len(item["input_ids"]) for item in batch])
@@ -255,6 +265,7 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                         logits = pi_logratios - gamma_logratios
 
                         loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+                        print('loss shape', loss.shape)
                         pos_rewards = beta * pos_logp.detach()
                         neg_rewards = beta * neg_logp.detach()
                         
@@ -327,23 +338,25 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
 
                 return_dict = isinstance(output, dict)
                 logits = output.logits if return_dict else output[0]
-                loss, pos_rewards, neg_rewards = None
+                loss = pos_rewards = neg_rewards = None
 
 
                 if labels is not None:
                     # Shift so that tokens < n predict n
-                    shift_logits_pos, shift_logits_neg = torch.chunk(logits[..., :-1, :].contiguous(), 2, dim=0)
-                    shift_labels_pos, shift_labels_neg = torch.chunk(labels[..., 1:].contiguous().to(shift_logits_pos.device), 2, dim=0)
-                    
+                    # take the first and second half of logits and labels
+                    bs = logits.size(0)
+                    shift_logits_pos, shift_logits_neg = logits[:bs//2, :-1, :], logits[bs//2:, :-1, :]
+                    shift_labels_pos, shift_labels_neg = labels[:bs//2, 1:].clone(), labels[bs//2:, 1:].clone()
+
                     # simpo loss implemented (no reference model)
                     pos_loss_mask = (shift_labels_pos != -100)
-                    shift_labels_pos[~pos_loss_mask] = 0
-                    pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), 2, shift_labels_pos.unsqueeze(2)).squeeze(2)
+                    shift_labels_pos[~pos_loss_mask] = 0 # dummy tokens that'll be masked out later
+                    pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), dim=2, index=shift_labels_pos.unsqueeze(2)).squeeze(2)
                     pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
 
                     neg_loss_mask = (shift_labels_neg != -100)
-                    shift_labels_neg[~neg_loss_mask] = 0
-                    neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), 2, shift_labels_neg.unsqueeze(2)).squeeze(2)
+                    shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
+                    neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
                     neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
                     
                     pi_logratios = pos_logp - neg_logp
@@ -351,16 +364,19 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     logits = pi_logratios - gamma_logratios
 
                     loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+                    reward_acc = (pos_logp > neg_logp).detach().float().sum()
                     pos_rewards = beta * pos_logp.detach().sum()
                     neg_rewards = beta * neg_logp.detach().sum()
+                    
 
-                # TODO: how to handle these rewards when not return_dict
+                # TODO: may need to handle augmenting the returned output with pos_rewards and neg_rewards
                 if not return_dict:
                     return ((loss,) + output) if loss is not None else output
                 
                 output.loss = loss
                 output.pos_rewards = pos_rewards
                 output.neg_rewards = neg_rewards
+                output.reward_acc = reward_acc
 
                 return output
             
