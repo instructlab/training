@@ -374,8 +374,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 **batch,
                 use_cache=False,
             )
-            print('output', output)
+            # print('output', output)
             loss = output.loss
+            print('contrastive loss', args.contrastive_loss)
 
             # mini-batch size (per gpu)
             print(f"mini-batch size: {batch['input_ids'].shape[0]}")
