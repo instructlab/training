@@ -667,6 +667,9 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         tmp_conf = copy(model_to_save.config)
         if not tmp_conf.architectures:
             tmp_conf.architectures = ["LlamaForCausalLM"]
+            warnings.warn(
+                f"No architectures provided in base model config, adding architectures to ckpt: {tmp_conf.architectures}",
+            )
 
         if args.is_granite and convert_granite:
             with TemporaryDirectory("w") as tmpdir:
