@@ -373,7 +373,6 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             output = model(
                 **batch,
                 use_cache=False,
-                return_dict=True,
             )
             loss = output.loss
 
