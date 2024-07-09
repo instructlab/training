@@ -392,9 +392,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             loss = loss / aggregated_values[3] * world_size
 
-            print(
-                f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
-            )
+            # print(
+            #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+            # )
             print(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, reward_acc = {output.reward_acc.item() / mini_bs}, "
             )
