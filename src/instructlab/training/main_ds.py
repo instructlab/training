@@ -433,8 +433,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         ),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
-                        "pos_reward": float(aggregated_values[4]) / aggregated_values[3],
-                        "neg_reward": float(aggregated_values[5]) / aggregated_values[3],
+                        "pos_reward": float(aggregated_values[4] / aggregated_values[3]),
+                        "neg_reward": float(aggregated_values[5] / aggregated_values[3]),
+                        "reward_acc": float(aggregated_values[6] / aggregated_values[3]),
                     }
                 )
 
