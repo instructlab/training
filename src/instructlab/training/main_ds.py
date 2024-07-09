@@ -429,7 +429,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "batch_size": int(aggregated_values[1]),
                         "total_loss": float(
-                            aggregated_values[2] / num_loss_counted_tokens
+                            aggregated_values[2]
                         ),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
