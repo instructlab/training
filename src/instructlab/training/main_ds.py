@@ -476,7 +476,8 @@ def main(args):
     import yaml
 
     metric_logger = AsyncStructuredLogger(
-        args.output_dir + "/training_params_and_metrics.jsonl"
+        args.output_dir
+        + f"/training_params_and_metrics_global{os.environ["RANK"]}.jsonl"
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
@@ -611,6 +612,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
+        f"| tee {train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
     ]
 
     if train_args.mock_data:
