@@ -96,11 +96,14 @@ class StreamablePopen(subprocess.Popen):
         super().__init__(
             *args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
         )
-        with open(output_file, "w") as full_log_file:
-            for line in self.stdout:
-                sys.stdout.write(line)
-                full_log_file.write(line)
-                if self.poll() is not None:
+        with open(output_file, "wb") as full_log_file:
+            while True:
+                byte = self.stdout.read(1)
+                if byte:
+                    sys.stdout.buffer.write(byte)
+                    sys.stdout.flush()
+                    full_log_file.write(byte)
+                else:
                     break
 
 
