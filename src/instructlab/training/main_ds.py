@@ -477,7 +477,7 @@ def main(args):
 
     metric_logger = AsyncStructuredLogger(
         args.output_dir
-        + f"/training_params_and_metrics_global{os.environ["RANK"]}.jsonl"
+        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
