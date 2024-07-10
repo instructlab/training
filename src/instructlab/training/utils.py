@@ -88,21 +88,24 @@ class StreamablePopen(subprocess.Popen):
     Provides a way of reading stdout and stderr line by line.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, output_file, *args, **kwargs):
         # remove the stderr and stdout from kwargs
         kwargs.pop("stderr", None)
         kwargs.pop("stdout", None)
 
         super().__init__(*args, **kwargs)
-        while True:
-            if self.stdout:
-                output = self.stdout.readline().strip()
-                print(output)
-            if self.stderr:
-                error = self.stderr.readline().strip()
-                print(error, file=sys.stderr)
-            if self.poll() is not None:
-                break
+        with open(output_file, "w") as full_log_file:
+            while True:
+                if self.stdout:
+                    output = self.stdout.readline().strip()
+                    full_log_file.write(output + "\n")
+                    print(output)
+                if self.stderr:
+                    error = self.stderr.readline().strip()
+                    full_log_file.write(error + "\n")
+                    print(error, file=sys.stderr)
+                if self.poll() is not None:
+                    break
 
 
 def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):

@@ -612,7 +612,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
-        f"| tee {train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
     ]
 
     if train_args.mock_data:
@@ -660,7 +659,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
     try:
-        process = StreamablePopen(command)
+        process = StreamablePopen(
+            f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
+            command,
+        )
 
     except KeyboardInterrupt:
         print("Process interrupted by user")
