@@ -93,17 +93,13 @@ class StreamablePopen(subprocess.Popen):
         kwargs.pop("stderr", None)
         kwargs.pop("stdout", None)
 
-        super().__init__(*args, **kwargs)
+        super().__init__(
+            *args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
+        )
         with open(output_file, "w") as full_log_file:
-            while True:
-                if self.stdout:
-                    output = self.stdout.readline().strip()
-                    full_log_file.write(output + "\n")
-                    print(output)
-                if self.stderr:
-                    error = self.stderr.readline().strip()
-                    full_log_file.write(error + "\n")
-                    print(error, file=sys.stderr)
+            for line in self.stdout:
+                sys.stdout.write(line)
+                full_log_file.write(line)
                 if self.poll() is not None:
                     break
 
