@@ -376,10 +376,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             )
             # print('output', output)
             loss = output.loss
-            print('contrastive loss', args.contrastive_loss)
 
             # mini-batch size (per gpu)
-            print(f"mini-batch size: {batch['input_ids'].shape[0]}")
+            mini_bs = batch['input_ids'].shape[0]
             aggregated_values[3] = batch['input_ids'].shape[0]
             
             loss = loss.sum()
