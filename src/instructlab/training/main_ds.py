@@ -404,7 +404,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             model.backward(loss)
             model.step()
 
-            if local_rank == 0:
+            if args.global_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = model.lr_scheduler.get_last_lr()[0]
