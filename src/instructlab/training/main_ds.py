@@ -476,7 +476,8 @@ def main(args):
     import yaml
 
     metric_logger = AsyncStructuredLogger(
-        args.output_dir + "/training_params_and_metrics.jsonl"
+        args.output_dir
+        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
@@ -658,7 +659,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
     try:
-        process = StreamablePopen(command)
+        process = StreamablePopen(
+            f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
+            command,
+        )
 
     except KeyboardInterrupt:
         print("Process interrupted by user")
