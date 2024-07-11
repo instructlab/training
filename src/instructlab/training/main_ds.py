@@ -524,7 +524,7 @@ def main(args):
         grad_accum = 1
         args.sampler = "distributed"
     
-    args.sampler = "distributed"
+    # args.sampler = "distributed"
 
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
@@ -538,7 +538,7 @@ def main(args):
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
         samples_per_gpu=args.samples_per_gpu,
-        sampler="distributed",#args.sampler,
+        sampler=args.sampler,
         seed=args.seed,
     )
 
