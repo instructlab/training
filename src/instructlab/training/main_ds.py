@@ -378,8 +378,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             loss = output.loss
 
             # mini-batch size (per gpu)
-            mini_bs = batch['input_ids'].shape[0]
-            aggregated_values[3] = batch['input_ids'].shape[0]
+            mini_bs = batch['input_ids'].shape[0] // 2 # b/c batch is actually double b/c of positive + negative
+            aggregated_values[3] = batch['input_ids'].shape[0] // 2
             
             loss = loss.sum()
             aggregated_values[2] = loss.item()
