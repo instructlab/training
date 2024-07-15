@@ -1,9 +1,9 @@
 # Standard
 from functools import partial
 from pathlib import Path
-from typing import List
 import logging
 import os
+import random
 
 # Third Party
 from datasets import load_dataset
@@ -28,7 +28,7 @@ def check_valid_sample(
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
-    if whole_sentence_tk[-1] != eos_tk:
+    if not eos_tk in (whole_sentence_tk[-1], whole_sentence_tk[-2]):
         return False
 
     special_tokens = [system_tk, assistant_tk, user_tk]
@@ -41,22 +41,12 @@ def check_valid_sample(
     eos_token_index = (whole_sentence_tk == eos_tk).nonzero()[0]
 
     # check that there are at least one user_token, assistant_token and eos_token
-    if (
-        len(user_token_index) == 0
-        or len(assistant_token_index) == 0
-        or len(eos_token_index) == 0
-    ):
-        print(f"\033[91mthere are no user_token, assistant_token or eos_token\033[0m")
+    if len(eos_token_index) == 0:
+        print(f"\033[91mthere is no eos_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
 
     # check that user_index_token is less than all other indices
-    if len(user_token_index) != len(assistant_token_index):
-        print(
-            "\033[91mthe number of user_token and assistant_token is not the same\033[0m"
-        )
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
     if (
         user_token_index[0] > assistant_token_index[0]
         or user_token_index[0] > eos_token_index[0]
@@ -64,13 +54,6 @@ def check_valid_sample(
         print("\033[91mthe first sp token is not user_token\033[0m")
         log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
         return False
-
-    # check alternating pattern of user_token and assistant_token
-    for user_token_i, assistant_token_i in zip(user_token_index, assistant_token_index):
-        if user_token_i > assistant_token_i:
-            print("\033[91mthe user_token is after the assistant_token\033[0m")
-            log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-            return False
 
     return True
 
@@ -167,8 +150,38 @@ def unmask_message_content(
     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
 
-def preview_samples(tokenizer, labels):
-    pass
+def preview_samples(
+    tokenizer, pad_tk, pad_str, labels, pretrain_indices, instruct_indices
+):
+    print(
+        "\033[33mThe following are some examples of the processed data, with masked tokens (not to be learned) represented with <mask>. The unmasked tokens are the ones the model will learn to predict. Please review these samples to ensure the model is learning to predict expected tokens.\033[0m"
+    )
+    if pretrain_indices:
+        sample_indices = random.sample(pretrain_indices, min(len(pretrain_indices), 2))
+        for idx in sample_indices:
+            label = [pad_tk if tk == "-100" else tk for tk in labels[idx]]
+            text = tokenizer.decode(label).replace(pad_str, "<mask>")
+            print(f"\033[33mPretraining ex sample {idx+1}: {text}\033[33m")
+    if instruct_indices:
+        sample_indices = random.sample(instruct_indices, min(len(instruct_indices), 2))
+        for idx in sample_indices:
+            label = [pad_tk if tk == "-100" else tk for tk in labels[idx]]
+            text = tokenizer.decode(label).replace(pad_str, "<mask>")
+            print(f"\033[33mInstruction ex sample {idx+1}: {text}\033[33m")
+
+
+def form_data_pools(data, pretrain_tk):
+    """
+    Sorts data indices into pretraining and instruction pools
+    """
+    pretrain_indices = []
+    instruct_indices = []
+    for i in range(len(data)):
+        if data["input_ids"][0] == pretrain_tk:
+            pretrain_indices.append(i)
+        else:
+            instruct_indices.append(i)
+    return pretrain_indices, instruct_indices
 
 
 def remove_pretrain_system_messages(example: dict):
@@ -205,7 +218,7 @@ def main(args: DataProcessArgs):
     print("\033[92mremoving pretraining samples system msg\033[0m")
     data = data.map(remove_pretrain_system_messages, num_proc=16)
 
-    logging.info(f"tokenizing the dataset with {args.model_path} tokenizer...")
+    print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
     data_with_input_ids = data.map(
         lambda x: {
             "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True)
@@ -238,7 +251,7 @@ def main(args: DataProcessArgs):
         f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
     )
 
-    logging.info("checking the validity of the samples...")
+    print("\033[92mchecking the validity of the samples...\033[0m")
     data_with_input_ids = data_with_input_ids.filter(
         lambda x: check_valid_sample(
             tokenizer,
@@ -255,6 +268,10 @@ def main(args: DataProcessArgs):
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
 
+    pretrain_indices, instruct_indices = form_data_pools(
+        data_with_input_ids, pretrain_token=get_sp_token(tokenizer, "<|pretrain|>")
+    )
+
     _prefill_unmask_message_content = partial(
         unmask_message_content,
         user_token=user_tk,
@@ -263,13 +280,20 @@ def main(args: DataProcessArgs):
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>"),
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>"),
     )
-    logging.info("unmasking the appropriate message content...")
+    print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
         num_proc=16,
     )
 
-    preview_samples(tokenizer, data_with_labels["labels"])
+    preview_samples(
+        tokenizer,
+        pad_tk,
+        SPECIAL_TOKENS.pad,
+        data_with_labels["labels"],
+        pretrain_indices,
+        instruct_indices,
+    )
 
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
