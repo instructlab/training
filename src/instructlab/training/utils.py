@@ -32,9 +32,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from torch.distributed.fsdp import FullStateDictConfig
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import StateDictType
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -612,36 +609,6 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         else:
             logging.info(msg)
         # print(msg)
-
-
-def save_hf_format(args, model, tokenizer, samples_seen):
-    torch.cuda.empty_cache()
-    log_rank_0(
-        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    CONFIG_NAME = "config.json"
-    WEIGHTS_NAME = "pytorch_model.bin"
-
-    with FSDP.state_dict_type(
-        model,
-        StateDictType.FULL_STATE_DICT,
-        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-    ):
-        model_state = model.state_dict()
-    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if torch.distributed.get_rank() == 0:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_model_file = output_dir / WEIGHTS_NAME
-        output_config_file = output_dir / CONFIG_NAME
-        torch.save(model_state, str(output_model_file))
-        model.module.config.to_json_file(str(output_config_file))
-        tokenizer.save_pretrained(str(output_dir))
-    dist.barrier()
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True):
