@@ -12,7 +12,7 @@ CHAT_TEMPLATE = (
     "{{ '<s>' }}"
     "{% for message in messages %}"
     "{% if message['role'] == 'pretraining' %}"
-    "{{ message['content'] + '</s>' }}"
+    "{{'<|pretrain|>' + message['content'] + '</s>' + '<|/pretrain|>'}}"
     "{% elif message['role'] == 'user' %}"
     "{{ '[INST] ' + message['content'] + ' [/INST]' }}"
     "{% elif message['role'] == 'assistant' %}"

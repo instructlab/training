@@ -1,4 +1,5 @@
 # Standard
+from functools import partial
 from pathlib import Path
 from typing import List
 import logging
@@ -74,113 +75,100 @@ def check_valid_sample(
     return True
 
 
-def unmask_only_assistant_responses(
-    chosen_token, user_token, assist_token, system_tk="<|system|>"
+def unmask_message_content(
+    example, user_token, assist_token, system_token, pretrain_token, pretrain_end_token
 ):
     """
-    Generate a labels tensor for language model training, where the model should predict
-    the assistant's responses within a conversation. The labels for the assistant's responses
-    are unmasked, while the rest of the tokens, including the user's responses and the initial
-    prompt, are masked with a value of -100.
+    Create labels for tokens in a sequence with special handling for pretraining tokens.
+
+    This function processes a sequence of tokens and generates a corresponding labels list.
+    Tokens are masked with -100 unless they are part of the assistant's response or within
+    a pretraining segment. Pretraining segments are marked by `pretrain_token` and
+    `pretrain_end_token`, within which only user, assistant, and system special tokens are masked.
+    It also removes the temporary pretraining tokens from the output 'input_ids'.
 
     Parameters:
-    - chosen_token (dict): A dictionary containing 'input_ids', a 1D tensor of tokenized text.
+    - example (dict): A dictionary containing 'input_ids', a list of token IDs.
     - user_token (int): The token ID representing the user's turn in the conversation.
     - assist_token (int): The token ID representing the assistant's turn in the conversation.
-    - prompt_length (int): The length of the initial prompt in tokens, which should be masked.
+    - system_token (int): The token ID representing the system's turn in the conversation.
+    - pretrain_token (int): The token ID marking the start of a pretraining segment.
+    - pretrain_end_token (int): The token ID marking the end of a pretraining segment.
 
     Returns:
-    - torch.Tensor: A tensor of the same shape as `chosen_token['input_ids']` where each token
-      corresponding to the assistant's response is unmasked (retains its original token ID),
-      and all other tokens are masked with -100.
-
-    The function assumes that each assistant's response is followed by a user's response. It masks
-    the initial prompt and any tokens not part of the assistant's responses. The resulting labels
-    tensor can be used in a language model that is trained to generate text by predicting the next
-    token in a sequence.
+    - dict: A dictionary with two keys:
+        - 'labels': a list of labels for the input tokens, where non-assistant and non-pretraining
+          tokens are masked with -100, and all others retain their original token IDs.
+        - 'input_ids': a list of the original token IDs with pretraining tokens removed.
     """
+    sentence_tk = example["input_ids"]
 
-    assert chosen_token["input_ids"].dim() == 1
-    sentence_legth = chosen_token["attention_mask"].sum().item()
-    labels = chosen_token["input_ids"].clone()
-    whole_sentence = chosen_token["input_ids"][:sentence_legth].clone()
+    def unmask(token, special_tokens):
+        if token in special_tokens:
+            return -100
+        return token
 
-    # pre-training mode
-    if not (
-        system_tk in whole_sentence
-        or user_token in whole_sentence
-        or assist_token in whole_sentence
-    ):
-        return labels
+    def mask(token, *args):
+        return -100
 
-    labels[:sentence_legth] = -100
-    assist_ids = (whole_sentence == assist_token).nonzero(as_tuple=True)[0]
-    user_ids = (whole_sentence == user_token).nonzero(as_tuple=True)[0]
+    def update_mask_function(token, in_pretraining, mask_function):
+        if token == pretrain_token:
+            in_pretraining = True
+            mask_function = unmask
+        elif token == pretrain_end_token:
+            in_pretraining = False
+            mask_function = mask
+        if not in_pretraining:
+            if token == assist_token:  # unmasking because of assistant
+                mask_function = unmask
+            elif token in [
+                user_token,
+                system_token,
+            ]:  # masking because of user or system
+                mask_function = mask
+        return in_pretraining, mask_function
 
-    # Find the first user_id that is greater than each assist_id
-    valid_assist_mask = (assist_ids[:, None] < user_ids).float()
-    first_user_ids_after_assist_ids = user_ids[valid_assist_mask.argmax(dim=1)]
+    labels = [-100] * len(sentence_tk)
+    in_pretraining = False
+    mask_function = None
 
-    # Filter out assist_ids that do not have a corresponding user_id
-    valid_assist_ids = assist_ids[first_user_ids_after_assist_ids != 0]
-    valid_user_ids = first_user_ids_after_assist_ids[
-        first_user_ids_after_assist_ids != 0
+    for i, token in enumerate(sentence_tk):
+        in_pretraining, mask_function = update_mask_function(
+            token, in_pretraining, mask_function
+        )
+        labels[i] = mask_function(token, [user_token, assist_token, system_token])
+
+    # Find indices of pretrain tokens and remove them from sentence and labels
+    pretrain_indices = [
+        i
+        for i, token in enumerate(sentence_tk)
+        if token in [pretrain_token, pretrain_end_token]
+    ]
+    final_sentence_tk = [
+        token for i, token in enumerate(sentence_tk) if i not in pretrain_indices
+    ]
+    final_labels = [
+        label for i, label in enumerate(labels) if i not in pretrain_indices
     ]
 
-    # Assign labels for each valid assist_id-user_id pair (without including the assist_id nor the user_id)
-    for assist_id, user_id in zip(valid_assist_ids, valid_user_ids):
-        labels[assist_id + 1 : user_id] = whole_sentence[assist_id + 1 : user_id]
+    for label, token in zip(final_labels, final_sentence_tk):
+        assert label == -100 or token not in [
+            user_token,
+            assist_token,
+            system_token,
+        ], f"Token {token} is unmasked, special tokens should not be unmasked."
+        assert (
+            token not in [pretrain_token, pretrain_end_token]
+        ), f"Token {token} is a pretraining token, it should not be in the final sentence."
+        assert (
+            label == token or label == -100
+        ), f"unless masked, label should be the same as the token."
 
-    # Assert that the conversation ends with an assistant token
-    assert (
-        assist_ids[-1] > user_ids[-1]
-    ), "Conversation does not end with an assistant token"
-
-    # Unmask the final assistant response
-    labels[assist_ids[-1] + 1 : sentence_legth] = whole_sentence[
-        assist_ids[-1] + 1 : sentence_legth
-    ]
-
-    return labels
+    return {"labels": final_labels, "input_ids": final_sentence_tk}
 
 
-def unmask_only_assistant_responses_from_list(
-    sentence_tk: List[int], user_token: int, assist_token: int
-) -> List[int]:
-    sentence_tk = np.array(sentence_tk)
-    assert sentence_tk.ndim == 1
-
-    if user_token not in sentence_tk or assist_token not in sentence_tk:
-        return sentence_tk.tolist()
-
-    labels = np.full_like(sentence_tk, -100)
-
-    user_ids = (sentence_tk == user_token).nonzero()[0]
-    assist_ids = (sentence_tk == assist_token).nonzero()[0]
-
-    # Find the first user_id that is greater than each assist_id
-    valid_assist_mask = assist_ids[:, None] < user_ids
-    first_user_ids_after_assist_ids = user_ids[valid_assist_mask.argmax(axis=1)]
-
-    # Filter out assist_ids that do not have a corresponding user_id
-    valid_assist_ids = assist_ids[first_user_ids_after_assist_ids != 0]
-    valid_user_ids = first_user_ids_after_assist_ids[
-        first_user_ids_after_assist_ids != 0
-    ]
-
-    # Assign labels for each valid assist_id-user_id pair (without including the assist_id nor the user_id)
-    for assist_id, user_id in zip(valid_assist_ids, valid_user_ids):
-        labels[assist_id + 1 : user_id] = sentence_tk[assist_id + 1 : user_id]
-
-    # Assert that the conversation ends with an assistant token
-    assert (
-        assist_ids[-1] > user_ids[-1]
-    ), "Conversation does not end with an assistant token"
-
-    # Unmask the final assistant response
-    labels[assist_ids[-1] + 1 :] = sentence_tk[assist_ids[-1] + 1 :]
-
-    return labels.tolist()
+def preview_samples(tokenizer, labels):
+    pass
 
 
 def remove_pretrain_system_messages(example: dict):
@@ -206,6 +194,11 @@ def main(args: DataProcessArgs):
     assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
     log_rank_0(
         f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
+    )
+
+    # Adding after tokenizer setup as these are temp tokens, not to be saved
+    tokenizer.add_special_tokens(
+        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>"]}
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
@@ -262,15 +255,22 @@ def main(args: DataProcessArgs):
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
 
-    logging.info("unmasking the assistant responses...")
+    _prefill_unmask_message_content = partial(
+        unmask_message_content,
+        user_token=user_tk,
+        assist_token=assistant_tk,
+        system_token=system_tk,
+        pretrain_token=get_sp_token(tokenizer, "<|pretrain|>"),
+        pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>"),
+    )
+    logging.info("unmasking the appropriate message content...")
     data_with_labels = data_with_input_ids.map(
-        lambda x: {
-            "labels": unmask_only_assistant_responses_from_list(
-                x["input_ids"], user_tk, assistant_tk
-            )
-        },
+        _prefill_unmask_message_content,
         num_proc=16,
     )
+
+    preview_samples(tokenizer, data_with_labels["labels"])
+
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
     # use path to get the stem of the file
