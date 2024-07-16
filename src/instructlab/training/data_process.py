@@ -143,8 +143,9 @@ def unmask_message_content(
         assert (
             token not in [pretrain_token, pretrain_end_token]
         ), f"Token {token} is a pretraining token, it should not be in the final sentence."
-        assert (
-            label == token or label == -100
+        assert label in (
+            token,
+            -100,
         ), f"unless masked, label should be the same as the token."
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
