@@ -7,6 +7,7 @@ import random
 
 # Third Party
 from datasets import load_dataset
+from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 import numpy as np
 
@@ -159,15 +160,15 @@ def preview_samples(
     if pretrain_indices:
         sample_indices = random.sample(pretrain_indices, min(len(pretrain_indices), 2))
         for idx in sample_indices:
-            label = [pad_tk if tk == "-100" else tk for tk in labels[idx]]
+            label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
             text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            print(f"\033[33mPretraining ex sample {idx+1}: {text}\033[33m")
+            print(f"\033[33mPretraining ex sample {idx+1}: {text}\033[0m")
     if instruct_indices:
         sample_indices = random.sample(instruct_indices, min(len(instruct_indices), 2))
         for idx in sample_indices:
-            label = [pad_tk if tk == "-100" else tk for tk in labels[idx]]
+            label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
             text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            print(f"\033[33mInstruction ex sample {idx+1}: {text}\033[33m")
+            print(f"\033[33mInstruction ex sample {idx+1}: {text}\033[0m")
 
 
 def form_data_pools(data, pretrain_tk):
@@ -176,8 +177,8 @@ def form_data_pools(data, pretrain_tk):
     """
     pretrain_indices = []
     instruct_indices = []
-    for i in range(len(data)):
-        if data["input_ids"][0] == pretrain_tk:
+    for i in tqdm(range(len(data)), desc="Data type sorting"):
+        if data[i][0] == pretrain_tk:
             pretrain_indices.append(i)
         else:
             instruct_indices.append(i)
@@ -268,8 +269,10 @@ def main(args: DataProcessArgs):
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
 
+    print("\033[92mCategorizing training data type...\033[0m")
     pretrain_indices, instruct_indices = form_data_pools(
-        data_with_input_ids, pretrain_token=get_sp_token(tokenizer, "<|pretrain|>")
+        data_with_input_ids["input_ids"],
+        pretrain_tk=get_sp_token(tokenizer, "<|pretrain|>"),
     )
 
     _prefill_unmask_message_content = partial(
