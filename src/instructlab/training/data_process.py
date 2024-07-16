@@ -155,20 +155,20 @@ def preview_samples(
     tokenizer, pad_tk, pad_str, labels, pretrain_indices, instruct_indices
 ):
     print(
-        "\033[33mThe following are some examples of the processed data, with masked tokens (not to be learned) represented with <mask>. The unmasked tokens are the ones the model will learn to predict. Please review these samples to ensure the model is learning to predict expected tokens.\033[0m"
+        "\033[33mThe following are some examples of the processed data, with masked tokens (not to be learned) represented with <mask>. The unmasked tokens are the ones the model will learn to predict. Please review these samples to ensure the model is learning to predict expected tokens.\n\033[0m"
     )
     if pretrain_indices:
         sample_indices = random.sample(pretrain_indices, min(len(pretrain_indices), 2))
         for idx in sample_indices:
             label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
             text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            print(f"\033[33mPretraining ex sample {idx+1}: {text}\033[0m")
+            print(f"\033[33mPretraining ex sample {idx+1}: {text}\n\033[0m")
     if instruct_indices:
         sample_indices = random.sample(instruct_indices, min(len(instruct_indices), 2))
         for idx in sample_indices:
             label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
             text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            print(f"\033[33mInstruction ex sample {idx+1}: {text}\033[0m")
+            print(f"\033[33mInstruction ex sample {idx+1}: {text}\n\033[0m")
 
 
 def form_data_pools(data, pretrain_tk):
