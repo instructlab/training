@@ -1,4 +1,5 @@
 # Standard
+import json
 from pathlib import Path
 from typing import List
 import logging
@@ -193,6 +194,7 @@ def remove_pretrain_system_messages(example: dict):
 
 
 def main(args: DataProcessArgs):
+    print(json.dumps(args.__dict__))
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
