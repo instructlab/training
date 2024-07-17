@@ -680,8 +680,8 @@ def save_hf_format_ds(
     if torch.distributed.get_rank() == 0:
         if is_lora:
             if is_quant:
-                model = _dequantize_model(model)
-            model_to_save = model.merge_and_unload()
+                model_to_save = _dequantize_model(model_to_save)
+            model_to_save = model_to_save.merge_and_unload()
 
         model_state = model_to_save.state_dict()
         output_dir.mkdir(parents=True, exist_ok=True)
