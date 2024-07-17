@@ -40,12 +40,6 @@ def check_valid_sample(
     assistant_token_index = (whole_sentence_tk == assistant_tk).nonzero()[0]
     eos_token_index = (whole_sentence_tk == eos_tk).nonzero()[0]
 
-    # check that there are at least one user_token, assistant_token and eos_token
-    if len(eos_token_index) == 0:
-        print(f"\033[91mthere is no eos_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
-
     # check that user_index_token is less than all other indices
     if (
         user_token_index[0] > assistant_token_index[0]
@@ -185,15 +179,6 @@ def form_data_pools(data, pretrain_tk):
     return pretrain_indices, instruct_indices
 
 
-def remove_pretrain_system_messages(example: dict):
-    messages = example["messages"]
-    has_pretraining = any(m["role"] == "pretraining" for m in messages)
-    if has_pretraining:
-        messages = [m for m in messages if m["role"] != "system"]
-        assert len(messages) == 1
-    return {"messages": messages}
-
-
 def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
@@ -216,8 +201,6 @@ def main(args: DataProcessArgs):
     )
 
     data = load_dataset("json", data_files=args.data_path, split="train")
-    print("\033[92mremoving pretraining samples system msg\033[0m")
-    data = data.map(remove_pretrain_system_messages, num_proc=16)
 
     print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
     data_with_input_ids = data.map(
