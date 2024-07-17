@@ -1,6 +1,7 @@
 # Standard
+from collections import OrderedDict
 from contextlib import contextmanager
-from copy import copy
+from copy import copy, deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -615,8 +616,6 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
 def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
     """
     'model': the peftmodel you loaded with qlora.
-    'tokenizer': the model's corresponding hf's tokenizer.
-    'to': directory to save the dequantized model
     'dtype': dtype that the model was trained using
     'device': device to load the model to
     FROM: https://gist.github.com/ChrisHayduk/1a53463331f52dca205e55982baf9930
@@ -631,7 +630,7 @@ def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
         for name, module in model.named_modules():
             if isinstance(module, cls):
                 print(f"Dequantizing `{name}`...")
-                quant_state = copy.deepcopy(module.weight.quant_state)
+                quant_state = deepcopy(module.weight.quant_state)
 
                 quant_state[2] = dtype
 
@@ -651,6 +650,16 @@ def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
         model.is_loaded_in_4bit = False
 
         return model
+
+
+def _copy_no_lora_dict(state_dict):
+    cleaned_state_dict = OrderedDict()
+    for param_tensor in state_dict:
+        if not "lora" in param_tensor:
+            cleaned_state_dict[
+                param_tensor.replace(".base_layer", "").replace("base_model.model.", "")
+            ] = deepcopy(state_dict[param_tensor]).cpu()
+    return cleaned_state_dict
 
 
 def save_hf_format_ds(
@@ -681,9 +690,11 @@ def save_hf_format_ds(
         if is_lora:
             if is_quant:
                 model_to_save = _dequantize_model(model_to_save)
-            model_to_save = model_to_save.merge_and_unload()
+            model_to_save.merge_adapter()
 
         model_state = model_to_save.state_dict()
+        if is_lora:
+            model_state = _copy_no_lora_dict(model_state)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_model_file = output_dir / WEIGHTS_NAME
         output_config_file = output_dir / CONFIG_NAME
@@ -712,6 +723,9 @@ def save_hf_format_ds(
             torch.save(model_state, str(output_model_file))
             tmp_conf.to_json_file(str(output_config_file))
             tokenizer.save_pretrained(str(output_dir))
+
+        if is_lora:
+            model_to_save.unmerge_adapter()
 
     dist.barrier()
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
