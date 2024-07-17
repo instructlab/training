@@ -23,6 +23,7 @@ from instructlab.dolomite.hf_models import (
     export_to_huggingface,
     import_from_huggingface,
 )
+from peft.utils import _get_submodules
 from rich.logging import RichHandler
 from safetensors.torch import save_file
 from torch import distributed as dist
@@ -611,7 +612,56 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         # print(msg)
 
 
-def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True):
+def _dequantize_model(model, dtype=torch.bfloat16, device="cpu"):
+    """
+    'model': the peftmodel you loaded with qlora.
+    'tokenizer': the model's corresponding hf's tokenizer.
+    'to': directory to save the dequantized model
+    'dtype': dtype that the model was trained using
+    'device': device to load the model to
+    FROM: https://gist.github.com/ChrisHayduk/1a53463331f52dca205e55982baf9930
+    """
+    # Third Party
+    from bitsandbytes.functional import dequantize_4bit
+    import bitsandbytes as bnb
+
+    cls = bnb.nn.Linear4bit
+
+    with torch.no_grad():
+        for name, module in model.named_modules():
+            if isinstance(module, cls):
+                print(f"Dequantizing `{name}`...")
+                quant_state = copy.deepcopy(module.weight.quant_state)
+
+                quant_state[2] = dtype
+
+                weights = dequantize_4bit(
+                    module.weight.data, quant_state=quant_state, quant_type="nf4"
+                ).to(dtype)
+
+                new_module = torch.nn.Linear(
+                    module.in_features, module.out_features, bias=None, dtype=dtype
+                )
+                new_module.weight = torch.nn.Parameter(weights)
+                new_module.to(device=device, dtype=dtype)
+
+                parent, _, target_name = _get_submodules(model, name)
+                setattr(parent, target_name, new_module)
+
+        model.is_loaded_in_4bit = False
+
+        return model
+
+
+def save_hf_format_ds(
+    args,
+    model,
+    tokenizer,
+    samples_seen,
+    convert_granite=True,
+    is_lora=False,
+    is_quant=False,
+):
     model_to_save = model.module
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
@@ -628,6 +678,11 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         WEIGHTS_NAME = "pytorch_model.bin"
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
     if torch.distributed.get_rank() == 0:
+        if is_lora:
+            if is_quant:
+                model = _dequantize_model(model)
+            model_to_save = model.merge_and_unload()
+
         model_state = model_to_save.state_dict()
         output_dir.mkdir(parents=True, exist_ok=True)
         output_model_file = output_dir / WEIGHTS_NAME
