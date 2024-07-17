@@ -445,6 +445,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     model,
                     tokenizer,
                     global_step * args.samples_per_gpu * world_size,
+                    bool(args.lora_r),
+                    bool(args.lora_r) and bool(args.lora_quant_bits),
                 )
 
             if (
