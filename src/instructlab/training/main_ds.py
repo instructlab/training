@@ -640,7 +640,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             + train_args.lora.target_modules
         )
         # hard-code 4-bit quantization for now, change this when we add more
-        if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
+        quant_dtype = train_args.lora.quantize_data_type
+        quantization_is_enabled = quant_dtype in (
+            config.QuantizeDataType.NF4,
+            config.QuantizeDataType.NF4.value,
+        )
+        if quantization_is_enabled:
             command.append("--lora_quant_bits=4")
 
     # deepspeed opts
