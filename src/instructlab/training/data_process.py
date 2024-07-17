@@ -172,7 +172,7 @@ def form_data_pools(data, pretrain_tk):
     pretrain_indices = []
     instruct_indices = []
     for i in tqdm(range(len(data)), desc="Data type sorting"):
-        if data[i][0] == pretrain_tk:
+        if pretrain_tk in data[i]:
             pretrain_indices.append(i)
         else:
             instruct_indices.append(i)
