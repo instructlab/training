@@ -24,7 +24,6 @@ from instructlab.dolomite.hf_models import (
     export_to_huggingface,
     import_from_huggingface,
 )
-from peft.utils import _get_submodules
 from rich.logging import RichHandler
 from safetensors.torch import save_file
 from torch import distributed as dist
