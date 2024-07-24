@@ -24,3 +24,6 @@ pydantic>=2.7.0
 # deepspeed needs to be at the bottom or it'll break during installation
 deepspeed>=0.14.3
 aiofiles>=23.2.1
+
+bitsandbytes
+
