@@ -4,6 +4,7 @@ from typing import List
 import logging
 from functools import partial
 import os
+import random
 
 
 # Third Party
@@ -215,7 +216,7 @@ def remove_pretrain_system_messages(example: dict):
     return {"messages": messages}
 
 
-def process_messages_format(example: dict, model_path: str):
+def process_messages_format(example: dict, model_path: str, num_negatives: int):
     messages = []
     if 'granite' in model_path:
         SYS_PROMPT = 'I am, Red Hat® Instruct Model based on Granite 7B, an AI language model developed by Red Hat and IBM Research, based on the Granite-7b-base language model. My primary function is to be a chat assistant.'
@@ -227,8 +228,10 @@ def process_messages_format(example: dict, model_path: str):
     if SYS_PROMPT is not None:
         messages.append({'content': SYS_PROMPT, 'role': 'system'})
     # user prompt (context doc) and input
-    messages.append({'content': + example['question'], 'role': 'user'})
-    messages.append({'content': example['answer'], 'rejected': example['current_answer'], 'role': 'assistant_w_rejected'})
+    messages.append({'content': example['question'], 'role': 'user'})
+    # pick num_negatives number of negative samples randomly from the list of rejected answers
+    rejected = random.sample(example['current_response'], num_negatives)
+    messages.append({'content': example['answer'].strip(), 'rejected': rejected, 'role': 'assistant_w_rejected'})
     
     return {"messages": messages}
 
@@ -259,7 +262,7 @@ def main(args: DataProcessArgs):
     if "messages" not in data.column_names:
         logging.info('data is not in "messages" format, packing it into "messages" format...')
         # data = data.filter(lambda x: x["rejected"] != "", num_proc=72)
-        data = data.map(partial(process_messages_format, model_path=args.model_path), num_proc=72)
+        data = data.map(partial(process_messages_format, model_path=args.model_path, num_negatives=args.num_negatives), num_proc=72)
 
     print("\033[92mremoving pretraining samples system msg\033[0m")
     data = data.map(remove_pretrain_system_messages, num_proc=72)
@@ -322,7 +325,7 @@ def main(args: DataProcessArgs):
                 x["input_ids"], user_tk, assistant_tk, contrastive_tk
             )
         },
-        num_proc=72,
+        num_proc=1, # TODO: revert to 72
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
@@ -394,6 +397,7 @@ if __name__ == "__main__":
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
         chat_tmpl_path=args.chat_tmpl_path,
+        num_negatives=args.num_negatives,
     )
     main(data_process_args)
 

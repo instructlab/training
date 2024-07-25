@@ -36,7 +36,10 @@ def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
         add_token_list = [SPECIAL_TOKENS.system]
     else:
         add_token_list = []
-    add_token_list.extend([SPECIAL_TOKENS.user, SPECIAL_TOKENS.assistant])
+    if 'mistral' not in model_name_or_path:
+        add_token_list.extend([SPECIAL_TOKENS.user, SPECIAL_TOKENS.assistant])
+    else:
+        log_rank_0('skipping adding user and assistant tokens for mistral model b/c they are INST and /INST!!!')
 
     # add contrastive_sep token as special token
     add_token_list.extend([SPECIAL_TOKENS.contrastive_sep])

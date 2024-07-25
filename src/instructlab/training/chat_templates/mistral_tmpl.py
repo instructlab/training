@@ -6,6 +6,7 @@ SPECIAL_TOKENS = SpecialTokens(
     eos="</s>",
     user="[INST]",
     assistant="[/INST]",
+    contrastive_sep="<|contrastive_sep|>",
 )
 
 CHAT_TEMPLATE = (
@@ -17,6 +18,11 @@ CHAT_TEMPLATE = (
     "{{ '[INST] ' + message['content'] + ' [/INST]' }}"
     "{% elif message['role'] == 'assistant' %}"
     "{{ message['content'] + '</s>'}}"
+    "{% elif message['role'] == 'assistant_w_rejected' %}"
+    "{{ message['content'] + '</s>' }}"
+    "{% for rejected_message in message['rejected'] %}"
+    "{{ '<|contrastive_sep|>' + rejected_message + '</s>' }}"
+    "{% endfor %}"
     "{% endif %}"
     "{% endfor %}"
 )
