@@ -1,2 +1,2 @@
 flash-attn>=2.4.0
-bitsandbytes
+bitsandbytes>=0.43.1
