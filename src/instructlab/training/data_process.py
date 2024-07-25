@@ -220,13 +220,14 @@ def process_messages_format(example: dict, model_path: str):
     if 'granite' in model_path:
         SYS_PROMPT = 'I am, Red Hat® Instruct Model based on Granite 7B, an AI language model developed by Red Hat and IBM Research, based on the Granite-7b-base language model. My primary function is to be a chat assistant.'
     elif 'mistral' in model_path:
-        SYS_PROMPT = 'You are an AI language model developed by IBM Research. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.'
+        SYS_PROMPT = None
     
     # system prompt
-    messages.append({'content': SYS_PROMPT, 'role': 'system'})
-    # user prompt (context doc) and input
-    messages.append({'content': example['answer_doc'] + '\n' + example['inputs'], 'role': 'user'})
-    messages.append({'content': example['targets'], 'role': 'assistant'})
+    if SYS_PROMPT is not None:
+        messages.append({'content': SYS_PROMPT, 'role': 'system'})
+    # question and answer
+    messages.append({'content': example['question'], 'role': 'user'})
+    messages.append({'content': example['answer'], 'role': 'assistant'})
     
     return {"messages": messages}
 
@@ -248,13 +249,14 @@ def main(args: DataProcessArgs):
         f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}, contrastive: {contrastive_tk}"
     )
 
-    data = load_dataset("json", data_files=args.data_path, split="train")
+    if 'json' in args.data_path:
+        data = load_dataset("json", data_files=args.data_path, split="train")
+    else:
+        data = load_dataset(args.data_path, split='train')
 
     # if data is not preprocessed to be in the messages format, process it
     if "messages" not in data.column_names:
-        logging.info('data is not in "messages" format, filtering it first...')
-        data = data.filter(lambda x: x["rejected"] != "", num_proc=72)
-        logging.info('packing it into "messages" format...')
+        logging.info('data is not in "messages" format, packing into "messages" format...')
         data = data.map(partial(process_messages_format, model_path=args.model_path), num_proc=72)
 
     print("\033[92mremoving pretraining samples system msg\033[0m")
@@ -352,7 +354,7 @@ if __name__ == "__main__":
         "--model_name_or_path", type=str, required=True, help="Model name or path"
     )
     parser.add_argument(
-        "--chat-tmpl-path",
+        "--chat_tmpl_path",
         type=str,
         default=os.path.join(
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"

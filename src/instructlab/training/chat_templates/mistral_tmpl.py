@@ -6,6 +6,7 @@ SPECIAL_TOKENS = SpecialTokens(
     eos="</s>",
     user="[INST]",
     assistant="[/INST]",
+    contrastive_sep="<|contrastive_sep|>",
 )
 
 CHAT_TEMPLATE = (
