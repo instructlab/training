@@ -730,6 +730,13 @@ if __name__ == "__main__":
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
         ),
     )
+
+    # contrastive arguments
+    parser.add_argument("--contrastive_loss", action="store_true", default=False)
+    parser.add_argument("--beta", type=float, default=2.0, help="beta for dpo/simpo -- controls reward scaling btw winning and losing)")
+    parser.add_argument("--gamma_beta_ratio", type=float, default=0.5, help="controls target reward margin")
+    parser.add_argument("--label_smoothing", type=float, default=0.0, help="label smoothing for contrastive loss")
+
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
