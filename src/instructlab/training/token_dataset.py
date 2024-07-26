@@ -84,6 +84,7 @@ def setup_dataloader(
     dataset: Dataset,
     tokenizer: transformers.PreTrainedTokenizer,
     special_tokens: Any,
+    num_negatives: int,
     num_workers: int = 8,
     is_granite=False,
     max_batch_len=60000,
@@ -94,7 +95,7 @@ def setup_dataloader(
 ) -> DataLoader:
     # TODO: pass contrastive tok
     collate_fn = make_collate_fn(
-        tokenizer, special_tokens, is_granite=is_granite, max_batch_len=max_batch_len
+        tokenizer, special_tokens, num_negatives, is_granite=is_granite, max_batch_len=max_batch_len
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])

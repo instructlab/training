@@ -391,8 +391,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             loss = output.loss
 
             # mini-batch size (per gpu)
-            mini_bs = batch['input_ids'].shape[0] // 2 # b/c batch is actually double b/c of positive + negative
-            aggregated_values[3] = batch['input_ids'].shape[0] // 2
+            mini_bs = batch['input_ids'].shape[0] // (args.num_negatives + 1) # b/c actual batch size is the one divided by the number of positive (1) + negatives
+            aggregated_values[3] = mini_bs
             
             loss = loss.sum()
             aggregated_values[2] = loss.item()
@@ -405,7 +405,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             num_loss_counted_tokens = aggregated_values[0]
 
-            loss = loss / aggregated_values[3] * world_size
+            loss = loss / aggregated_values[3] * world_size / float(args.num_negatives) # loss / actual batch size * world size / num_negatives
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -442,15 +442,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "batch_size": int(aggregated_values[1]),
+                        "batch_size": int(aggregated_values[3]),
                         "total_loss": float(
                             aggregated_values[2]
                         ),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
-                        "pos_reward": float(aggregated_values[4] / aggregated_values[3]),
-                        "neg_reward": float(aggregated_values[5] / aggregated_values[3]),
-                        "reward_acc": float(aggregated_values[6] / aggregated_values[3]),
+                        "pos_reward": float(aggregated_values[4] / aggregated_values[3] / args.num_negatives),
+                        "neg_reward": float(aggregated_values[5] / aggregated_values[3] / args.num_negatives),
+                        "reward_acc": float(aggregated_values[6] / aggregated_values[3] / args.num_negatives),
                     }
                 )
 
@@ -549,6 +549,7 @@ def main(args):
         dataset,
         tokenizer,
         SPECIAL_TOKENS,
+        num_negatives=args.num_negatives,
         num_workers=8,
         is_granite=args.is_granite,
         max_batch_len=args.max_batch_len,
@@ -795,6 +796,7 @@ if __name__ == "__main__":
 
     # contrastive arguments
     parser.add_argument("--contrastive_loss", action="store_true", default=False)
+    parser.add_argument("--num_negatives", type=int, default=1, help="number of negative samples per positive sample")
     parser.add_argument("--beta", type=float, default=2.0, help="beta for dpo/simpo -- controls reward scaling btw winning and losing)")
     parser.add_argument("--gamma_beta_ratio", type=float, default=0.5, help="controls target reward margin")
     parser.add_argument("--label_smoothing", type=float, default=0.0, help="label smoothing for contrastive loss")

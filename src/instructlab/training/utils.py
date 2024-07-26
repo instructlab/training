@@ -112,7 +112,7 @@ class StreamablePopen(subprocess.Popen):
                     break
 
 
-def make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=60000):
+def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, max_batch_len=60000):
     pad_token_id = get_sp_token(tokenizer, special_tokens.pad)
     contrastive_tok_id = get_sp_token(tokenizer, special_tokens.contrastive_sep)
 
@@ -154,25 +154,46 @@ def make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=6
                 input_ids = item['input_ids']
 
                 prompt_end_idx = (labels != -100).nonzero(as_tuple=True)[0][0].item() # position of (first assistant token + 1)
-                contrastive_tok_idx = (labels == contrastive_tok_id).nonzero(as_tuple=True)[0][0].item() # me position of contrastive token
+                contrastive_tok_idx = (labels == contrastive_tok_id).nonzero(as_tuple=True)[0].tolist()
+                assert len(contrastive_tok_idx) == num_negatives, 'Number of contrastive tokens found does not match the number of negatives'
+                contrastive_tok_idx += [len(input_ids)] # add the end of the sequence
 
                 pos_input_idxs = torch.arange(contrastive_tok_idx)
-                neg_input_idxs = torch.cat([torch.arange(prompt_end_idx), torch.arange(contrastive_tok_idx+2, len(input_ids))])
+                neg_input_idxs_list = []
 
+                for i, cur_idx in enumerate(contrastive_tok_idx):
+                    # skip the last idx (which is the end of seq)
+                    if i == len(contrastive_tok_idx) - 1:
+                        break
+
+                    next_idx = contrastive_tok_idx[i+1]
+                    neg_input_idxs_list.append(torch.cat([torch.arange(prompt_end_idx), torch.arange(cur_idx+1, next_idx)]))
+
+                # neg_input_idxs = torch.cat([torch.arange(prompt_end_idx), torch.arange(contrastive_tok_idx+1, len(input_ids))])
                 pos_input_ids = input_ids[pos_input_idxs]
                 pos_labels = labels[pos_input_idxs]
-                neg_input_ids = input_ids[neg_input_idxs]
-                neg_labels = labels[neg_input_idxs]
+                neg_input_ids_list = [input_ids[neg_input_idxs] for neg_input_idxs in neg_input_idxs_list]
+                neg_labels_list = [labels[neg_input_idxs] for neg_input_idxs in neg_input_idxs_list]
 
-                # print('POSITIVE', tokenizer.decode(pos_input_ids))
-                # print('NEGATIVE', tokenizer.decode(neg_input_ids))
+                # neg_input_ids = input_ids[neg_input_idxs]
+                # neg_labels = labels[neg_input_idxs]
+
+                print('POSITIVE', tokenizer.decode(pos_input_ids))
+                for i, neg_input_ids in enumerate(neg_input_ids_list):
+                    print(f'NEGATIVE {i}', tokenizer.decode(neg_input_ids))
+                    
                 return [
                         {'input_ids': pos_input_ids, 'labels': pos_labels, 'attention_mask': torch.ones_like(pos_input_ids)},
-                        {'input_ids': neg_input_ids, 'labels': neg_labels, 'attention_mask': torch.ones_like(neg_input_ids)}
+                        *[{ 'input_ids': neg_input_ids, 'labels': neg_labels, 'attention_mask': torch.ones_like(neg_input_ids)} for neg_input_ids, neg_labels in zip(neg_input_ids_list, neg_labels_list)]
+                        # {'input_ids': neg_input_ids, 'labels': neg_labels, 'attention_mask': torch.ones_like(neg_input_ids)}
                 ]
 
+            num_total_in_sample = num_negatives + 1
             batch_processed = list(chain(*[process_for_contrastive(item) for item in batch]))
-            batch = batch_processed[::2] + batch_processed[1::2]
+            batch = batch_processed[::num_total_in_sample]
+            for j in range(1, num_total_in_sample):
+                batch += batch_processed[j::num_total_in_sample]
+
             # TODO: debug and make sure
             lens = np.array([len(item["input_ids"]) for item in batch])
             max_len = max(lens)
@@ -228,7 +249,7 @@ def make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=6
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -345,15 +366,20 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                 if labels is not None:
                     # Shift so that tokens < n predict n
                     # take the first and second half of logits and labels
-                    bs = logits.size(0)
-                    shift_logits_pos, shift_logits_neg = logits[:bs//2, :-1, :], logits[bs//2:, :-1, :]
-                    shift_labels_pos, shift_labels_neg = labels[:bs//2, 1:].clone(), labels[bs//2:, 1:].clone()
+                    bs = logits.size(0) // (num_negatives + 1) # actual batch size
+                    
+                    shift_logits_pos, shift_logits_neg = logits[:bs, :-1, :], logits[bs:, :-1, :]
+                    shift_labels_pos, shift_labels_neg = labels[:bs, 1:].clone(), logits[bs:, 1:].clone()
+
+                    # shift_logits_pos, shift_logits_neg = logits[:bs//2, :-1, :], logits[bs//2:, :-1, :]
+                    # shift_labels_pos, shift_labels_neg = labels[:bs//2, 1:].clone(), labels[bs//2:, 1:].clone()
 
                     # simpo loss implemented (no reference model)
                     pos_loss_mask = (shift_labels_pos != -100)
                     shift_labels_pos[~pos_loss_mask] = 0 # dummy tokens that'll be masked out later
                     pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), dim=2, index=shift_labels_pos.unsqueeze(2)).squeeze(2)
                     pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
+                    pos_logp = pos_logp.repeat(num_negatives, 1) # repeat for each negative
 
                     neg_loss_mask = (shift_labels_neg != -100)
                     shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later

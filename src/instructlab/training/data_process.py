@@ -362,10 +362,6 @@ def main(args: DataProcessArgs):
     data_with_labels.to_json(Path(args.data_output_path) / f"data.jsonl")
 
 # input_ids: [PROMT_TOKENS... [ASSISTANT] POSITIVE_SAMPLE [EOS] [CONTRASTIVE TOKEN] [ASSISTANT] NEGATIVE SAMPLE [EOS] ]
-# 
-
-
-
 # input_ids: [PROMPT_TOKENS... [ASSISTANT] POSITIVE_SAMPLE [EOS]]
 # input_ids: [PROMPT_TOKENS... [ASSISTANT] NEGATIVE_SAMPLE [EOS]]
 
