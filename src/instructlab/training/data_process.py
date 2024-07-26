@@ -232,6 +232,27 @@ def process_messages_format(example: dict, model_path: str):
     return {"messages": messages}
 
 
+def convert_user_assistant_back_from_special_tokens(example, tokenizer, user_token, assistant_token, special_tokens):
+    # TODO: this function assumes single-turn conversation btw user and assistant
+
+    # find index of user_tk and assistant_tk
+    input_ids = np.array(example['input_ids'])
+    labels = np.array(example['labels'])
+    user_id = (input_ids == user_token).nonzero()[0][0]
+    assistant_id = (input_ids == assistant_token).nonzero()[0][0]
+
+    new_user_tokens = tokenizer.encode(special_tokens.user)
+    new_asst_tokens = tokenizer.encode(special_tokens.assistant)
+
+    input_ids = input_ids[:user_id].tolist() + new_user_tokens + input_ids[user_id+1:assistant_id].tolist() + new_asst_tokens + input_ids[assistant_id+1:].tolist()
+    labels = labels[:user_id].tolist() + [-100] * len(new_user_tokens) + labels[user_id+1:assistant_id].tolist() + [-100] * len(new_asst_tokens) + labels[assistant_id+1:].tolist()
+
+    example['input_ids'] = input_ids
+    example['labels'] = labels
+
+    return example
+
+
 def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
@@ -324,6 +345,15 @@ def main(args: DataProcessArgs):
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
+    
+    if 'mistral' in args.model_path:
+        logging.info('WARNING: converting user and assistant tokens back to normal tokens for mistral models...')
+        # currently, user and assistant tokens are special tokens, but mistral treats them as normal string
+        # so, we need to convert them back to normal tokens that represent the string [INST] and [/INST]
+        tokenizer_no_additional = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE, skip_additional_tokens=True)
+
+        data_with_labels = data_with_labels.map(partial(convert_user_assistant_back_from_special_tokens, tokenizer=tokenizer_no_additional, user_token=user_tk, assistant_token=assistant_tk, special_tokens=SPECIAL_TOKENS), num_proc=72)
+
     # use path to get the stem of the file
     data_with_labels.to_json(Path(args.data_output_path) / f"data.jsonl")
 

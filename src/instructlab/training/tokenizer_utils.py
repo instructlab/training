@@ -19,7 +19,7 @@ class SpecialTokens:
     contrastive_sep: str = field(default="<|contrastive_sep|>")
 
 
-def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
+def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE, skip_additional_tokens=False):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
 
     if not SPECIAL_TOKENS.pad:
@@ -41,7 +41,9 @@ def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
     # add contrastive_sep token as special token
     add_token_list.extend([SPECIAL_TOKENS.contrastive_sep])
 
-    tokenizer.add_special_tokens({"additional_special_tokens": add_token_list})
+    if not skip_additional_tokens:
+        tokenizer.add_special_tokens({"additional_special_tokens": add_token_list})
+        
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
     ):
