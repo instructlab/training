@@ -1,5 +1,7 @@
 # Standard
+from collections import OrderedDict
 from contextlib import contextmanager
+from copy import copy, deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -32,9 +34,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from torch.distributed.fsdp import FullStateDictConfig
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp import StateDictType
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -94,21 +93,23 @@ class StreamablePopen(subprocess.Popen):
     Provides a way of reading stdout and stderr line by line.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, output_file, *args, **kwargs):
         # remove the stderr and stdout from kwargs
         kwargs.pop("stderr", None)
         kwargs.pop("stdout", None)
 
-        super().__init__(*args, **kwargs)
-        while True:
-            if self.stdout:
-                output = self.stdout.readline().strip()
-                print(output)
-            if self.stderr:
-                error = self.stderr.readline().strip()
-                print(error, file=sys.stderr)
-            if self.poll() is not None:
-                break
+        super().__init__(
+            *args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
+        )
+        with open(output_file, "wb") as full_log_file:
+            while True:
+                byte = self.stdout.read(1)
+                if byte:
+                    sys.stdout.buffer.write(byte)
+                    sys.stdout.flush()
+                    full_log_file.write(byte)
+                else:
+                    break
 
 
 def make_collate_fn(tokenizer, special_tokens, is_granite=False, max_batch_len=60000):
@@ -762,37 +763,24 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         # print(msg)
 
 
-def save_hf_format(args, model, tokenizer, samples_seen):
-    torch.cuda.empty_cache()
-    log_rank_0(
-        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    CONFIG_NAME = "config.json"
-    WEIGHTS_NAME = "pytorch_model.bin"
-
-    with FSDP.state_dict_type(
-        model,
-        StateDictType.FULL_STATE_DICT,
-        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
-    ):
-        model_state = model.state_dict()
-    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if torch.distributed.get_rank() == 0:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_model_file = output_dir / WEIGHTS_NAME
-        output_config_file = output_dir / CONFIG_NAME
-        torch.save(model_state, str(output_model_file))
-        model.module.config.to_json_file(str(output_config_file))
-        tokenizer.save_pretrained(str(output_dir))
-    dist.barrier()
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
+def _copy_no_lora_dict(state_dict):
+    cleaned_state_dict = OrderedDict()
+    for param_tensor in state_dict:
+        if not "lora" in param_tensor:
+            cleaned_state_dict[
+                param_tensor.replace(".base_layer", "").replace("base_model.model.", "")
+            ] = deepcopy(state_dict[param_tensor]).cpu()
+    return cleaned_state_dict
 
 
-def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True):
+def save_hf_format_ds(
+    args,
+    model,
+    tokenizer,
+    samples_seen,
+    convert_granite=True,
+    is_lora=False,
+):
     model_to_save = model.module
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
@@ -809,15 +797,27 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
         WEIGHTS_NAME = "pytorch_model.bin"
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
     if torch.distributed.get_rank() == 0:
+        if is_lora:
+            model_to_save.merge_adapter()
+
         model_state = model_to_save.state_dict()
+        if is_lora:
+            model_state = _copy_no_lora_dict(model_state)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_model_file = output_dir / WEIGHTS_NAME
         output_config_file = output_dir / CONFIG_NAME
 
+        tmp_conf = copy(model_to_save.config)
+        if not tmp_conf.architectures:
+            tmp_conf.architectures = ["LlamaForCausalLM"]
+            warnings.warn(
+                f"No architectures provided in base model config, adding architectures to ckpt: {tmp_conf.architectures}",
+            )
+
         if args.is_granite and convert_granite:
             with TemporaryDirectory("w") as tmpdir:
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
-                model_to_save.config.to_json_file(Path(tmpdir) / CONFIG_NAME)
+                tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
                 tokenizer.save_pretrained(tmpdir)
                 # export doesnt like the directory to exist
                 shutil.rmtree(output_dir)
@@ -829,8 +829,11 @@ def save_hf_format_ds(args, model, tokenizer, samples_seen, convert_granite=True
                 )
         else:
             torch.save(model_state, str(output_model_file))
-            model_to_save.config.to_json_file(str(output_config_file))
+            tmp_conf.to_json_file(str(output_config_file))
             tokenizer.save_pretrained(str(output_dir))
+
+        if is_lora:
+            model_to_save.unmerge_adapter()
 
     dist.barrier()
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
