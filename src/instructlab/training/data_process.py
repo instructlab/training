@@ -325,7 +325,7 @@ def main(args: DataProcessArgs):
                 x["input_ids"], user_tk, assistant_tk, contrastive_tk
             )
         },
-        num_proc=1, # TODO: revert to 72
+        num_proc=72,
     )
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
