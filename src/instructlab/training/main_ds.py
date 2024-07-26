@@ -94,24 +94,29 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
         )
 
+    base_model_args = {
+        "pretrained_model_name_or_path": args.model_name_or_path,
+        "torch_dtype": torch.bfloat16,
+        "quantization_config": bnb_config,
+    }
+    if not args.disable_flash_attn:
+        base_model_args["attn_implementation"] = "flash_attention_2"
+    elif args.is_granite:
+        raise RuntimeError(
+            "ERROR: Trying to use padding-free transformer without flash attention is not supported"
+        )
+
     if args.is_granite:
         with ensure_loadable_granite_checkpoint(
             args.model_name_or_path, args.output_dir
         ) as path:
+            base_model_args["pretrained_model_name_or_path"] = path
             model = GPTDolomiteForCausalLM.from_pretrained(
-                path,
-                attn_implementation="flash_attention_2",
-                torch_dtype=torch.bfloat16,
+                **base_model_args,
                 use_padding_free_transformer=True,
-                quantization_config=bnb_config,
             )
     else:
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            attn_implementation="flash_attention_2",
-            torch_dtype=torch.bfloat16,
-            quantization_config=bnb_config,
-        )
+        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
     if len(tokenizer) > model.config.vocab_size:
         print(
@@ -223,12 +228,15 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # need to use this only when the CPU offload optimizer is enabled
-    optimizer = FusedAdam(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
     if args.cpu_offload_optimizer:
         print(
-            "\033[33m!!! CPU offload optimizer enabled, switching optimizer to DeepSpeedCPUAdam !!!\033[0m"
+            "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
         )
         optimizer = DeepSpeedCPUAdam(
+            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        )
+    else:
+        optimizer = FusedAdam(
             model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
         )
 
@@ -346,7 +354,12 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
     for epoch in range(args.num_epochs):
         torch.distributed.barrier()
-        train_loader.batch_sampler.set_epoch(epoch)
+        if args.sampler in ("multipack"):
+            train_loader.batch_sampler.set_epoch(epoch)
+        elif args.sampler in ("distributed"):
+            train_loader.sampler.set_epoch(epoch)
+        else:
+            raise NotADirectoryError
 
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
@@ -432,6 +445,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     model,
                     tokenizer,
                     global_step * args.samples_per_gpu * world_size,
+                    is_lora=bool(args.lora_r),
                 )
 
             if (
@@ -463,7 +477,8 @@ def main(args):
     import yaml
 
     metric_logger = AsyncStructuredLogger(
-        args.output_dir + "/training_params_and_metrics.jsonl"
+        args.output_dir
+        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
@@ -477,7 +492,7 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    deepspeed.init_distributed(timeout=timedelta(minutes=360))
+    deepspeed.init_distributed(timeout=timedelta(minutes=10))
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
@@ -489,16 +504,28 @@ def main(args):
         mock_len=args.mock_len,
     )
 
-    packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-        num_gpus=torch.distributed.get_world_size(),
-        avg_sample_len=dataset.get_lengths().mean(),
-        effective_batch_size=args.effective_batch_size,
-        max_batch_len_per_gpu=args.max_batch_len,
-        is_padding=not args.is_granite,
-        dataset=dataset,
-        pad_id=tokenizer.pad_token_id,
-        seed=args.seed,
-    )
+    try:
+        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
+            num_gpus=torch.distributed.get_world_size(),
+            avg_sample_len=dataset.get_lengths().mean(),
+            effective_batch_size=args.effective_batch_size,
+            max_batch_len_per_gpu=args.max_batch_len,
+            is_padding=not args.is_granite,
+            dataset=dataset,
+            pad_id=tokenizer.pad_token_id,
+            seed=args.seed,
+        )
+        args.sampler = "multipack"
+    except RuntimeError as e:
+        if os.environ["LOCAL_RANK"] == "0":
+            print(f"\033[38;5;120m{e}\033[0m")
+
+        # fallback to grad accum = 1
+        # NOTE: packing max batch len will not be used
+        packing_max_batch_len = None
+        grad_accum = 1
+        args.sampler = "distributed"
+
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
     )
@@ -510,6 +537,8 @@ def main(args):
         is_granite=args.is_granite,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
+        samples_per_gpu=args.samples_per_gpu,
+        sampler=args.sampler,
         seed=args.seed,
     )
 
@@ -537,7 +566,8 @@ def main(args):
     torch.distributed.destroy_process_group()
 
 
-def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
+# public API
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
@@ -593,6 +623,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
     if train_args.is_padding_free:
         command.append("--is_granite")
 
+    if train_args.disable_flash_attn:
+        if train_args.is_padding_free:
+            raise RuntimeError(
+                "ERROR: Trying to use padding-free transformer without flash attention is not supported"
+            )
+        command.append("--disable_flash_attn")
+
     if train_args.lora:
         command.extend(
             [
@@ -604,7 +641,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
             + train_args.lora.target_modules
         )
         # hard-code 4-bit quantization for now, change this when we add more
-        if train_args.lora.quantize_data_type == config.QuantizeDataType.NF4:
+        quant_dtype = train_args.lora.quantize_data_type
+        quantization_is_enabled = quant_dtype in (
+            config.QuantizeDataType.NF4,
+            config.QuantizeDataType.NF4.value,
+        )
+        if quantization_is_enabled:
             command.append("--lora_quant_bits=4")
 
     # deepspeed opts
@@ -623,7 +665,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs):
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
     try:
-        process = StreamablePopen(command)
+        process = StreamablePopen(
+            f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
+            command,
+        )
 
     except KeyboardInterrupt:
         print("Process interrupted by user")
@@ -730,6 +775,7 @@ if __name__ == "__main__":
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
         ),
     )
+    parser.add_argument("--disable_flash_attn", action="store_true")
 
     # contrastive arguments
     parser.add_argument("--contrastive_loss", action="store_true", default=False)
