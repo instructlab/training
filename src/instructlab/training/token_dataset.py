@@ -4,6 +4,7 @@ import os
 # Third Party
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 import numpy as np
 import torch
 
@@ -16,7 +17,10 @@ class TokenDataset(Dataset):
     def __init__(self, data_path):
         self.data = load_dataset("json", data_files=data_path, split="train")
         self.lengths = np.array(
-            self.data.map(lambda x: {"len": len(x["input_ids"])}, num_proc=72)["len"]
+            [
+                len(x["input_ids"])
+                for x in tqdm(self.data, desc="Data length calculation", colour="cyan")
+            ]
         )
 
     def __len__(self):
@@ -85,6 +89,8 @@ def setup_dataloader(
     is_granite=False,
     max_batch_len=60000,
     packing_max_batch_len=60000,
+    samples_per_gpu=None,
+    sampler="multipack",
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
@@ -94,17 +100,33 @@ def setup_dataloader(
     world_size = int(os.environ["WORLD_SIZE"])
 
     lengths = dataset.get_lengths()
-    sampler = MultipackDistributedBatchSampler(
-        batch_max_length=packing_max_batch_len,
-        lengths=lengths,
-        num_replicas=world_size,
-        rank=rank,
-        seed=seed,
-        padding=not is_granite,
-    )
+    if sampler == "multipack":
+        sampler = MultipackDistributedBatchSampler(
+            batch_max_length=packing_max_batch_len,
+            lengths=lengths,
+            num_replicas=world_size,
+            rank=rank,
+            seed=seed,
+            padding=not is_granite,
+        )
+        sampler = {"batch_sampler": sampler}
+    elif sampler == "distributed":
+        # Third Party
+        from torch.utils.data import DistributedSampler
+
+        sampler = (
+            DistributedSampler(dataset) if torch.distributed.is_initialized() else None
+        )
+        sampler = {
+            "sampler": sampler,
+            "batch_size": samples_per_gpu,
+        }
+    else:
+        raise NotImplementedError
+
     dataloader = DataLoader(
         dataset,
-        batch_sampler=sampler,
+        **sampler,
         num_workers=num_workers,
         collate_fn=collate_fn,
     )
