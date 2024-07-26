@@ -769,7 +769,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument(
-        "--chat-tmpl-path",
+        "--chat_tmpl_path",
         type=str,
         default=os.path.join(
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
