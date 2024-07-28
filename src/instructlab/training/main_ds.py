@@ -527,7 +527,10 @@ def main(args):
             max_batch_len_per_gpu=args.max_batch_len,
             is_padding=not args.is_granite,
             dataset=dataset,
+            tokenizer=tokenizer,
+            special_tokens=SPECIAL_TOKENS,
             pad_id=tokenizer.pad_token_id,
+            num_negatives=args.num_negatives,
             seed=args.seed,
         )
         args.sampler = "multipack"
@@ -629,7 +632,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
-        f"--chat-tmpl-path={train_args.chat_tmpl_path}",
+        f"--chat_tmpl_path={train_args.chat_tmpl_path}",
     ]
 
     if train_args.mock_data:
@@ -786,7 +789,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument(
-        "--chat-tmpl-path",
+        "--chat_tmpl_path",
         type=str,
         default=os.path.join(
             os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
