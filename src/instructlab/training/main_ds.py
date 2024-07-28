@@ -405,13 +405,13 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             num_loss_counted_tokens = aggregated_values[0]
 
-            loss = loss / aggregated_values[3] * world_size / float(args.num_negatives) # loss / actual batch size * world size / num_negatives
+            loss = loss / (aggregated_values[3] * args.num_negatives) * world_size # loss / actual batch size * world size / num_negatives
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             # )
             print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, reward_acc = {output.reward_acc.item() / mini_bs}, "
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, reward_acc = {output.reward_acc.item() / (mini_bs * args.num_negatives)}, "
             )
 
             model.backward(loss)
@@ -448,9 +448,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         ),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
-                        "pos_reward": float(aggregated_values[4] / aggregated_values[3] / args.num_negatives),
-                        "neg_reward": float(aggregated_values[5] / aggregated_values[3] / args.num_negatives),
-                        "reward_acc": float(aggregated_values[6] / aggregated_values[3] / args.num_negatives),
+                        "pos_reward": float(aggregated_values[4] / (aggregated_values[3] * args.num_negatives)),
+                        "neg_reward": float(aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
+                        "reward_acc": float(aggregated_values[6] / (aggregated_values[3] * args.num_negatives)),
                     }
                 )
 

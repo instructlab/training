@@ -411,6 +411,9 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     logits = pi_logratios - gamma_logratios
 
                     loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
+                    # reward_acc = (pos_logp > neg_logp).detach().float().sum()
+                    # pos_rewards = beta * pos_logp.detach().sum()
+                    # neg_rewards = beta * neg_logp.detach().sum()
                     reward_acc = (pos_logp > neg_logp).detach().float().sum()
                     pos_rewards = beta * pos_logp.detach().sum()
                     neg_rewards = beta * neg_logp.detach().sum()
