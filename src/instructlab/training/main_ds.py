@@ -166,7 +166,7 @@ def setup_model(args, tokenizer, special_tokens, train_loader, grad_accum):
     contrastive_tok = get_sp_token(tokenizer, special_tokens.contrastive_sep)
     pad_tok = get_sp_token(tokenizer, special_tokens.pad)
 
-    model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite, contrastive_loss=args.contrastive_loss, contrastive_tok=contrastive_tok, beta=args.beta, gamma_beta_ratio=args.gamma_beta_ratio, label_smoothing=args.label_smoothing)
+    model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite, contrastive_loss=args.contrastive_loss, num_negatives=args.num_negatives, contrastive_tok=contrastive_tok, beta=args.beta, gamma_beta_ratio=args.gamma_beta_ratio, label_smoothing=args.label_smoothing)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
     # handling of gradient checkpointing

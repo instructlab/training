@@ -18,6 +18,8 @@ import time
 import warnings
 from itertools import chain
 
+import torch.distributed
+
 # Third Party
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import (
@@ -178,10 +180,17 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 # neg_input_ids = input_ids[neg_input_idxs]
                 # neg_labels = labels[neg_input_idxs]
 
-                print('POSITIVE', tokenizer.decode(pos_input_ids))
-                for i, neg_input_ids in enumerate(neg_input_ids_list):
-                    print(f'NEGATIVE {i}', tokenizer.decode(neg_input_ids))
-                    
+                # TODO: debug and make sure
+                # pos_labels = np.array(pos_labels)
+                # neg_labels_list = [np.array(neg_labels) for neg_labels in neg_labels_list]
+
+                # print('POSITIVE', tokenizer.decode(pos_input_ids))
+                # print('POSITIVE LABELS', tokenizer.decode(pos_labels[pos_labels != -100]))
+                # for i, neg_input_ids in enumerate(neg_input_ids_list):
+                #     print(f'NEGATIVE {i}', tokenizer.decode(neg_input_ids))
+                #     neg_labels = neg_labels_list[i]
+                #     print(f'NEGATIVE LABELS {i}', tokenizer.decode(neg_labels[neg_labels != -100]))
+            
                 return [
                         {'input_ids': pos_input_ids, 'labels': pos_labels, 'attention_mask': torch.ones_like(pos_input_ids)},
                         *[{ 'input_ids': neg_input_ids, 'labels': neg_labels, 'attention_mask': torch.ones_like(neg_input_ids)} for neg_input_ids, neg_labels in zip(neg_input_ids_list, neg_labels_list)]
@@ -369,7 +378,7 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     bs = logits.size(0) // (num_negatives + 1) # actual batch size
                     
                     shift_logits_pos, shift_logits_neg = logits[:bs, :-1, :], logits[bs:, :-1, :]
-                    shift_labels_pos, shift_labels_neg = labels[:bs, 1:].clone(), logits[bs:, 1:].clone()
+                    shift_labels_pos, shift_labels_neg = labels[:bs, 1:].clone(), labels[bs:, 1:].clone()
 
                     # shift_logits_pos, shift_logits_neg = logits[:bs//2, :-1, :], logits[bs//2:, :-1, :]
                     # shift_labels_pos, shift_labels_neg = labels[:bs//2, 1:].clone(), labels[bs//2:, 1:].clone()
@@ -379,13 +388,24 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                     shift_labels_pos[~pos_loss_mask] = 0 # dummy tokens that'll be masked out later
                     pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), dim=2, index=shift_labels_pos.unsqueeze(2)).squeeze(2)
                     pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
-                    pos_logp = pos_logp.repeat(num_negatives, 1) # repeat for each negative
+                    pos_logp = pos_logp.repeat(num_negatives) # repeat for each negative
 
                     neg_loss_mask = (shift_labels_neg != -100)
                     shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
                     neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
                     neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
                     
+                    # print('logits shape', logits.shape)
+                    # print('labels shape', labels.shape)
+                    # print('shift_logits_pos shape', shift_logits_pos.shape)
+                    # print('shift_labels_pos shape', shift_labels_pos.shape)
+                    # print('shift_logits_neg shape', shift_logits_neg.shape)
+                    # print('shift_labels_neg shape', shift_labels_neg.shape)
+
+                    # if torch.distributed.get_rank() == 0:
+                    #     import IPython
+                    #     IPython.embed()
+                    # torch.distributed.barrier()
                     pi_logratios = pos_logp - neg_logp
                     gamma_logratios = gamma_beta_ratio
                     logits = pi_logratios - gamma_logratios
