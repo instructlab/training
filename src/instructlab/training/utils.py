@@ -158,7 +158,7 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 assert len(contrastive_tok_idx) == num_negatives, 'Number of contrastive tokens found does not match the number of negatives'
                 contrastive_tok_idx += [len(input_ids)] # add the end of the sequence
 
-                pos_input_idxs = torch.arange(contrastive_tok_idx)
+                pos_input_idxs = torch.arange(contrastive_tok_idx[0]) # until the first contrastive token
                 neg_input_idxs_list = []
 
                 for i, cur_idx in enumerate(contrastive_tok_idx):
