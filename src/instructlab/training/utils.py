@@ -177,6 +177,8 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 neg_input_ids_list = [input_ids[neg_input_idxs] for neg_input_idxs in neg_input_idxs_list]
                 neg_labels_list = [labels[neg_input_idxs] for neg_input_idxs in neg_input_idxs_list]
 
+                # import IPython
+                # IPython.embed()
                 # neg_input_ids = input_ids[neg_input_idxs]
                 # neg_labels = labels[neg_input_idxs]
 
@@ -190,6 +192,10 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 #     print(f'NEGATIVE {i}', tokenizer.decode(neg_input_ids))
                 #     neg_labels = neg_labels_list[i]
                 #     print(f'NEGATIVE LABELS {i}', tokenizer.decode(neg_labels[neg_labels != -100]))
+
+                # if torch.distributed.get_rank() == 0:
+                #     import IPython
+                #     IPython.embed()
             
                 return [
                         {'input_ids': pos_input_ids, 'labels': pos_labels, 'attention_mask': torch.ones_like(pos_input_ids)},
@@ -258,7 +264,7 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -371,7 +377,10 @@ def convert_loss_to_reduce_sum(model, is_granite=False, contrastive_loss=False, 
                 logits = output.logits if return_dict else output[0]
                 loss = pos_rewards = neg_rewards = None
 
-
+                t = tokenizer
+                assert (input_ids < 32000).all(), 'input_ids should be less than 32000'
+                assert (labels < 32000).all(), 'labels should be less than 32000'
+                
                 if labels is not None:
                     # Shift so that tokens < n predict n
                     # take the first and second half of logits and labels
