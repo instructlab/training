@@ -582,7 +582,7 @@ def main(args):
             }
         )
 
-    model = setup_model(args, tokenizer, SPECIAL_TOKENS, train_loader, grad_accum, skip_resize_embs=True if args.model_name_or_path == "mistralai/Mistral-7B-v0.1" else False)
+    model = setup_model(args, tokenizer, SPECIAL_TOKENS, train_loader, grad_accum, skip_resize_embs=True if args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.1" else False)
     model = maybe_resume_training(args, model)
 
     train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
