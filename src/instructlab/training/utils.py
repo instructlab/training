@@ -630,6 +630,10 @@ def save_hf_format_ds(
     convert_granite=True,
     is_lora=False,
 ):
+
+    # HACK HACK!
+    convert_granite = False
+
     model_to_save = model.module
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
