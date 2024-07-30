@@ -446,6 +446,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     tokenizer,
                     global_step * args.samples_per_gpu * world_size,
                     is_lora=bool(args.lora_r),
+                    convert_granite=not args.no_granite_ckpt_conversion,
                 )
 
             if (
@@ -743,6 +744,7 @@ if __name__ == "__main__":
         help="Sharding strategy to be used for distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")
+    parser.add_argument("--no_granite_ckpt_conversion", action="store_true")
     parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
