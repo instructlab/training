@@ -379,7 +379,7 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
 
                 return_dict = isinstance(output, dict)
                 logits = output.logits if return_dict else output[0]
-                loss = pos_loss = neg_loss = None
+                loss = pos_loss = neg_loss = neg_rewards = None
 
                 if labels is not None:
                     # Shift so that tokens < n predict n
@@ -389,20 +389,30 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
                     shift_labels_pos, shift_labels_neg = labels[:bs, 1:].contiguous().clone(), labels[bs:, 1:].contiguous().clone()
 
                     # Flatten the tokens
-                    shift_logits_pos, shift_logits_neg = shift_logits_pos.view(-1, model.config.vocab_size), shift_logits_neg.view(-1, model.config.vocab_size)
-                    shift_labels_pos, shift_labels_neg = shift_labels_pos.view(-1), shift_labels_neg.view(-1)
+                    shift_logits_pos, shift_logits_neg = shift_logits_pos.view(-1, model.config.vocab_size), shift_logits_neg
+                    shift_labels_pos, shift_labels_neg = shift_labels_pos.view(-1), shift_labels_neg
 
                     # Ensure tensors are on the same device
                     # shift_labels = shift_labels.to(shift_logits.device)
                     loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
                     pos_loss = loss_fct(shift_logits_pos, shift_labels_pos)
-                    neg_loss = loss_fct(shift_logits_neg, shift_labels_neg)
+                    # neg_loss = loss_fct(shift_logits_neg, shift_labels_neg)
+
+                    neg_loss_mask = (shift_labels_neg != -100)
+                    shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
+                    neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
+                    neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
+                    neg_loss = - F.logsigmoid(-neg_logp)
+
+                    neg_rewards = neg_logp.detach().sum()
 
                 if not return_dict:
                     return ((pos_loss, neg_loss, ) + output) if pos_loss is not None else output
 
+
                 output.pos_loss = pos_loss
                 output.neg_loss = neg_loss
+                output.neg_rewards = neg_rewards
                 output.loss = loss # setting to None
 
                 return output

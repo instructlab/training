@@ -371,7 +371,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(6, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(7, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -399,15 +399,17 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             aggregated_values[3] = mini_bs
             
             pos_loss = output.pos_loss
-            neg_loss = output.neg_loss
+            neg_loss = output.neg_loss.sum()
+            neg_rewards = output.neg_rewards
             aggregated_values[4] = pos_loss.item()
             aggregated_values[5] = neg_loss.item()
+            aggregated_values[6] = neg_rewards.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
 
             num_loss_counted_tokens_pos = aggregated_values[1]
             num_loss_counted_tokens_neg = aggregated_values[2]
-            loss = (pos_loss / num_loss_counted_tokens_pos - neg_loss / num_loss_counted_tokens_neg) * world_size
+            loss = (pos_loss / num_loss_counted_tokens_pos + args.beta * neg_loss / (aggregated_values[3] * args.num_negatives)) * world_size
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -442,14 +444,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "loss": loss.item(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
+                        "beta": args.beta,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens_pos": int(num_loss_counted_tokens_pos),
                         "num_loss_counted_tokens_neg": int(num_loss_counted_tokens_neg),
                         "batch_size": int(aggregated_values[3]),
                         "pos_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos),
-                        "neg_loss": -float(aggregated_values[5] / num_loss_counted_tokens_neg),
-                        "total_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos - aggregated_values[5] / num_loss_counted_tokens_neg),
+                        "neg_loss": -float(args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
+                        "total_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos - args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
                     }
