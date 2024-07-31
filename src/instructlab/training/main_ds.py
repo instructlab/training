@@ -359,6 +359,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             else None
         )
 
+    beta = args.beta
+
     for epoch in range(args.num_epochs):
         torch.distributed.barrier()
         if args.sampler in ("multipack"):
@@ -407,7 +409,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             num_loss_counted_tokens_pos = aggregated_values[1]
             num_loss_counted_tokens_neg = aggregated_values[2]
-            loss = (pos_loss / num_loss_counted_tokens_pos - neg_loss / num_loss_counted_tokens_neg) * world_size
+            loss = (pos_loss / num_loss_counted_tokens_pos - args.beta * neg_loss / num_loss_counted_tokens_neg) * world_size
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -442,6 +444,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "loss": loss.item(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
+                        "beta": beta,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens_pos": int(num_loss_counted_tokens_pos),
