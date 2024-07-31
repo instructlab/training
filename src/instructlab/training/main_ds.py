@@ -371,7 +371,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(6, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(5, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -423,6 +423,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             model.step()
 
             if local_rank == 0:
+                print('LOGGING METRICS!')
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = model.lr_scheduler.get_last_lr()[0]
