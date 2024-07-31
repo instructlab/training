@@ -393,9 +393,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 **batch,
                 use_cache=False,
             )
-            # print('output', output)
-            pos_loss = output.pos_loss
-            neg_loss = output.neg_loss
+            print(f'rank {local_rank} output', output)
 
             # mini-batch size (per gpu)
             mini_bs = len(batch['input_ids']) // (args.num_negatives + 1) # b/c actual batch size is the one divided by the number of positive (1) + negatives
@@ -450,9 +448,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "num_loss_counted_tokens_pos": int(num_loss_counted_tokens_pos),
                         "num_loss_counted_tokens_neg": int(num_loss_counted_tokens_neg),
                         "batch_size": int(aggregated_values[3]),
-                        "pos_loss": aggregated_values[4] / num_loss_counted_tokens_pos,
-                        "neg_loss": -aggregated_values[5] / num_loss_counted_tokens_neg,
-                        "total_loss": aggregated_values[1] / num_loss_counted_tokens_pos - aggregated_values[2] / num_loss_counted_tokens_neg,
+                        "pos_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos),
+                        "neg_loss": -float(aggregated_values[5] / num_loss_counted_tokens_neg),
+                        "total_loss": float(aggregated_values[1] / num_loss_counted_tokens_pos - aggregated_values[2] / num_loss_counted_tokens_neg),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
                     }

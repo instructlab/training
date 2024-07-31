@@ -251,8 +251,8 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
             print(
                 f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
                 f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                f"num_loss_counted_tokens_pos: {num_loss_counted_tokens_pos}\033[0m"
+                f"num_loss_counted_tokens: {num_loss_counted_tokens}"
+                f"num_loss_counted_tokens_pos: {num_loss_counted_tokens_pos}"
                 f"num_loss_counted_tokens_neg: {num_loss_counted_tokens_neg}\033[0m"
             )
 
