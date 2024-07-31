@@ -268,7 +268,7 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_loss=False, num_negatives=0, bound_neg_loss=False, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -391,6 +391,10 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
                     # Flatten the tokens
                     shift_logits_pos, shift_logits_neg = shift_logits_pos.view(-1, model.config.vocab_size), shift_logits_neg.view(-1, model.config.vocab_size)
                     shift_labels_pos, shift_labels_neg = shift_labels_pos.view(-1), shift_labels_neg.view(-1)
+
+                    # bounding loss
+                    if bound_neg_loss:
+                        shift_logits_neg = -F.logsigmoid(-shift_logits_neg)
 
                     # Ensure tensors are on the same device
                     # shift_labels = shift_labels.to(shift_logits.device)
