@@ -393,7 +393,6 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 **batch,
                 use_cache=False,
             )
-            print(f'rank {local_rank} output', output)
 
             # mini-batch size (per gpu)
             mini_bs = len(batch['input_ids']) // (args.num_negatives + 1) # b/c actual batch size is the one divided by the number of positive (1) + negatives
@@ -410,6 +409,11 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             num_loss_counted_tokens_neg = aggregated_values[2]
             loss = (pos_loss / num_loss_counted_tokens_pos - neg_loss / num_loss_counted_tokens_neg) * world_size
 
+            print(f'rank {local_rank} output', output)
+            if local_rank == 0:
+                import IPython; IPython.embed()
+            torch.distributed.barrier()
+
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             # )
@@ -421,7 +425,6 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             model.step()
 
             if local_rank == 0:
-                print('LOGGING METRICS!')
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = model.lr_scheduler.get_last_lr()[0]
@@ -435,6 +438,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     model.optimizer.single_partition_of_fp32_groups[0].norm()
                 )
 
+                # make sure these are floats/ints, or else won't print without error
                 metric_logger.log_sync(
                     {
                         "epoch": epoch,

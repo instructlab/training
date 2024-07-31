@@ -379,7 +379,7 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
 
                 return_dict = isinstance(output, dict)
                 logits = output.logits if return_dict else output[0]
-                pos_loss = neg_loss = None
+                loss = pos_loss = neg_loss = None
 
                 if labels is not None:
                     # Shift so that tokens < n predict n
@@ -403,6 +403,7 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
 
                 output.pos_loss = pos_loss
                 output.neg_loss = neg_loss
+                output.loss = loss # setting to None
 
                 return output
             
