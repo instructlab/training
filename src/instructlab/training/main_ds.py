@@ -382,7 +382,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             start = time.time()
             aggregated_values[0] = batch.pop("num_loss_counted_tokens")
-            aggregated_values[1] = len(batch["input_ids"])
+            aggregated_values[1] = batch.pop("num_loss_counted_tokens_pos")
+            aggregated_values[2] = batch.pop("num_loss_counted_tokens_neg")
+            
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
@@ -392,30 +394,29 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 use_cache=False,
             )
             # print('output', output)
-            loss = output.loss
+            pos_loss = output.pos_loss
+            neg_loss = output.neg_loss
 
             # mini-batch size (per gpu)
-            mini_bs = batch['input_ids'].shape[0] // (args.num_negatives + 1) # b/c actual batch size is the one divided by the number of positive (1) + negatives
+            mini_bs = len(batch['input_ids']) // (args.num_negatives + 1) # b/c actual batch size is the one divided by the number of positive (1) + negatives
             aggregated_values[3] = mini_bs
             
-            loss = loss.sum()
-            aggregated_values[2] = loss.item()
-            
-            aggregated_values[4] = output.pos_rewards.item()
-            aggregated_values[5] = output.neg_rewards.item()
-            aggregated_values[6] = output.reward_acc.item()
+            pos_loss = output.pos_loss
+            neg_loss = output.neg_loss
+            aggregated_values[4] = pos_loss.item()
+            aggregated_values[5] = neg_loss.item()
 
             all_reduce(aggregated_values, op=ReduceOp.SUM)
 
-            num_loss_counted_tokens = aggregated_values[0]
-
-            loss = loss / (aggregated_values[3] * args.num_negatives) * world_size # loss / actual batch size * world size / num_negatives
+            num_loss_counted_tokens_pos = aggregated_values[1]
+            num_loss_counted_tokens_neg = aggregated_values[2]
+            loss = (pos_loss / num_loss_counted_tokens_pos - neg_loss / num_loss_counted_tokens_neg) * world_size
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             # )
             print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, reward_acc = {output.reward_acc.item() / (mini_bs * args.num_negatives)}, "
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}, "
             )
 
             model.backward(loss)
@@ -445,16 +446,12 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        "num_loss_counted_tokens_pos": int(num_loss_counted_tokens_pos),
+                        "num_loss_counted_tokens_neg": int(num_loss_counted_tokens_neg),
                         "batch_size": int(aggregated_values[3]),
-                        "total_loss": float(
-                            aggregated_values[2]
-                        ),
+                        "total_loss": aggregated_values[1] / num_loss_counted_tokens_pos - aggregated_values[2] / num_loss_counted_tokens_neg,
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
-                        "pos_reward": float(aggregated_values[4] / (aggregated_values[3] * args.num_negatives)),
-                        "neg_reward": float(aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
-                        "reward_acc": float(aggregated_values[6] / (aggregated_values[3] * args.num_negatives)),
                     }
                 )
 

@@ -192,10 +192,6 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 #     print(f'NEGATIVE {i}', tokenizer.decode(neg_input_ids))
                 #     neg_labels = neg_labels_list[i]
                 #     print(f'NEGATIVE LABELS {i}', tokenizer.decode(neg_labels[neg_labels != -100]))
-
-                # if torch.distributed.get_rank() == 0:
-                #     import IPython
-                #     IPython.embed()
             
                 return [
                         {'input_ids': pos_input_ids, 'labels': pos_labels, 'attention_mask': torch.ones_like(pos_input_ids)},
@@ -235,7 +231,11 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                     for item in batch
                 ]
             )
-            num_loss_counted_tokens = (labels != -100).sum()
+            num_loss_counted_tokens = (labels != -100)
+            num_loss_counted_tokens_pos = num_loss_counted_tokens[:len(batch) // num_total_in_sample].sum()
+            num_loss_counted_tokens_neg = num_loss_counted_tokens[len(batch) // num_total_in_sample:].sum()
+            num_loss_counted_tokens = num_loss_counted_tokens.sum()
+            assert (num_loss_counted_tokens_pos + num_loss_counted_tokens_neg) == num_loss_counted_tokens, 'Number of counted tokens does not match'
 
             attention_mask = torch.stack(
                 [
@@ -252,12 +252,16 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
                 f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
                 f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
                 f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+                f"num_loss_counted_tokens_pos: {num_loss_counted_tokens_pos}\033[0m"
+                f"num_loss_counted_tokens_neg: {num_loss_counted_tokens_neg}\033[0m"
             )
 
             return {
                 "input_ids": input_ids,
                 "labels": labels,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
+                "num_loss_counted_tokens_pos": num_loss_counted_tokens_pos,
+                "num_loss_counted_tokens_neg": num_loss_counted_tokens_neg,
                 "attention_mask": attention_mask,
             }
 
@@ -375,66 +379,30 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
 
                 return_dict = isinstance(output, dict)
                 logits = output.logits if return_dict else output[0]
-                loss = pos_rewards = neg_rewards = None
+                pos_loss = neg_loss = None
 
-                t = tokenizer
-                assert (input_ids < 32000).all(), 'input_ids should be less than 32000'
-                assert (labels < 32000).all(), 'labels should be less than 32000'
-                
                 if labels is not None:
                     # Shift so that tokens < n predict n
-                    # take the first and second half of logits and labels
                     bs = logits.size(0) // (num_negatives + 1) # actual batch size
                     
-                    shift_logits_pos, shift_logits_neg = logits[:bs, :-1, :], logits[bs:, :-1, :]
-                    shift_labels_pos, shift_labels_neg = labels[:bs, 1:].clone(), labels[bs:, 1:].clone()
+                    shift_logits_pos, shift_logits_neg = logits[:bs, :-1, :].contiguous(), logits[bs:, :-1, :].contiguous()
+                    shift_labels_pos, shift_labels_neg = labels[:bs, 1:].contiguous().clone(), labels[bs:, 1:].contiguous().clone()
 
-                    # shift_logits_pos, shift_logits_neg = logits[:bs//2, :-1, :], logits[bs//2:, :-1, :]
-                    # shift_labels_pos, shift_labels_neg = labels[:bs//2, 1:].clone(), labels[bs//2:, 1:].clone()
+                    # Flatten the tokens
+                    shift_logits_pos, shift_logits_neg = shift_logits_pos.view(-1, model.config.vocab_size), shift_logits_neg.view(-1, model.config.vocab_size)
+                    shift_labels_pos, shift_labels_neg = shift_labels_pos.view(-1), shift_labels_neg.view(-1)
 
-                    # simpo loss implemented (no reference model)
-                    pos_loss_mask = (shift_labels_pos != -100)
-                    shift_labels_pos[~pos_loss_mask] = 0 # dummy tokens that'll be masked out later
-                    pos_logp = torch.gather(F.log_softmax(shift_logits_pos, dim=-1), dim=2, index=shift_labels_pos.unsqueeze(2)).squeeze(2)
-                    pos_logp = (pos_logp * pos_loss_mask).sum(-1) / pos_loss_mask.sum(-1)
-                    pos_logp = pos_logp.repeat(num_negatives) # repeat for each negative
+                    # Ensure tensors are on the same device
+                    # shift_labels = shift_labels.to(shift_logits.device)
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+                    pos_loss = loss_fct(shift_logits_pos, shift_labels_pos)
+                    neg_loss = loss_fct(shift_logits_neg, shift_labels_neg)
 
-                    neg_loss_mask = (shift_labels_neg != -100)
-                    shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
-                    neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
-                    neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
-                    
-                    # print('logits shape', logits.shape)
-                    # print('labels shape', labels.shape)
-                    # print('shift_logits_pos shape', shift_logits_pos.shape)
-                    # print('shift_labels_pos shape', shift_labels_pos.shape)
-                    # print('shift_logits_neg shape', shift_logits_neg.shape)
-                    # print('shift_labels_neg shape', shift_labels_neg.shape)
-
-                    # if torch.distributed.get_rank() == 0:
-                    #     import IPython
-                    #     IPython.embed()
-                    # torch.distributed.barrier()
-                    pi_logratios = pos_logp - neg_logp
-                    gamma_logratios = gamma_beta_ratio
-                    logits = pi_logratios - gamma_logratios
-
-                    loss = -F.logsigmoid(beta * logits) * (1 - label_smoothing) - F.logsigmoid(-beta * logits) * label_smoothing
-                    # reward_acc = (pos_logp > neg_logp).detach().float().sum()
-                    # pos_rewards = beta * pos_logp.detach().sum()
-                    # neg_rewards = beta * neg_logp.detach().sum()
-                    reward_acc = (pos_logp > neg_logp).detach().float().sum()
-                    pos_rewards = beta * pos_logp.detach().sum()
-                    neg_rewards = beta * neg_logp.detach().sum()
-
-                # TODO: may need to handle augmenting the returned output with pos_rewards and neg_rewards
                 if not return_dict:
-                    return ((loss,) + output) if loss is not None else output
-                
-                output.loss = loss
-                output.pos_rewards = pos_rewards
-                output.neg_rewards = neg_rewards
-                output.reward_acc = reward_acc
+                    return ((pos_loss, neg_loss, ) + output) if pos_loss is not None else output
+
+                output.pos_loss = pos_loss
+                output.neg_loss = neg_loss
 
                 return output
             
