@@ -449,6 +449,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "num_loss_counted_tokens_pos": int(num_loss_counted_tokens_pos),
                         "num_loss_counted_tokens_neg": int(num_loss_counted_tokens_neg),
                         "batch_size": int(aggregated_values[3]),
+                        "pos_loss": aggregated_values[4] / num_loss_counted_tokens_pos,
+                        "neg_loss": -aggregated_values[5] / num_loss_counted_tokens_neg,
                         "total_loss": aggregated_values[1] / num_loss_counted_tokens_pos - aggregated_values[2] / num_loss_counted_tokens_neg,
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
