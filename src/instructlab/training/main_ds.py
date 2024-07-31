@@ -371,7 +371,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(5, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(6, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
