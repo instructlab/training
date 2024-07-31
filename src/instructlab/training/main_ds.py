@@ -409,11 +409,6 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             num_loss_counted_tokens_neg = aggregated_values[2]
             loss = (pos_loss / num_loss_counted_tokens_pos - neg_loss / num_loss_counted_tokens_neg) * world_size
 
-            # print(f'rank {local_rank} output', output)
-            # if local_rank == 0:
-            #     import IPython; IPython.embed()
-            # torch.distributed.barrier()
-
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             # )
@@ -454,7 +449,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "batch_size": int(aggregated_values[3]),
                         "pos_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos),
                         "neg_loss": -float(aggregated_values[5] / num_loss_counted_tokens_neg),
-                        "total_loss": float(aggregated_values[1] / num_loss_counted_tokens_pos - aggregated_values[2] / num_loss_counted_tokens_neg),
+                        "total_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos - aggregated_values[5] / num_loss_counted_tokens_neg),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
                     }
