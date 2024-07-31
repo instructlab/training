@@ -268,7 +268,7 @@ def make_collate_fn(tokenizer, special_tokens, num_negatives, is_granite=False, 
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
+def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_loss=False, bound_neg_loss=False, num_negatives=0, contrastive_tok=None, pad_tok=None, beta=0., gamma_beta_ratio=0., label_smoothing=0.):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
@@ -402,7 +402,8 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
                     shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
                     neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
                     neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
-                    neg_loss = - F.logsigmoid(-neg_logp)
+                    if bound_neg_loss:
+                        neg_loss = - F.logsigmoid(-neg_logp)
 
                     neg_rewards = neg_logp.detach().sum()
 
