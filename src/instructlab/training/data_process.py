@@ -391,6 +391,12 @@ if __name__ == "__main__":
         ),
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
+    parser.add_argument(
+        "--num_negatives",
+        type=int,
+        default=0,
+        help="Number of negative samples to generate for each positive sample",
+    )
     args = parser.parse_args()
     setup_logger(args.logging_level)
     data_process_args = DataProcessArgs(
