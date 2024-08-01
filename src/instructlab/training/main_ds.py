@@ -409,7 +409,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             num_loss_counted_tokens_pos = aggregated_values[1]
             num_loss_counted_tokens_neg = aggregated_values[2]
-            loss = (pos_loss / num_loss_counted_tokens_pos + args.beta * neg_loss / (aggregated_values[3] * args.num_negatives)) * world_size
+            loss = (pos_loss / num_loss_counted_tokens_pos - args.beta * neg_loss / (aggregated_values[3] * args.num_negatives)) * world_size
 
             # print(
             #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
@@ -451,7 +451,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "num_loss_counted_tokens_neg": int(num_loss_counted_tokens_neg),
                         "batch_size": int(aggregated_values[3]),
                         "pos_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos),
-                        "neg_loss": -float(args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
+                        "neg_loss": float(args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
+                        "neg_rewards": float(aggregated_values[6] / (aggregated_values[3] * args.num_negatives)),
                         "total_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos - args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
                         "gradnorm": global_grad_norm,
                         "weight_norm": weight_norm,
