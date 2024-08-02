@@ -81,7 +81,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
     return ds_config
 
 
-def setup_model(args, tokenizer, train_loader, grad_accum):
+def setup_model(args, tokenizer, train_loader, grad_accum, skip_resize_embs=False):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         # Third Party
@@ -122,10 +122,13 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         print(
             f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
         )
-        model.resize_token_embeddings(
-            int(8 * math.ceil(len(tokenizer) / 8.0))
-        )  # make the vocab size multiple of 8 for sharding the embedding layer.
-
+        if not skip_resize_embs:
+            print(f"WARNING: Resizing token embeddings to match tokenizer size")
+            model.resize_token_embeddings(
+                int(8 * math.ceil(len(tokenizer) / 8.0))
+            )  # make the vocab size multiple of 8 for sharding the embedding layer.
+        else:
+            print("WARNING: Skipping resizing token embeddings")
     # Fix any discrepancy between model and tokenizer
     if (
         model.config.pad_token_id is not None
@@ -557,7 +560,8 @@ def main(args):
             }
         )
 
-    model = setup_model(args, tokenizer, train_loader, grad_accum)
+    model = setup_model(args, tokenizer, train_loader, grad_accum, skip_resize_embs=True if args.model_name_or_path == "mistralai/Mistral-7B-Instruct-v0.1" else False)
+    model = maybe_resume_training(args, model))
     model = maybe_resume_training(args, model)
 
     train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
