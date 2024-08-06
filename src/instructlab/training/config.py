@@ -139,6 +139,7 @@ class TrainingArgs(BaseModel):
     warmup_steps: int
     is_padding_free: bool
     random_seed: int = 42
+    checkpoint_at_epoch: bool = False
 
     mock_data: Optional[bool] = False
     mock_data_len: int = 0

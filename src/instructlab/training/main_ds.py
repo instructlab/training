@@ -463,6 +463,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+
+        if args.checkpoint_at_epoch:
+            save_hf_format_ds(
+                args,
+                model,
+                tokenizer,
+                global_step * args.samples_per_gpu * world_size,
+                is_lora=bool(args.lora_r),
+            )
     if args.save_last:
         save_hf_format_ds(
             args,
@@ -615,6 +624,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
     ]
 
+    if train_args.checkpoint_at_epoch:
+        command.append("--checkpoint_at_epoch")
+
     if train_args.mock_data:
         command.append("--mock_data")
         if train_args.mock_len:
@@ -730,6 +742,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--save_last", action="store_true", help="save after finishing training"
+    )
+    parser.add_argument(
+        "--checkpoint_at_epoch",
+        action="store_true",
+        help="Save a model checkpoint after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)
