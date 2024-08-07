@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Collection of config objects used in the InstructLab training library.
 """
