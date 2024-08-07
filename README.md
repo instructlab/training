@@ -117,12 +117,12 @@ Here is a breakdown of the general options:
 | model_path | Either a reference to a HuggingFace repo or a path to a model saved in the HuggingFace format.  |
 | data_path | A path to the `.jsonl` training dataset. This is expected to be in the messages format.  |
 | ckpt_output_dir | Directory where trained model checkpoints will be saved. |
-| data_output_dir | Directory where we'll store all other intermediary data such as log files, the processed dataset, etc. |
+| data_output_dir | Directory where the processed training data is stored (post filtering/tokenization/masking) |
 |  max_seq_len | The maximum sequence length to be included in the training set. Samples exceeding this length will be dropped. |
-| max_batch_len | The maximum length of all training batches that we intend to handle in a single step. Used as part of the multipack calculation. If running into out-of-memory errors, try to lower this value, but not below the `max_seq_len`. |
+| max_batch_len | Maximum tokens per gpu for each batch that will be handled in a single step. Used as part of the multipack calculation. If running into out-of-memory errors, try to lower this value, but not below the `max_seq_len`. |
 | num_epochs | Number of epochs to run through before stopping. |
-| effective_batch_size | The amount of samples in a batch to see before we update the model parameters. Higher values lead to better learning performance. |
-| save_samples | Number of samples the model should see before saving a checkpoint. Consider this to be the checkpoint save frequency. The amount of storage used for a single training run will usually be `4GB * len(dataset) / save_samples` |
+| effective_batch_size | The amount of samples in a batch to see before we update the model parameters. |
+| save_samples | Number of samples the model should see before saving a checkpoint. Consider this to be the checkpoint save frequency. |
 | learning_rate | How fast we optimize the weights during gradient descent. Higher values may lead to unstable learning performance. It's generally recommended to have a low learning rate with a high effective batch size. |
 | warmup_steps | The number of steps a model should go through before reaching the full learning rate. We start at 0 and linearly climb up to `learning_rate`. |
 | is_padding_free | Boolean value to indicate whether or not we're training a padding-free transformer model such as Granite. |
