@@ -638,8 +638,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
                 f"--lora_dropout={train_args.lora.dropout}",
                 "--lora_target_modules",
             ]
-            + train_args.lora.target_modules
         )
+        command.extend(train_args.lora.target_modules)
         # hard-code 4-bit quantization for now, change this when we add more
         quant_dtype = train_args.lora.quantize_data_type
         quantization_is_enabled = quant_dtype in (
