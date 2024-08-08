@@ -677,8 +677,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     finally:
         if "process" not in locals() or process is None:
             return
+        if process.poll() == 0:
+            print("\033[92mOperation completed successfully! 🎉\033[0m")
+        else:
+            print("\033[91mOperation failed, terminating process.\033[0m")
 
-        print("\033[91mTerminating process 🤖\033[0m")
         process.terminate()
         try:
             process.wait(timeout=60)
