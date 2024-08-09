@@ -744,7 +744,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save_samples",
         type=int,
-        help="The number of samples seen between each checkpoint save. If --save_samples=0, this feature is disabled.",
+        help="The number of samples seen between each checkpoint save. If --save_samples<=0, this feature is disabled.",
     )
     parser.add_argument(
         "--save_samples_ds",
