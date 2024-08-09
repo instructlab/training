@@ -43,6 +43,7 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
+    get_projection_layer_names,
     load_latest_full_state,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
@@ -178,13 +179,29 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         # Third Party
         from peft import LoraConfig
 
-        if args.lora_target_modules is None:
-            args.__dict__["lora_target_modules"] = [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-            ]
+        # ensure we select only the modules that exist in the model
+        proj_layers = get_projection_layer_names(model)
+        if not args.lora_target_modules:
+            print(
+                f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+            )
+            if not proj_layers:
+                raise RuntimeError("could not find any projection layers in the model")
+            args.__dict__["lora_target_modules"] = proj_layers
+        else:
+            # when the user specifies the module, we should verify that they align with what's in the model
+            lora_target_modules_set = set(args.lora_target_modules)
+            diff = lora_target_modules_set - set(proj_layers)
+            layers_to_target = lora_target_modules_set - diff
+            if len(diff) == len(args.lora_target_modules):
+                raise ValueError(
+                    f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
+                )
+            if diff:
+                print(
+                    f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
+                )
+            args.__dict__["lora_target_modules"] = list(layers_to_target)
 
         peft_config = LoraConfig(
             lora_alpha=args.lora_alpha,
@@ -701,7 +718,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
                 "--lora_target_modules",
             ]
         )
-        command.extend(train_args.lora.target_modules)
+        if train_args.lora.target_modules:
+            command.extend(train_args.lora.target_modules)
         # hard-code 4-bit quantization for now, change this when we add more
         quant_dtype = train_args.lora.quantize_data_type
         quantization_is_enabled = quant_dtype in (
@@ -872,7 +890,12 @@ if __name__ == "__main__":
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
     parser.add_argument("--lora_quant_bits", type=int, default=None)
-    parser.add_argument("--lora_target_modules", nargs="+", default=None)
+    parser.add_argument(
+        "--lora_target_modules",
+        nargs="*",
+        default=None,
+        help="Which modules we should target for injecting LoRA layers. Defaults to selecting all projection layers when no values are provided.",
+    )
     parser.add_argument("--max_batch_len", type=int, default=60000)
     parser.add_argument(
         "--cpu_offload_optimizer",

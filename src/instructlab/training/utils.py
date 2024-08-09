@@ -35,6 +35,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
+from transformers import PreTrainedModel
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -897,3 +898,15 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
+
+
+def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
+    """
+    Given a pretrained model, returns all of the projection layers (matching '_proj')
+    """
+    proj_layers = set(
+        name.split(".")[-1]
+        for name, _ in model.named_modules()
+        if name.endswith("_proj")
+    )
+    return list(proj_layers)
