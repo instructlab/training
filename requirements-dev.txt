@@ -6,3 +6,8 @@ pre-commit>=3.0.4,<4.0
 pylint>=2.16.2,<4.0
 pylint-pydantic
 tox>=4.4.2,<5
+
+ipython
+ipykernel
+jupyter
+
