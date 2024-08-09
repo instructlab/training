@@ -336,12 +336,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
     world_size = int(os.environ["WORLD_SIZE"])
 
     batch_size = args.effective_batch_size // grad_accum
-    args.save_samples = (args.save_samples // batch_size) * batch_size
-    (
-        print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-        if local_rank == 0
-        else None
-    )
+
+    if args.save_samples > 0:
+        args.save_samples = (args.save_samples // batch_size) * batch_size
+        (
+            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
+            if local_rank == 0
+            else None
+        )
+
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         (
@@ -439,7 +442,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     }
                 )
 
-            if global_step * batch_size % args.save_samples == 0:
+            if args.save_samples > 0 and (
+                global_step * batch_size % args.save_samples == 0
+            ):
                 save_hf_format_ds(
                     args,
                     model,
@@ -736,7 +741,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
-    parser.add_argument("--save_samples", type=int)
+    parser.add_argument(
+        "--save_samples",
+        type=int,
+        help="The number of samples seen between each checkpoint save. If --save_samples=0, this feature is disabled.",
+    )
     parser.add_argument(
         "--save_samples_ds",
         type=int,
