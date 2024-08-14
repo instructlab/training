@@ -585,6 +585,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # early validation logic here
+    if train_args.max_batch_len < train_args.max_seq_len:
+        raise ValueError(f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}")
 
     # process the training data
     if not os.path.exists(train_args.data_output_dir):
