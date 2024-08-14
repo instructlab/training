@@ -555,6 +555,25 @@ def main(args):
         sampler=args.sampler,
         seed=args.seed,
     )
+    if len(train_loader) == 0:
+        # this happens sometimes when we have more GPUs than data to process. In this case
+        # we should either alert the user to switch samplers, or do it automatically and
+        # warn them about it happening
+        print(
+            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        )
+        args.sampler = "distributed"
+        train_loader = setup_dataloader(
+            dataset,
+            tokenizer.pad_token_id,
+            num_workers=8,
+            is_granite=args.is_granite,
+            max_batch_len=args.max_batch_len,
+            packing_max_batch_len=packing_max_batch_len,
+            samples_per_gpu=args.samples_per_gpu,
+            sampler=args.sampler,
+            seed=args.seed,
+        )
 
     if args.local_rank == 0:
         metric_logger.log_sync(
@@ -587,7 +606,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     # early validation logic here
     if train_args.max_batch_len < train_args.max_seq_len:
-        raise ValueError(f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}")
+        raise ValueError(
+            f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
+        )
 
     # process the training data
     if not os.path.exists(train_args.data_output_dir):

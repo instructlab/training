@@ -204,9 +204,18 @@ def main(args: DataProcessArgs):
         {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>"]}
     )
 
-    data = load_dataset("json", data_files=args.data_path, split="train")
+    try:
+        data = load_dataset("json", data_files=args.data_path, split="train")
+    except:
+        # pylint: disable=raise-missing-from,broad-exception-raised
+        raise Exception(
+            "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
+        )
+
     if data.num_rows == 0:
-        raise ValueError("The provided dataset is empty, please make sure that you were able to generate a dataset and try again.")
+        raise ValueError(
+            "The provided dataset is empty, please make sure that your dataset contains samples and try again."
+        )
 
     print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
     data_with_input_ids = data.map(
@@ -233,8 +242,9 @@ def main(args: DataProcessArgs):
     )
     print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
     if num_dropped_samples == len(data):
-        raise RuntimeError(f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples.")
-
+        raise RuntimeError(
+            f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
+        )
 
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
