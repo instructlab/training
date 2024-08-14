@@ -147,7 +147,7 @@ def find_packing_max_batch_len_and_grad_accum(
         samples_per_gpu = samples_per_minibatch / num_gpus
         if int(avg_sample_len * samples_per_gpu) < dataset.get_lengths().max():
             raise RuntimeError(
-                f"Effective batch size is too low for multipack sampling, max sample length={dataset.get_lengths().max()} and min packing length={int(avg_sample_len * total_micro_batch)}. "
+                f"Effective batch size is too low for multipack sampling, max sample length={dataset.get_lengths().max()} and min packing length={int(avg_sample_len * samples_per_gpu)}. "
                 "Switching to naive distributed sampling."
             )
         if is_padding:
