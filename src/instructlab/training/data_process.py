@@ -160,10 +160,12 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain):
     filtered_data = data.filter(lambda x: x["is_pretrain"] == is_pretrain, num_proc=NUM_PROC)
     if len(filtered_data) > 0:
         filtered_data = filtered_data.shuffle()
-        for i, sample in enumerate(filtered_data[:2]):
+        for i, sample in enumerate(filtered_data):
             text, orig_text = get_masked_and_orig_text(sample)
             print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
             print(f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m")
+            if i > 1:
+                break
 
 
     
