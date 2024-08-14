@@ -144,6 +144,9 @@ def unmask_message_content(
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
+def add_is_pretrain_sample(example, pretrain_tk):
+    if pretrain_tk in example["input_ids"]:
+        example["is_pretrain"] = True
 
 def add_is_pretrain_sample(example, pretrain_tk):
     if pretrain_tk in example["input_ids"]:
