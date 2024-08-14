@@ -512,7 +512,6 @@ def main(args):
             max_batch_len_per_gpu=args.max_batch_len,
             is_padding=not args.is_granite,
             dataset=dataset,
-            pad_id=tokenizer.pad_token_id,
             seed=args.seed,
         )
         args.sampler = "multipack"
