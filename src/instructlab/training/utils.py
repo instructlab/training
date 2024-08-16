@@ -630,6 +630,11 @@ def save_hf_format_ds(
     convert_granite=True,
     is_lora=False,
 ):
+    
+    # HACK HACK!
+    convert_granite = False
+
+
     model_to_save = model.module
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
@@ -638,7 +643,7 @@ def save_hf_format_ds(
     start = time.time()
     # used to save huggingface format, so we can use it for hf.from_pretrained
     CONFIG_NAME = "config.json"
-    if args.is_granite:
+    if args.is_granite and convert_granite:
         # save if in a temp directory first then convert it
         WEIGHTS_NAME = "model.safetensors"
         MODEL_TYPE = "llama"
