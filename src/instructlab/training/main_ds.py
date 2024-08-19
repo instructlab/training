@@ -247,6 +247,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_training_steps=args.num_epochs * len(train_loader),
     )
 
+    # pylint: disable=unbalanced-tuple-unpacking
     model, _, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
