@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+CENGINE ?= podman
+
+
 #
 # If you want to see the full commands, run:
 #   NOISY_BUILD=y make
@@ -41,7 +44,21 @@ check-tox:
 .PHONY: md-lint
 md-lint: ## Lint markdown files
 	$(ECHO_PREFIX) printf "  %-12s ./...\n" "[MD LINT]"
-	$(CMD_PREFIX) podman run --rm -v $(CURDIR):/workdir --security-opt label=disable docker.io/davidanson/markdownlint-cli2:latest > /dev/null
+	$(CMD_PREFIX) $(CENGINE) run --rm -v $(CURDIR):/workdir --security-opt label=disable docker.io/davidanson/markdownlint-cli2:latest > /dev/null
+
+.PHONY: toml-lint
+toml-lint:  ## Lint pyproject.toml
+	$(ECHO_PREFIX) printf "  %-12s ./...\n" "[TOML LINT]"
+	$(CMD_PREFIX) $(CENGINE) run --rm -v $(CURDIR):/workdir --security-opt label=disable --platform linux/amd64 docker.io/tamasfe/taplo:0.8.1 lint /workdir/pyproject.toml
+
+.PHONY: toml-fmt
+toml-fmt: check-engine ## Format pyproject.toml
+	$(ECHO_PREFIX) printf "  %-12s ./...\n" "[TOML FMT]"
+	$(CMD_PREFIX) $(CENGINE) run --rm -v $(CURDIR):/workdir --security-opt label=disable --platform linux/amd64 docker.io/tamasfe/taplo:0.8.1 fmt /workdir/pyproject.toml
+
+.PHONY: check-engine
+check-engine:
+	@command -v $(CENGINE) &> /dev/null || (echo "'$(CENGINE)' container engine is not installed, you can override it with the 'CENGINE' variable" && exit 1)
 
 .PHONY: spellcheck
 spellcheck: ## Spellcheck markdown files
@@ -54,3 +71,15 @@ spellcheck-sort: .spellcheck-en-custom.txt ## Sort spellcheck directory
 .PHONY: verify
 verify: check-tox ## Run linting, typing, and formatting checks via tox
 	tox p -e fastlint,mypy,ruff
+
+
+# TODO: add unit tests in the future
+.PHONY: tests
+tests: check-tox ## Run type checks.
+	tox -e mypy
+
+
+.PHONY: fix
+fix: check-tox ## Fix everything that's fixable by the automaed tooling.
+	tox -e fix
+
