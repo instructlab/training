@@ -171,6 +171,8 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain):
     
 
 def main(args: DataProcessArgs):
+    import json
+    print(json.dumps(args.model_dump()))
     global NUM_PROC 
     NUM_PROC= args.num_parallel_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
