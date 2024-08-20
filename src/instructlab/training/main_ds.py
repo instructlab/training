@@ -845,7 +845,7 @@ cd /app/fsdp
 export WORLD_SIZE=1
 torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --nproc_per_node=8 --rdzv_id=101 \
---rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" main_ds.py \
+--rdzv_endpoint="$MAIN_ADDR:$MAIN_PORT" main_ds.py \
 --model_name_or_path=mistralai/Mistral-7B-v0.1 \
 --data_path="/dev/shm/data.jsonl" \
 --output_dir="/new_data/experiments/ap-fsdp-p00-old-m-ds-2t" \
@@ -862,7 +862,7 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 export WORLD_SIZE=1
 torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --nproc_per_node=8 --rdzv_id=101 \
---rdzv_endpoint="$MASTER_ADDR:$MASTER_PORT" main_ds.py \
+--rdzv_endpoint="$MAIN_ADDR:$MAIN_PORT" main_ds.py \
 --model_name_or_path=/new_data/models/granite7b/ibm_models_version/ \
 --data_path="/dev/shm/data.jsonl" \
 --output_dir="/new_data/experiments/ap-granite-4t" \

@@ -198,9 +198,9 @@ For example, in a 8-GPU, 2-machine system, we would
 specify the following torchrun config:
 
 ```python
-MASTER_ADDR = os.getenv('MASTER_ADDR')
-MASTER_PORT = os.getnev('MASTER_PORT')
-RDZV_ENDPOINT = f'{MASTER_ADDR}:{MASTER_PORT}'
+MAIN_ADDR = os.getenv('MAIN_ADDR')
+MAIN_PORT = os.getnev('MAIN_PORT')
+RDZV_ENDPOINT = f'{MAIN_ADDR}:{MAIN_PORT}'
 
 # on machine 1
 torchrun_args = TorchrunArgs(
@@ -218,9 +218,9 @@ run_training(
 ```
 
 ```python
-MASTER_ADDR = os.getenv('MASTER_ADDR')
-MASTER_PORT = os.getnev('MASTER_PORT')
-RDZV_ENDPOINT = f'{MASTER_ADDR}:{MASTER_PORT}'
+MAIN_ADDR = os.getenv('MAIN_ADDR')
+MAIN_PORT = os.getnev('MAIN_PORT')
+RDZV_ENDPOINT = f'{MAIN_ADDR}:{MAIN_PORT}'
 
 # on machine 2
 torchrun_args = TorchrunArgs(
@@ -228,7 +228,7 @@ torchrun_args = TorchrunArgs(
     nproc_per_node = 4, # num GPUs per machine
     node_rank = 1, # node rank for this machine
     rdzv_id = 123,
-    rdzv_endpoint = f'{MASTER_ADDR}:{MASTER_PORT}'
+    rdzv_endpoint = f'{MAIN_ADDR}:{MAIN_PORT}'
 )
 
 run_training(
