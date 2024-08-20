@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Standard
 from functools import partial
 from pathlib import Path
