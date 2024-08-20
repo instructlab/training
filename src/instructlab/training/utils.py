@@ -398,12 +398,13 @@ def convert_loss_to_reduce_sum(model, tokenizer, is_granite=False, contrastive_l
                     pos_loss = loss_fct(shift_logits_pos, shift_labels_pos)
                     # neg_loss = loss_fct(shift_logits_neg, shift_labels_neg)
 
+                    # loss for negative samples
                     neg_loss_mask = (shift_labels_neg != -100)
                     shift_labels_neg[~neg_loss_mask] = 0 # dummy tokens that'll be masked out later
                     neg_logp = torch.gather(F.log_softmax(shift_logits_neg, dim=-1), dim=2, index=shift_labels_neg.unsqueeze(2)).squeeze(2)
                     neg_logp = (neg_logp * neg_loss_mask).sum(-1) / neg_loss_mask.sum(-1)
                     if bound_neg_loss:
-                        neg_loss = F.logsigmoid(neg_logp)
+                        neg_loss = - F.logsigmoid(-neg_logp)
 
                     neg_rewards = neg_logp.detach().sum()
 
