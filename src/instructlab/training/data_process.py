@@ -171,6 +171,8 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain):
     
 
 def main(args: DataProcessArgs):
+    print("\033[92m data arguments are:\033[0m")
+    print("\033[36m" + args.model_dump_json() + "\033[0m")
     global NUM_PROC 
     NUM_PROC= args.num_parallel_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
