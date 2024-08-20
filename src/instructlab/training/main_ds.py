@@ -620,7 +620,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         DataProcessArgs(
             # XXX(osilkin): make a decision here, either:
             #   1. the CLI is fully responsible for managing where the data is written
-            #   2. we never cache it and simply write it to a tmp file everytime.
+            #   2. we never cache it and simply write it to a tmp file every time.
             #
             # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
             # where the user has a defined place for new temporary data to be written.
