@@ -2,11 +2,9 @@
 from functools import partial
 from pathlib import Path
 import os
-import random
 
 # Third Party
 from datasets import load_dataset
-from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 import numpy as np
 
@@ -144,11 +142,13 @@ def unmask_message_content(
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
+
 def add_is_pretrain_sample(example, pretrain_tk):
     if pretrain_tk in example["input_ids"]:
         example["is_pretrain"] = True
 
-def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain):
+
+def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc):
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
         input_ids = sample["input_ids"]
@@ -157,24 +157,25 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain):
         orig_text = tokenizer.decode(input_ids)
         return text, orig_text
 
-    filtered_data = data.filter(lambda x: x["is_pretrain"] == is_pretrain, num_proc=NUM_PROC)
+    filtered_data = data.filter(
+        lambda x: x["is_pretrain"] == is_pretrain, num_proc=num_proc
+    )
     if len(filtered_data) > 0:
         filtered_data = filtered_data.shuffle()
         for i, sample in enumerate(filtered_data):
             text, orig_text = get_masked_and_orig_text(sample)
             print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
-            print(f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m")
+            print(
+                f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m"
+            )
             if i > 1:
                 break
 
 
-    
-
 def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
-    global NUM_PROC 
-    NUM_PROC= args.num_parallel_procs
+    NUM_PROC = args.num_parallel_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
@@ -207,9 +208,9 @@ def main(args: DataProcessArgs):
 
     print("\033[38;2;255;165;0mten largest length percentiles:")
     lens = np.array(
-        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC)[
-            "len"
-        ]
+        data_with_input_ids.map(
+            lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC
+        )["len"]
     )
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
@@ -253,7 +254,9 @@ def main(args: DataProcessArgs):
     #     pretrain_tk=get_sp_token(tokenizer, "<|pretrain|>"),
     # )
     data_with_input_ids = data_with_input_ids.map(
-        lambda x: {'is_pretrain':get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]},
+        lambda x: {
+            "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]
+        },
         num_proc=NUM_PROC,
     )
 
@@ -273,8 +276,22 @@ def main(args: DataProcessArgs):
 
     print("\033[92m Samples Previews...\033[0m")
     print("\033[92m \n \033[0m")
-    print_masked_samples(data_with_labels, tokenizer, pad_tk, SPECIAL_TOKENS.pad, is_pretrain=True)
-    print_masked_samples(data_with_labels, tokenizer, pad_tk, SPECIAL_TOKENS.pad, is_pretrain=False)
+    print_masked_samples(
+        data_with_labels,
+        tokenizer,
+        pad_tk,
+        SPECIAL_TOKENS.pad,
+        is_pretrain=True,
+        num_proc=NUM_PROC,
+    )
+    print_masked_samples(
+        data_with_labels,
+        tokenizer,
+        pad_tk,
+        SPECIAL_TOKENS.pad,
+        is_pretrain=False,
+        num_proc=NUM_PROC,
+    )
 
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
@@ -319,7 +336,7 @@ if __name__ == "__main__":
         "--num_proc",
         type=int,
         default=16,
-        help="Number of processes for data processing"
+        help="Number of processes for data processing",
     )
     args = parser.parse_args()
     setup_logger(args.logging_level)
