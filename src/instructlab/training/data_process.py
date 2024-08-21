@@ -249,10 +249,6 @@ def main(args: DataProcessArgs):
     )
 
     print("\033[92mCategorizing training data type...\033[0m")
-    # pretrain_indices, instruct_indices = form_data_pools(
-    #     data_with_input_ids["input_ids"],
-    #     pretrain_tk=get_sp_token(tokenizer, "<|pretrain|>"),
-    # )
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
             "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]
