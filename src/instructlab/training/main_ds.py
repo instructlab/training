@@ -253,7 +253,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             #     MistralDecoderLayer,
             # },
         ),
-        # use_orig_params=True,
+        use_orig_params=True,
         limit_all_gathers=True,
         mixed_precision=MixedPrecision(
             param_dtype=torch.bfloat16,
