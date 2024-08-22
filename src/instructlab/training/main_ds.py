@@ -12,6 +12,9 @@ from functools import partial
 # Third Party
 # from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 # from deepspeed.runtime.zero.utils import ZeRORuntimeException
+from transformers.models.mistral.modeling_mistral import (
+    MistralDecoderLayer,
+)
 
 import torch.distributed as dist
 from torch.distributed.fsdp import (
@@ -23,7 +26,7 @@ from torch.distributed.fsdp import (
 from torch.distributed.fsdp.wrap import (
     transformer_auto_wrap_policy,
 )
-
+from contextlib import nullcontext
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.distributed import ReduceOp, all_reduce
@@ -66,33 +69,33 @@ from instructlab.training.utils import (
 import instructlab.training.data_process as dp
 
 
-def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
-    ds_config = {
-        "train_batch_size": samples_per_gpu * world_size * grad_accum,
-        "gradient_accumulation_steps": grad_accum,
-        "train_micro_batch_size_per_gpu": samples_per_gpu,
-        "steps_per_print": 1,
-        "zero_optimization": {
-            "stage": 2,
-            # this option is only supported with DeepSpeed ZeRO stage 3
-            "offload_param": {"device": "none"},
-            "offload_optimizer": {"device": "none"},
-        },
-        "bf16": {"enabled": True},
-        "gradient_clipping": 1.0,
-        "prescale_gradients": False,
-        "wall_clock_breakdown": False,
-    }
+# def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
+#     ds_config = {
+#         "train_batch_size": samples_per_gpu * world_size * grad_accum,
+#         "gradient_accumulation_steps": grad_accum,
+#         "train_micro_batch_size_per_gpu": samples_per_gpu,
+#         "steps_per_print": 1,
+#         "zero_optimization": {
+#             "stage": 2,
+#             # this option is only supported with DeepSpeed ZeRO stage 3
+#             "offload_param": {"device": "none"},
+#             "offload_optimizer": {"device": "none"},
+#         },
+#         "bf16": {"enabled": True},
+#         "gradient_clipping": 1.0,
+#         "prescale_gradients": False,
+#         "wall_clock_breakdown": False,
+#     }
 
-    if opts.cpu_offload_optimizer:
-        # this only works when the cpu offload optimizer is enabled
-        ds_config["zero_optimization"]["offload_optimizer"] = {
-            # CPU offloading is the only option available in ZeRO stage 2
-            "device": "cpu",
-            "pin_memory": opts.cpu_offload_optimizer_pin_memory,
-            "ratio": opts.cpu_offload_optimizer_ratio,
-        }
-    return ds_config
+#     if opts.cpu_offload_optimizer:
+#         # this only works when the cpu offload optimizer is enabled
+#         ds_config["zero_optimization"]["offload_optimizer"] = {
+#             # CPU offloading is the only option available in ZeRO stage 2
+#             "device": "cpu",
+#             "pin_memory": opts.cpu_offload_optimizer_pin_memory,
+#             "ratio": opts.cpu_offload_optimizer_ratio,
+#         }
+#     return ds_config
 
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
@@ -185,30 +188,30 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     # it is handled differently for lora and full
     # - with the exception of granite, which handles it
     #   in the later stanza
-    if args.lora_r > 0:
-        # if lora
-        # Third Party
-        from peft import LoraConfig
+    # if args.lora_r > 0:
+    #     # if lora
+    #     # Third Party
+    #     from peft import LoraConfig
 
-        if args.lora_target_modules is None:
-            args.__dict__["lora_target_modules"] = [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "o_proj",
-            ]
+    #     if args.lora_target_modules is None:
+    #         args.__dict__["lora_target_modules"] = [
+    #             "q_proj",
+    #             "k_proj",
+    #             "v_proj",
+    #             "o_proj",
+    #         ]
 
-        peft_config = LoraConfig(
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            r=args.lora_r,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=args.lora_target_modules,
-        )
-        model = prepare_peft_model(
-            model, peft_config, gradient_checkpointing=not args.is_granite
-        )
+    #     peft_config = LoraConfig(
+    #         lora_alpha=args.lora_alpha,
+    #         lora_dropout=args.lora_dropout,
+    #         r=args.lora_r,
+    #         bias="none",
+    #         task_type="CAUSAL_LM",
+    #         target_modules=args.lora_target_modules,
+    #     )
+    #     model = prepare_peft_model(
+    #         model, peft_config, gradient_checkpointing=not args.is_granite
+    #     )
 
         # patch DS to work with quantized models
         # Standard
@@ -221,34 +224,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         #         "deepspeed.DeepSpeedEngine",
         #         partial(DeepSpeedEngine, dont_change_device=True),
         #     )
-    elif not args.is_granite:
-        model.gradient_checkpointing_enable()
-
-    # need to use this only when the CPU offload optimizer is enabled
-    if args.cpu_offload_optimizer:
-        print(
-            "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-        )
-        # optimizer = DeepSpeedCPUAdam(
-        #     model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-        # )
-    else:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.0,
-        )
-        # optimizer = FusedAdam(
-        #     model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-        # )
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
-    )
 
     # model, _, _, lr_scheduler = deepspeed.initialize(
     #     model=model,
@@ -274,6 +249,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             transformer_layer_cls={
                 get_module_class_from_name(model, block_name),
             },
+            # transformer_layer_cls={
+            #     MistralDecoderLayer,
+            # },
         ),
         # use_orig_params=True,
         limit_all_gathers=True,
@@ -288,21 +266,45 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     )
         # granite gradient checkpointing is handled uniformly
     # for both lora and full here
-    dist.breakpoint()
+    # dist.breakpoint()
     if args.is_granite:
         apply_gradient_checkpointing(
             model,
             block_name=block_name,
             use_reentrant=True,  # this should be the HF default mode
         )
+    if not args.is_granite:
+        model.gradient_checkpointing_enable()
 
-        if args.lora_r > 0:
+        # if args.lora_r > 0:
 
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
+        #     def make_inputs_require_grad(module, input, output):
+        #         output.requires_grad_(True)
 
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-               
+        #     model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    # need to use this only when the CPU offload optimizer is enabled
+    # if args.cpu_offload_optimizer:
+    #     print(
+    #         "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
+    #     )
+    #     optimizer = None
+    # else:
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        betas=(0.9, 0.95),
+        weight_decay=0.0,
+    )
+        # optimizer = FusedAdam(
+        #     model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        # )
+
+    lr_scheduler = get_scheduler(
+        name=args.lr_scheduler,
+        optimizer=optimizer,
+        num_warmup_steps=args.num_warmup_steps,
+        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
+    )
     # model = torch.compile(model)
     return model, optimizer, lr_scheduler
 
@@ -369,10 +371,12 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
 def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_accum, metric_logger):
     model.train()
-
+    optimizer.zero_grad()
+    
     global_step = 1
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+    
     samples_seen = 0
     batch_size = args.effective_batch_size // grad_accum
     args.save_samples = (args.save_samples // batch_size) * batch_size
@@ -381,18 +385,17 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
         if local_rank == 0
         else None
     )
-    if args.save_samples_ds is not None:
-        args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
-        (
-            print(
-                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
-            )
-            if local_rank == 0
-            else None
-        )
-    torch.distributed.breakpoint()
+
+    # if args.save_samples_ds is not None:
+    #     args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
+    #     (
+    #         print(
+    #             f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
+    #         )
+    #         if local_rank == 0
+    #         else None
+    #     )
     for epoch in range(args.num_epochs):
-        dist.barrier()
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
@@ -419,37 +422,35 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
+            no_sync = model.no_sync if global_step % grad_accum != 0 else nullcontext
+            with no_sync():
+                output = model(
+                    **batch,
+                    use_cache=False,
+                )
+                loss = output.loss
 
-            # with model.no_sync():
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
+                aggregated_values[2] = loss.item()
 
-            aggregated_values[2] = loss.item()
+                all_reduce(aggregated_values, op=ReduceOp.SUM)
 
-            all_reduce(aggregated_values, op=ReduceOp.SUM)
+                num_loss_counted_tokens = aggregated_values[0]
+                loss = (
+                    loss / num_loss_counted_tokens * world_size
+                )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
 
-            num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+                print(
+                    f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+                )
+                print(
+                    f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {loss}"
+                )
 
-            # print(
-            #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
-            # )
-            print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {loss}"
-            )
+                loss.backward()
 
-            # model.backward(loss)
-            # model.step()
-            # loss = output["loss"]
-            loss.backward()
-
-            if global_step % args.gradient_accumulation_steps == 0:
+            if global_step % grad_accum == 0:
                 global_grad_norm = model.clip_grad_norm_(1.0)
+                # global_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -478,7 +479,7 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        # "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "batch_size": int(aggregated_values[1]),
                         "total_loss": float(
                             aggregated_values[2] / num_loss_counted_tokens
@@ -518,7 +519,7 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
     # if args.save_last:
     #     save_hf_format_ds(
     #         args,
@@ -543,7 +544,6 @@ def main(args):
     setup_logger(args.log_level)
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
-    # device = torch.device("cuda", args.local_rank)
 
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -555,9 +555,9 @@ def main(args):
     )
     dist.barrier()
     args.global_rank = dist.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
-    dist.all_reduce(tensor)
-    dist.barrier()
+    # tensor = torch.ByteTensor([False]).cuda()
+    # dist.all_reduce(tensor)
+    # dist.barrier()
 
     dataset = setup_dataset(
         args.data_path,
@@ -710,17 +710,17 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             command.append("--lora_quant_bits=4")
 
     # deepspeed opts
-    if train_args.deepspeed_options.save_samples:
-        command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
-    if train_args.deepspeed_options.cpu_offload_optimizer:
-        command.extend(
-            [
-                "--cpu_offload_optimizer",
-                f"--cpu_offload_optimizer_ratio={train_args.deepspeed_options.cpu_offload_optimizer_ratio}",
-            ]
-        )
-        if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
-            command.append("--cpu_offload_optimizer_pin_memory")
+    # if train_args.deepspeed_options.save_samples:
+    #     command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
+    # if train_args.deepspeed_options.cpu_offload_optimizer:
+    #     command.extend(
+    #         [
+    #             "--cpu_offload_optimizer",
+    #             f"--cpu_offload_optimizer_ratio={train_args.deepspeed_options.cpu_offload_optimizer_ratio}",
+    #         ]
+    #     )
+    #     if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
+    #         command.append("--cpu_offload_optimizer_pin_memory")
 
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
