@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+from functools import partial
 
 # Third Party
 # from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
@@ -54,11 +55,11 @@ from instructlab.training.utils import (
     ensure_loadable_granite_checkpoint,
     patch_target_module,
     prepare_peft_model,
-    prepare_universal_checkpoint_from_latest,
+    # prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
     save_hf_format,
-    save_hf_format_ds,
-    save_model_ds_native,
+    # save_hf_format_ds,
+    # save_model_ds_native,
     set_random_seed,
     setup_logger,
 )
@@ -109,7 +110,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
     base_model_args = {
         "pretrained_model_name_or_path": args.model_name_or_path,
-        "torch_dtype": torch.bfloat16,
+        "torch_dtype": torch.float32,
         "quantization_config": bnb_config,
     }
     if not args.disable_flash_attn:
@@ -127,11 +128,11 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
                 use_padding_free_transformer=True,
-                torch_dtype=torch.float32,
+                # torch_dtype=torch.float32,
             )
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
-
+    block_name = model._no_split_modules[0]
     if len(tokenizer) > model.config.vocab_size:
         print(
             f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
@@ -211,35 +212,17 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
         # patch DS to work with quantized models
         # Standard
-        from functools import partial
 
         # Third Party
-        from deepspeed import DeepSpeedEngine
+        # from deepspeed import DeepSpeedEngine
 
-        if args.lora_quant_bits is not None:
-            patch_target_module(
-                "deepspeed.DeepSpeedEngine",
-                partial(DeepSpeedEngine, dont_change_device=True),
-            )
+        # if args.lora_quant_bits is not None:
+        #     patch_target_module(
+        #         "deepspeed.DeepSpeedEngine",
+        #         partial(DeepSpeedEngine, dont_change_device=True),
+        #     )
     elif not args.is_granite:
         model.gradient_checkpointing_enable()
-
-    # granite gradient checkpointing is handled uniformly
-    # for both lora and full here
-    if args.is_granite:
-        block_name = model._no_split_modules[0]
-        apply_gradient_checkpointing(
-            model,
-            block_name=block_name,
-            use_reentrant=True,  # this should be the HF default mode
-        )
-
-        if args.lora_r > 0:
-
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # need to use this only when the CPU offload optimizer is enabled
     if args.cpu_offload_optimizer:
@@ -289,7 +272,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         auto_wrap_policy=partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls={
-                get_module_class_from_name(block_name),
+                get_module_class_from_name(model, block_name),
             },
         ),
         # use_orig_params=True,
@@ -303,6 +286,22 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         sharding_strategy=ShardingStrategy[args.sharding_strategy],
         device_id=torch.cuda.current_device(),
     )
+        # granite gradient checkpointing is handled uniformly
+    # for both lora and full here
+    dist.breakpoint()
+    if args.is_granite:
+        apply_gradient_checkpointing(
+            model,
+            block_name=block_name,
+            use_reentrant=True,  # this should be the HF default mode
+        )
+
+        if args.lora_r > 0:
+
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
                
     # model = torch.compile(model)
     return model, optimizer, lr_scheduler
@@ -391,7 +390,7 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
             if local_rank == 0
             else None
         )
-
+    torch.distributed.breakpoint()
     for epoch in range(args.num_epochs):
         dist.barrier()
         if args.sampler in ("multipack"):
@@ -421,33 +420,33 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
 
-            with model.no_sync():
-                output = model(
-                    **batch,
-                    use_cache=False,
-                )
-                loss = output.loss
+            # with model.no_sync():
+            output = model(
+                **batch,
+                use_cache=False,
+            )
+            loss = output.loss
 
-                aggregated_values[2] = loss.item()
+            aggregated_values[2] = loss.item()
 
-                all_reduce(aggregated_values, op=ReduceOp.SUM)
+            all_reduce(aggregated_values, op=ReduceOp.SUM)
 
-                num_loss_counted_tokens = aggregated_values[0]
-                loss = (
-                    loss / num_loss_counted_tokens * world_size
-                )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+            num_loss_counted_tokens = aggregated_values[0]
+            loss = (
+                loss / num_loss_counted_tokens * world_size
+            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
 
-                # print(
-                #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
-                # )
-                print(
-                    f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {loss}"
-                )
+            # print(
+            #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+            # )
+            print(
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {loss}"
+            )
 
-                # model.backward(loss)
-                # model.step()
-                # loss = output["loss"]
-                loss.backward()
+            # model.backward(loss)
+            # model.step()
+            # loss = output["loss"]
+            loss.backward()
 
             if global_step % args.gradient_accumulation_steps == 0:
                 global_grad_norm = model.clip_grad_norm_(1.0)
@@ -520,13 +519,13 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
-    if args.save_last:
-        save_hf_format_ds(
-            args,
-            model,
-            tokenizer,
-            global_step * args.samples_per_gpu * world_size,
-        )
+    # if args.save_last:
+    #     save_hf_format_ds(
+    #         args,
+    #         model,
+    #         tokenizer,
+    #         global_step * args.samples_per_gpu * world_size,
+    #     )
 
 
 def main(args):
