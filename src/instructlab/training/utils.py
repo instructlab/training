@@ -27,6 +27,11 @@ from instructlab.dolomite.hf_models import (
 from rich.logging import RichHandler
 from safetensors.torch import save_file
 from torch import distributed as dist
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    StateDictType,
+    FullStateDictConfig,
+)
 from torch.distributed import get_rank, is_initialized
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
@@ -529,27 +534,27 @@ def ensure_loadable_granite_checkpoint(
             # at this point, we can be confident that the tmpdir is no longer needed
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+def get_module_class_from_name(
+    model: torch.nn.Module, name: str
+) -> List[torch.nn.Module]:
+    modules_children = list(model.children())
 
+    if model.__class__.__name__ == name:
+        return model.__class__
+    elif len(modules_children) == 0:
+        return
+    else:
+        for child_module in modules_children:
+            module_class = get_module_class_from_name(child_module, name)
+            if module_class is not None:
+                return module_class
+            
 # this function is for supporting gradient checkpointing for padding free
 # dolomite
 def apply_gradient_checkpointing(
     model: torch.nn.Module,
     **kwargs,
 ) -> None:
-    def get_module_class_from_name(
-        model: torch.nn.Module, name: str
-    ) -> List[torch.nn.Module]:
-        modules_children = list(model.children())
-
-        if model.__class__.__name__ == name:
-            return model.__class__
-        elif len(modules_children) == 0:
-            return
-        else:
-            for child_module in modules_children:
-                module_class = get_module_class_from_name(child_module, name)
-                if module_class is not None:
-                    return module_class
 
     def block_checkpointing(
         model: torch.nn.Module,
@@ -622,15 +627,74 @@ def _copy_no_lora_dict(state_dict):
     return cleaned_state_dict
 
 
-def save_hf_format_ds(
-    args,
-    model,
-    tokenizer,
-    samples_seen,
-    convert_granite=True,
-    is_lora=False,
-):
-    model_to_save = model.module
+# def save_hf_format_ds(
+#     args,
+#     model,
+#     tokenizer,
+#     samples_seen,
+#     convert_granite=True,
+#     is_lora=False,
+# ):
+#     model_to_save = model.module
+#     log_rank_0(
+#         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
+#         to_print=True,
+#     )
+#     start = time.time()
+#     # used to save huggingface format, so we can use it for hf.from_pretrained
+#     CONFIG_NAME = "config.json"
+#     if args.is_granite:
+#         # save if in a temp directory first then convert it
+#         WEIGHTS_NAME = "model.safetensors"
+#         MODEL_TYPE = "llama"
+#     else:
+#         WEIGHTS_NAME = "pytorch_model.bin"
+#     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+#     if torch.distributed.get_rank() == 0:
+#         if is_lora:
+#             model_to_save.merge_adapter()
+
+#         model_state = model_to_save.state_dict()
+#         if is_lora:
+#             model_state = _copy_no_lora_dict(model_state)
+#         output_dir.mkdir(parents=True, exist_ok=True)
+#         output_model_file = output_dir / WEIGHTS_NAME
+#         output_config_file = output_dir / CONFIG_NAME
+
+#         tmp_conf = copy(model_to_save.config)
+#         if not tmp_conf.architectures:
+#             tmp_conf.architectures = ["LlamaForCausalLM"]
+#             warnings.warn(
+#                 f"No architectures provided in base model config, adding architectures to ckpt: {tmp_conf.architectures}",
+#             )
+
+#         if args.is_granite and convert_granite:
+#             with TemporaryDirectory("w") as tmpdir:
+#                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
+#                 tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
+#                 tokenizer.save_pretrained(tmpdir)
+#                 # export doesnt like the directory to exist
+#                 shutil.rmtree(output_dir)
+
+#                 export_to_huggingface(
+#                     pretrained_model_name_or_path=tmpdir,
+#                     save_path=output_dir,
+#                     model_type=MODEL_TYPE,
+#                 )
+#         else:
+#             torch.save(model_state, str(output_model_file))
+#             tmp_conf.to_json_file(str(output_config_file))
+#             tokenizer.save_pretrained(str(output_dir))
+
+#         if is_lora:
+#             model_to_save.unmerge_adapter()
+
+#     dist.barrier()
+#     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+#     log_rank_0(f"saving took {time.time() - start} seconds")
+
+def save_hf_format(args, model, tokenizer, samples_seen):
+    torch.cuda.empty_cache()
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
         to_print=True,
@@ -638,93 +702,63 @@ def save_hf_format_ds(
     start = time.time()
     # used to save huggingface format, so we can use it for hf.from_pretrained
     CONFIG_NAME = "config.json"
-    if args.is_granite:
-        # save if in a temp directory first then convert it
-        WEIGHTS_NAME = "model.safetensors"
-        MODEL_TYPE = "llama"
-    else:
-        WEIGHTS_NAME = "pytorch_model.bin"
+    WEIGHTS_NAME = "pytorch_model.bin"
+
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        FullStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        model_state = model.state_dict()
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
     if torch.distributed.get_rank() == 0:
-        if is_lora:
-            model_to_save.merge_adapter()
-
-        model_state = model_to_save.state_dict()
-        if is_lora:
-            model_state = _copy_no_lora_dict(model_state)
         output_dir.mkdir(parents=True, exist_ok=True)
         output_model_file = output_dir / WEIGHTS_NAME
         output_config_file = output_dir / CONFIG_NAME
-
-        tmp_conf = copy(model_to_save.config)
-        if not tmp_conf.architectures:
-            tmp_conf.architectures = ["LlamaForCausalLM"]
-            warnings.warn(
-                f"No architectures provided in base model config, adding architectures to ckpt: {tmp_conf.architectures}",
-            )
-
-        if args.is_granite and convert_granite:
-            with TemporaryDirectory("w") as tmpdir:
-                save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
-                tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
-                tokenizer.save_pretrained(tmpdir)
-                # export doesnt like the directory to exist
-                shutil.rmtree(output_dir)
-
-                export_to_huggingface(
-                    pretrained_model_name_or_path=tmpdir,
-                    save_path=output_dir,
-                    model_type=MODEL_TYPE,
-                )
-        else:
-            torch.save(model_state, str(output_model_file))
-            tmp_conf.to_json_file(str(output_config_file))
-            tokenizer.save_pretrained(str(output_dir))
-
-        if is_lora:
-            model_to_save.unmerge_adapter()
-
+        torch.save(model_state, str(output_model_file))
+        model.module.config.to_json_file(str(output_config_file))
+        tokenizer.save_pretrained(str(output_dir))
     dist.barrier()
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 # this is native deepspeed saving with optimizer, schediuler
-def save_model_ds_native(
-    args,
-    model,
-    tokenizer,
-    samples_seen,
-):
-    # to get a statedict from a zero checkpoint, all you need to do is
-    # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
-    # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
-    # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
+# def save_model_ds_native(
+#     args,
+#     model,
+#     tokenizer,
+#     samples_seen,
+# ):
+#     # to get a statedict from a zero checkpoint, all you need to do is
+#     # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+#     # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
+#     # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
 
-    log_rank_0(
-        f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    output_dir = Path(args.output_dir) / "ds_native"
-    tag = f"samples_{samples_seen}"
-    use_lora = args.lora_r > 0
+#     log_rank_0(
+#         f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
+#         to_print=True,
+#     )
+#     start = time.time()
+#     # used to save huggingface format, so we can use it for hf.from_pretrained
+#     output_dir = Path(args.output_dir) / "ds_native"
+#     tag = f"samples_{samples_seen}"
+#     use_lora = args.lora_r > 0
 
-    # NOTE: this is a distributed save
-    # if its lora, we only save the adapters
-    # - so we exclude frozen if use_lora==True
-    model.save_checkpoint(
-        output_dir,
-        exclude_frozen_parameters=use_lora,
-        tag=tag,  # this will create the subdirectory with the correct name
-    )
+#     # NOTE: this is a distributed save
+#     # if its lora, we only save the adapters
+#     # - so we exclude frozen if use_lora==True
+#     model.save_checkpoint(
+#         output_dir,
+#         exclude_frozen_parameters=use_lora,
+#         tag=tag,  # this will create the subdirectory with the correct name
+#     )
 
-    # for now we are not saving tokenizer, config, eg..
-    # so it is not totally "HF compatible"
+#     # for now we are not saving tokenizer, config, eg..
+#     # so it is not totally "HF compatible"
 
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
+#     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+#     log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 def set_random_seed(seed):

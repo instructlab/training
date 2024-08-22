@@ -9,15 +9,26 @@ import subprocess
 import time
 
 # Third Party
-from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-from deepspeed.runtime.zero.utils import ZeRORuntimeException
+# from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+# from deepspeed.runtime.zero.utils import ZeRORuntimeException
+
+import torch.distributed as dist
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+)
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+)
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
-import deepspeed
+# import deepspeed
 import torch
 
 # First Party
@@ -37,6 +48,7 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
+    get_module_class_from_name,
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
@@ -44,6 +56,7 @@ from instructlab.training.utils import (
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
+    save_hf_format,
     save_hf_format_ds,
     save_model_ds_native,
     set_random_seed,
@@ -114,6 +127,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
                 use_padding_free_transformer=True,
+                torch_dtype=torch.float32,
             )
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
@@ -232,13 +246,19 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         print(
             "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
         )
-        optimizer = DeepSpeedCPUAdam(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-        )
+        # optimizer = DeepSpeedCPUAdam(
+        #     model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        # )
     else:
-        optimizer = FusedAdam(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=0.0,
         )
+        # optimizer = FusedAdam(
+        #     model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        # )
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
@@ -247,94 +267,114 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
 
-    model, _, _, lr_scheduler = deepspeed.initialize(
-        model=model,
-        optimizer=optimizer,
-        config=get_ds_config(
-            world_size=torch.distributed.get_world_size(),
-            samples_per_gpu=args.samples_per_gpu,
-            grad_accum=grad_accum,
-            opts=DeepSpeedOptions(
-                cpu_offload_optimizer=args.cpu_offload_optimizer,
-                cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
-                cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
-                save_samples=args.save_samples_ds,
-            ),
+    # model, _, _, lr_scheduler = deepspeed.initialize(
+    #     model=model,
+    #     optimizer=optimizer,
+    #     config=get_ds_config(
+    #         world_size=torch.distributed.get_world_size(),
+    #         samples_per_gpu=args.samples_per_gpu,
+    #         grad_accum=grad_accum,
+    #         opts=DeepSpeedOptions(
+    #             cpu_offload_optimizer=args.cpu_offload_optimizer,
+    #             cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+    #             cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+    #             save_samples=args.save_samples_ds,
+    #         ),
+    #     ),
+    #     lr_scheduler=lr_scheduler,
+    #     dist_init_required=True,
+    # )
+    model = FSDP(
+        model,
+        auto_wrap_policy=partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls={
+                get_module_class_from_name(block_name),
+            },
         ),
-        lr_scheduler=lr_scheduler,
-        dist_init_required=True,
+        # use_orig_params=True,
+        limit_all_gathers=True,
+        mixed_precision=MixedPrecision(
+            param_dtype=torch.bfloat16,
+            reduce_dtype=torch.bfloat16,
+            buffer_dtype=torch.bfloat16,
+        ),
+        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        sharding_strategy=ShardingStrategy[args.sharding_strategy],
+        device_id=torch.cuda.current_device(),
     )
+               
     # model = torch.compile(model)
-    return model
+    return model, optimizer, lr_scheduler
 
 
 # this function is to check if the checkpoint provided can be resumed
-def maybe_resume_training(args, model):
-    local_rank = int(os.environ["LOCAL_RANK"])
+# def maybe_resume_training(args, model):
+#     local_rank = int(os.environ["LOCAL_RANK"])
 
-    # DS's loading function will not raise if fails to reload a checkpoint
-    # - if lora is used, then the checkpoints will only be for the adapters
-    #   so we need to disable load_module_strict
-    # - load checkpoint will find the latest checkpoint
-    # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native"
+#     # DS's loading function will not raise if fails to reload a checkpoint
+#     # - if lora is used, then the checkpoints will only be for the adapters
+#     #   so we need to disable load_module_strict
+#     # - load checkpoint will find the latest checkpoint
+#     # - it will also load the optimizer and scheduler states by default
+#     load_module_strict = args.lora_r == 0  # can only be true if lora is not used
+#     output_dir = Path(args.output_dir) / "ds_native"
 
-    try:
-        # attempt to load a regular checkpoint first
-        model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
-    except ZeRORuntimeException as e:
-        if str(e).startswith("The checkpoint being loaded used a DP world size of"):
-            # if it fails with the above exception, then a universal
-            # checkpoint is required
+#     try:
+#         # attempt to load a regular checkpoint first
+#         model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+#     except ZeRORuntimeException as e:
+#         if str(e).startswith("The checkpoint being loaded used a DP world size of"):
+#             # if it fails with the above exception, then a universal
+#             # checkpoint is required
 
-            # prepare the universal checkpoint
-            # - by reading 'latest' to get the resumable checkpoint
-            prepare_universal_checkpoint_from_latest(output_dir)
+#             # prepare the universal checkpoint
+#             # - by reading 'latest' to get the resumable checkpoint
+#             prepare_universal_checkpoint_from_latest(output_dir)
 
-            # need to do this to trigger the universal checkpoint
-            # loading
-            model._config.load_universal_checkpoint = True
+#             # need to do this to trigger the universal checkpoint
+#             # loading
+#             model._config.load_universal_checkpoint = True
 
-            # then attempt to load again
-            model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
+#             # then attempt to load again
+#             model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
 
-            # reset to regular checkpoint loading
-            model._config.load_universal_checkpoint = False
-        else:
-            raise e  # reraise
+#             # reset to regular checkpoint loading
+#             model._config.load_universal_checkpoint = False
+#         else:
+#             raise e  # reraise
 
-    # do this to figure out the last_step
-    latest_file = output_dir / "latest"
-    try:
-        with open(latest_file) as f:
-            # there is some assumption here that the ds_native
-            # checkpoints are tagged as <something>_(samples_seen)
-            step_folder = f.read()
-            (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
-            samples_seen = int(samples_seen)
+#     # do this to figure out the last_step
+#     latest_file = output_dir / "latest"
+#     try:
+#         with open(latest_file) as f:
+#             # there is some assumption here that the ds_native
+#             # checkpoints are tagged as <something>_(samples_seen)
+#             step_folder = f.read()
+#             (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
+#             samples_seen = int(samples_seen)
 
-            last_step = samples_seen // args.effective_batch_size
-            args.__dict__["last_step"] = last_step
-        (
-            print(f"\033[93mStarting from: {last_step}\033[0m")
-            if local_rank == 0
-            else None
-        )
-    except FileNotFoundError:
-        pass
+#             last_step = samples_seen // args.effective_batch_size
+#             args.__dict__["last_step"] = last_step
+#         (
+#             print(f"\033[93mStarting from: {last_step}\033[0m")
+#             if local_rank == 0
+#             else None
+#         )
+#     except FileNotFoundError:
+#         pass
 
-    # we will update the start step here
-    return model
+#     # we will update the start step here
+#     return model
 
 
-def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
+def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_accum, metric_logger):
     model.train()
 
     global_step = 1
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
-
+    samples_seen = 0
     batch_size = args.effective_batch_size // grad_accum
     args.save_samples = (args.save_samples // batch_size) * batch_size
     (
@@ -353,7 +393,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         )
 
     for epoch in range(args.num_epochs):
-        torch.distributed.barrier()
+        dist.barrier()
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
@@ -365,6 +405,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
         aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
+        global_grad_norm = None
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -380,50 +421,59 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
 
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
+            with model.no_sync():
+                output = model(
+                    **batch,
+                    use_cache=False,
+                )
+                loss = output.loss
 
-            aggregated_values[2] = loss.item()
+                aggregated_values[2] = loss.item()
 
-            all_reduce(aggregated_values, op=ReduceOp.SUM)
+                all_reduce(aggregated_values, op=ReduceOp.SUM)
 
-            num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
+                num_loss_counted_tokens = aggregated_values[0]
+                loss = (
+                    loss / num_loss_counted_tokens * world_size
+                )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
 
-            print(
-                f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
-            )
-            print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
-            )
+                # print(
+                #     f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
+                # )
+                print(
+                    f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {loss}"
+                )
 
-            model.backward(loss)
-            model.step()
+                # model.backward(loss)
+                # model.step()
+                # loss = output["loss"]
+                loss.backward()
+
+            if global_step % args.gradient_accumulation_steps == 0:
+                global_grad_norm = model.clip_grad_norm_(1.0)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = model.lr_scheduler.get_last_lr()[0]
+                current_lr = lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
-                global_grad_norm = model.get_global_grad_norm()
+                # global_grad_norm = model.get_global_grad_norm()
                 global_grad_norm = (
                     float(global_grad_norm) if global_grad_norm is not None else None
                 )
-                weight_norm = float(
-                    model.optimizer.single_partition_of_fp32_groups[0].norm()
-                )
-
+                # weight_norm = float(
+                #     model.optimizer.single_partition_of_fp32_groups[0].norm()
+                # )
+                samples_seen += int(aggregated_values[1])
                 metric_logger.log_sync(
                     {
                         "epoch": epoch,
                         "step": global_step,
-                        "rank": torch.distributed.get_rank(),
+                        "rank": dist.get_rank(),
                         "loss": loss.item(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
@@ -435,29 +485,36 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                             aggregated_values[2] / num_loss_counted_tokens
                         ),
                         "gradnorm": global_grad_norm,
-                        "weight_norm": weight_norm,
+                        "weight_norm": 0.0,
                     }
                 )
 
             if global_step * batch_size % args.save_samples == 0:
-                save_hf_format_ds(
+                # save_hf_format_ds(
+                #     args,
+                #     model,
+                #     tokenizer,
+                #     global_step * args.samples_per_gpu * world_size,
+                #     is_lora=bool(args.lora_r),
+                # )
+                save_hf_format(
                     args,
                     model,
                     tokenizer,
-                    global_step * args.samples_per_gpu * world_size,
-                    is_lora=bool(args.lora_r),
+                    # global_step * args.samples_per_gpu * world_size,
+                    samples_seen,
                 )
 
-            if (
-                args.save_samples_ds is not None
-                and global_step * batch_size % args.save_samples_ds == 0
-            ):
-                save_model_ds_native(
-                    args,
-                    model,
-                    tokenizer,
-                    global_step * args.samples_per_gpu * world_size,
-                )
+            # if (
+            #     args.save_samples_ds is not None
+            #     and global_step * batch_size % args.save_samples_ds == 0
+            # ):
+            #     save_model_ds_native(
+            #         args,
+            #         model,
+            #         tokenizer,
+            #         global_step * args.samples_per_gpu * world_size,
+            #     )
 
             global_step += 1
             if local_rank == 0:
@@ -492,11 +549,16 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    deepspeed.init_distributed(timeout=timedelta(minutes=30))
-    args.global_rank = torch.distributed.get_rank()
+    # deepspeed.init_distributed(timeout=timedelta(minutes=30))
+    dist.init_process_group(
+        "nccl",
+        #  timeout=timedelta(hours=1),
+    )
+    dist.barrier()
+    args.global_rank = dist.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
-    torch.distributed.all_reduce(tensor)
-    torch.distributed.barrier()
+    dist.all_reduce(tensor)
+    dist.barrier()
 
     dataset = setup_dataset(
         args.data_path,
@@ -506,7 +568,7 @@ def main(args):
 
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
+            num_gpus=dist.get_world_size(),
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
@@ -526,7 +588,7 @@ def main(args):
         args.sampler = "distributed"
 
     args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
+        args.effective_batch_size // grad_accum // dist.get_world_size()
     )
 
     train_loader = setup_dataloader(
@@ -544,7 +606,7 @@ def main(args):
     if args.local_rank == 0:
         metric_logger.log_sync(
             {
-                "num_gpus": torch.distributed.get_world_size(),
+                "num_gpus": dist.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
@@ -556,13 +618,13 @@ def main(args):
             }
         )
 
-    model = setup_model(args, tokenizer, train_loader, grad_accum)
-    model = maybe_resume_training(args, model)
+    model, optimizer, lr_scheduler = setup_model(args, tokenizer, train_loader, grad_accum)
+    # model = maybe_resume_training(args, model)
 
-    train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
+    train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_accum, metric_logger)
 
-    torch.distributed.barrier()
-    torch.distributed.destroy_process_group()
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 # public API
