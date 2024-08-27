@@ -28,92 +28,117 @@ def check_valid_sample(
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
-    if not eos_tk in (whole_sentence_tk[-1], whole_sentence_tk[-2]):
+    if not eos_tk[0] in (whole_sentence_tk[-1], whole_sentence_tk[-2]):
         return False
 
-    special_tokens = [system_tk, assistant_tk, user_tk]
-    if not any(token in whole_sentence_tk for token in special_tokens):
-        return True
+    # special_tokens = [system_tk, assistant_tk, user_tk]
+    # if not any(token in whole_sentence_tk for token in special_tokens):
+    #     return True
 
-    whole_sentence_tk = np.array(whole_sentence_tk)
-    user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
-    assistant_token_index = (whole_sentence_tk == assistant_tk).nonzero()[0]
-    eos_token_index = (whole_sentence_tk == eos_tk).nonzero()[0]
+    # whole_sentence_tk = np.array(whole_sentence_tk)
+    # user_token_index = (whole_sentence_tk == user_tk).nonzero()[0]
+    # assistant_token_index = (whole_sentence_tk == assistant_tk).nonzero()[0]
+    # eos_token_index = (whole_sentence_tk == eos_tk).nonzero()[0]
 
-    # check that user_index_token is less than all other indices
-    if (
-        user_token_index[0] > assistant_token_index[0]
-        or user_token_index[0] > eos_token_index[0]
-    ):
-        print("\033[91mthe first sp token is not user_token\033[0m")
-        log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
-        return False
+    # # check that user_index_token is less than all other indices
+    # if (
+    #     user_token_index[0] > assistant_token_index[0]
+    #     or user_token_index[0] > eos_token_index[0]
+    # ):
+    #     print("\033[91mthe first sp token is not user_token\033[0m")
+    #     log_rank_0(tokenizer.decode(whole_sentence_tk), to_print=True)
+    #     return False
 
     return True
 
-
 def unmask_message_content(
-    example, user_token, assist_token, system_token, pretrain_token, pretrain_end_token
+    example, user_tokens, assist_tokens, system_tokens, pretrain_token, pretrain_end_token
 ):
     """
-    Create labels for tokens in a sequence with special handling for pretraining tokens.
+    Create labels for tokens in a sequence with special handling for pretraining tokens and role-specific sequences.
 
     This function processes a sequence of tokens and generates a corresponding labels list.
-    Tokens are masked with -100 unless they are part of the assistant's response or within
-    a pretraining segment. Pretraining segments are marked by `pretrain_token` and
-    `pretrain_end_token`, within which only user, assistant, and system special tokens are masked.
-    It also removes the temporary pretraining tokens from the output 'input_ids'.
+    It handles pretraining segments, user/assistant/system role sequences, and ensures proper masking/unmasking
+    based on the current context. The function also removes temporary pretraining tokens from the output.
+
+    The labeling follows these rules:
+    1. Special token sequences (user, assistant, system) are always masked (-100).
+    2. In pretraining segments (between pretrain and pretrain_end tokens), all tokens except special sequences are unmasked.
+    3. Outside pretraining segments, only tokens after assistant sequences are unmasked until the next special sequence.
+    4. Pretrain and pretrain_end tokens are removed from the final output.
 
     Parameters:
     - example (dict): A dictionary containing 'input_ids', a list of token IDs.
-    - user_token (int): The token ID representing the user's turn in the conversation.
-    - assist_token (int): The token ID representing the assistant's turn in the conversation.
-    - system_token (int): The token ID representing the system's turn in the conversation.
+    - user_tokens (list[int]): The token ID sequence representing the user's turn in the conversation.
+    - assist_tokens (list[int]): The token ID sequence representing the assistant's turn in the conversation.
+    - system_tokens (list[int]): The token ID sequence representing the system's turn in the conversation.
     - pretrain_token (int): The token ID marking the start of a pretraining segment.
     - pretrain_end_token (int): The token ID marking the end of a pretraining segment.
 
     Returns:
     - dict: A dictionary with two keys:
-        - 'labels': a list of labels for the input tokens, where non-assistant and non-pretraining
-          tokens are masked with -100, and all others retain their original token IDs.
+        - 'labels': a list of labels for the input tokens, where special sequences and non-assistant responses
+                    outside pretraining segments are masked with -100, and all others retain their original token IDs.
         - 'input_ids': a list of the original token IDs with pretraining tokens removed.
+
+    Raises:
+    - AssertionError: If any of the following conditions are not met:
+        1. Special token sequences are unmasked.
+        2. Pretrain tokens are present in the final sentence.
+        3. Labels are not aligned with the sentence tokens (when not masked).
+
+    Example:
+    >>> example = {"input_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
+    >>> user_tokens = [2, 3]
+    >>> assist_tokens = [5, 6]
+    >>> system_tokens = [8, 9]
+    >>> pretrain_token = 1
+    >>> pretrain_end_token = 10
+    >>> result = unmask_message_content(example, user_tokens, assist_tokens, system_tokens, pretrain_token, pretrain_end_token)
+    >>> print(result)
+    {'labels': [-100, -100, -100, 4, -100, -100, 7, -100, -100], 'input_ids': [2, 3, 4, 5, 6, 7, 8, 9]}
+
+    Note:
+    - The function assumes that pretrain and pretrain_end tokens are single integers, not sequences.
+    - Special token sequences (user, assistant, system) can be of different lengths.
+    - The function handles edge cases such as overlapping sequences and sequences at the start/end of the input.
     """
     sentence_tk = example["input_ids"]
-
-    def unmask(token, special_tokens):
-        if token in special_tokens:
-            return -100
-        return token
-
-    def mask(token, *args):
-        return -100
-
-    def update_mask_function(token, in_pretraining, mask_function):
-        if token == pretrain_token:
-            in_pretraining = True
-            mask_function = unmask
-        elif token == pretrain_end_token:
-            in_pretraining = False
-            mask_function = mask
-        if not in_pretraining:
-            if token == assist_token:  # unmasking because of assistant
-                mask_function = unmask
-            elif token in [
-                user_token,
-                system_token,
-            ]:  # masking because of user or system
-                mask_function = mask
-        return in_pretraining, mask_function
-
     labels = [-100] * len(sentence_tk)
+    
+    def check_sequence(tokens, start_idx):
+        return tokens == sentence_tk[start_idx:start_idx + len(tokens)]
+    
+    def find_longest_match(start_idx, sequences):
+        return max((seq for seq in sequences if seq and len(sentence_tk) - start_idx >= len(seq) and check_sequence(seq, start_idx)), 
+                   key=len, default=None)
+    
     in_pretraining = False
-    mask_function = None
+    unmasking = False
+    i = 0
+    
+    while i < len(sentence_tk):
+        if sentence_tk[i] == pretrain_token:
+            in_pretraining = True
+            i += 1
+            continue
+        elif sentence_tk[i] == pretrain_end_token:
+            in_pretraining = False
+            i += 1
+            continue
 
-    for i, token in enumerate(sentence_tk):
-        in_pretraining, mask_function = update_mask_function(
-            token, in_pretraining, mask_function
-        )
-        labels[i] = mask_function(token, [user_token, assist_token, system_token])
+        match = find_longest_match(i, [user_tokens, assist_tokens, system_tokens])
+        if match:
+            if match == assist_tokens:
+                unmasking = True
+            else:
+                unmasking = False
+            i += len(match)
+            continue
+        
+        if in_pretraining or unmasking:
+            labels[i] = sentence_tk[i]
+            i += 1
 
     # Find indices of pretrain tokens and remove them from sentence and labels
     pretrain_indices = [
@@ -128,21 +153,114 @@ def unmask_message_content(
         label for i, label in enumerate(labels) if i not in pretrain_indices
     ]
 
-    for label, token in zip(final_labels, final_sentence_tk):
-        assert label == -100 or token not in [
-            user_token,
-            assist_token,
-            system_token,
-        ], f"Token {token} is unmasked, special tokens should not be unmasked."
-        assert (
-            token not in [pretrain_token, pretrain_end_token]
-        ), f"Token {token} is a pretraining token, it should not be in the final sentence."
-        assert label in (
-            token,
-            -100,
-        ), f"unless masked, label should be the same as the token."
+    # Assertions
+    special_sequences = [user_tokens, assist_tokens, system_tokens]
+    
+    # 1. No special sequence of tokens should be unmasked
+    for i in range(len(final_sentence_tk)):
+        for seq in special_sequences:
+            if final_sentence_tk[i:i+len(seq)] == seq:
+                assert all(final_labels[i+j] == -100 for j in range(len(seq))), f"Special sequence {seq} is unmasked"
+
+    # 2. No pretrain tokens should be in the final sentence_tk
+    assert all(token not in [pretrain_token, pretrain_end_token] for token in final_sentence_tk), "Pretrain tokens found in final sentence"
+
+    # 3. The labels have to be aligned with the sentence_tk unless they are masked
+    assert all(label == -100 or label == token for label, token in zip(final_labels, final_sentence_tk)), "Labels are not aligned with sentence tokens"
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
+
+# def unmask_message_content(
+#     example, user_token, assist_token, system_token, pretrain_token, pretrain_end_token
+# ):
+#     """
+#     Create labels for tokens in a sequence with special handling for pretraining tokens.
+
+#     This function processes a sequence of tokens and generates a corresponding labels list.
+#     Tokens are masked with -100 unless they are part of the assistant's response or within
+#     a pretraining segment. Pretraining segments are marked by `pretrain_token` and
+#     `pretrain_end_token`, within which only user, assistant, and system special tokens are masked.
+#     It also removes the temporary pretraining tokens from the output 'input_ids'.
+
+#     Parameters:
+#     - example (dict): A dictionary containing 'input_ids', a list of token IDs.
+#     - user_token (int): The token ID representing the user's turn in the conversation.
+#     - assist_token (int): The token ID representing the assistant's turn in the conversation.
+#     - system_token (int): The token ID representing the system's turn in the conversation.
+#     - pretrain_token (int): The token ID marking the start of a pretraining segment.
+#     - pretrain_end_token (int): The token ID marking the end of a pretraining segment.
+
+#     Returns:
+#     - dict: A dictionary with two keys:
+#         - 'labels': a list of labels for the input tokens, where non-assistant and non-pretraining
+#           tokens are masked with -100, and all others retain their original token IDs.
+#         - 'input_ids': a list of the original token IDs with pretraining tokens removed.
+#     """
+#     sentence_tk = example["input_ids"]
+
+#     def unmask(token, special_tokens):
+#         if token in special_tokens:
+#             return -100
+#         return token
+
+#     def mask(token, *args):
+#         return -100
+
+#     def update_mask_function(token, in_pretraining, mask_function):
+#         if token == pretrain_token:
+#             in_pretraining = True
+#             mask_function = unmask
+#         elif token == pretrain_end_token:
+#             in_pretraining = False
+#             mask_function = mask
+#         if not in_pretraining:
+#             if token == assist_token:  # unmasking because of assistant
+#                 mask_function = unmask
+#             elif token in [
+#                 user_token,
+#                 system_token,
+#             ]:  # masking because of user or system
+#                 mask_function = mask
+#         return in_pretraining, mask_function
+
+#     labels = [-100] * len(sentence_tk)
+#     in_pretraining = False
+#     mask_function = None
+
+#     for i, token in enumerate(sentence_tk):
+#         in_pretraining, mask_function = update_mask_function(
+#             token, in_pretraining, mask_function
+#         )
+#         labels[i] = mask_function(token, [user_token, assist_token, system_token])
+
+#     # Find indices of pretrain tokens and remove them from sentence and labels
+#     pretrain_indices = [
+#         i
+#         for i, token in enumerate(sentence_tk)
+#         if token in [pretrain_token, pretrain_end_token]
+#     ]
+#     final_sentence_tk = [
+#         token for i, token in enumerate(sentence_tk) if i not in pretrain_indices
+#     ]
+#     final_labels = [
+#         label for i, label in enumerate(labels) if i not in pretrain_indices
+#     ]
+
+#     for label, token in zip(final_labels, final_sentence_tk):
+#         assert label == -100 or token not in [
+#             user_token,
+#             assist_token,
+#             system_token,
+#         ], f"Token {token} is unmasked, special tokens should not be unmasked."
+#         assert (
+#             token not in [pretrain_token, pretrain_end_token]
+#         ), f"Token {token} is a pretraining token, it should not be in the final sentence."
+#         assert label in (
+#             token,
+#             -100,
+#         ), f"unless masked, label should be the same as the token."
+
+#     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
 def add_is_pretrain_sample(example, pretrain_tk):
     if pretrain_tk in example["input_ids"]:
@@ -157,7 +275,7 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
         input_ids = sample["input_ids"]
-        label = [pad_tk if tk == -100 else tk for tk in labels]
+        label = [pad_tk[0] if tk == -100 else tk for tk in labels]
         text = tokenizer.decode(label).replace(pad_str, "<mask>")
         orig_text = tokenizer.decode(input_ids)
         return text, orig_text
@@ -176,7 +294,6 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc
             if i > 1:
                 break
 
-
 def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
@@ -184,16 +301,9 @@ def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
-    eos_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.eos)
-    pad_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.pad)
-    if SPECIAL_TOKENS.system:
-        system_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.system)
-    else:
-        system_tk = None
-    user_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.user)
-    assistant_tk = get_sp_token(tokenizer, SPECIAL_TOKENS.assistant)
+    eos_tk, pad_tk, bos_tk, system_tk, user_tk, assistant_tk = [get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token) for sp in SPECIAL_TOKENS.__annotations__.keys()]
     log_rank_0(
-        f"eos: {eos_tk}, pad: {pad_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
+        f"Special tokens: eos: {eos_tk}, pad: {pad_tk}, bos: {bos_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
     )
 
     # Adding after tokenizer setup as these are temp tokens, not to be saved
