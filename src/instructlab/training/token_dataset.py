@@ -18,7 +18,7 @@ class TokenDataset(Dataset):
         self.lengths = np.array(
             self.data.map(
                 lambda x: {"len": len(x["input_ids"])},
-                num_proc=16,
+                num_proc=8,
             )["len"]
         )
 

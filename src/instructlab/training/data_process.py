@@ -175,7 +175,7 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc
 def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
-    NUM_PROC = args.num_parallel_procs
+    NUM_PROC = args.num_cpu_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
@@ -329,10 +329,10 @@ if __name__ == "__main__":
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
     parser.add_argument(
-        "--num_proc",
+        "--num_cpu_procs",
         type=int,
         default=16,
-        help="Number of processes for data processing",
+        help="Number of cpu processes for data processing",
     )
     args = parser.parse_args()
     setup_logger(args.logging_level)
@@ -342,7 +342,7 @@ if __name__ == "__main__":
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
         chat_tmpl_path=args.chat_tmpl_path,
-        num_parallel_procs=args.num_proc,
+        num_cpu_procs=args.num_cpu_procs,
     )
     main(data_process_args)
 
