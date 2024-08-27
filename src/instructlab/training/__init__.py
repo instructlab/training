@@ -22,9 +22,11 @@ from .config import (
 
 
 # defer import of main_ds
-def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
+def run_training(
+    torch_args: TorchrunArgs, train_args: TrainingArgs, device: str = "cuda"
+) -> None:
     """Wrapper around the main training job that calls torchrun."""
     # Local
     from .main_ds import run_training
 
-    return run_training(torch_args=torch_args, train_args=train_args)
+    return run_training(torch_args=torch_args, train_args=train_args, device=device)

@@ -30,7 +30,6 @@ from typing import List, Optional
 from torch.utils.data import Sampler
 import numba
 import numpy as np
-import torch
 import torch.distributed as dist
 
 
@@ -67,11 +66,16 @@ def find_max_pack_len_with_padding(
 
         The function creates a sampler using the MultipackDistributedBatchSampler class, generates batches using the sampler, and then returns the ratio of the dataset size to the number of batches.
         """
+        num_replicas = 1
+        rank = 0
+        if dist.is_initialized():
+            num_replicas = dist.get_world_size()
+            rank = dist.get_rank()
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=num_tokens_per_gpu,
             lengths=dataset.get_lengths(),
-            num_replicas=torch.distributed.get_world_size(),
-            rank=torch.distributed.get_rank(),
+            num_replicas=num_replicas,
+            rank=rank,
             seed=seed,
             padding=True,
         )
