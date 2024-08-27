@@ -246,7 +246,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         name=args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_epochs * len(train_loader),
+        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
 
     # pylint: disable=unbalanced-tuple-unpacking
@@ -509,7 +509,7 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    deepspeed.init_distributed(timeout=timedelta(minutes=10))
+    deepspeed.init_distributed(timeout=timedelta(minutes=30))
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
@@ -529,7 +529,6 @@ def main(args):
             max_batch_len_per_gpu=args.max_batch_len,
             is_padding=not args.is_granite,
             dataset=dataset,
-            pad_id=tokenizer.pad_token_id,
             seed=args.seed,
         )
         args.sampler = "multipack"

@@ -4,11 +4,9 @@
 from functools import partial
 from pathlib import Path
 import os
-import random
 
 # Third Party
 from datasets import load_dataset
-from tqdm import tqdm
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 import numpy as np
 
@@ -147,45 +145,39 @@ def unmask_message_content(
     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
 
-def preview_samples(
-    tokenizer, pad_tk, pad_str, labels, input_ids, pretrain_indices, instruct_indices
-):
-    print(
-        "\033[33mThe following are some examples of the processed data, with masked tokens (not to be learned) represented with <mask>. The unmasked tokens are the ones the model will learn to predict. Please review these samples to ensure the model is learning to predict expected tokens.\n\033[0m"
+def add_is_pretrain_sample(example, pretrain_tk):
+    if pretrain_tk in example["input_ids"]:
+        example["is_pretrain"] = True
+
+
+def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc):
+    def get_masked_and_orig_text(sample):
+        labels = sample["labels"]
+        input_ids = sample["input_ids"]
+        label = [pad_tk if tk == -100 else tk for tk in labels]
+        text = tokenizer.decode(label).replace(pad_str, "<mask>")
+        orig_text = tokenizer.decode(input_ids)
+        return text, orig_text
+
+    filtered_data = data.filter(
+        lambda x: x["is_pretrain"] == is_pretrain, num_proc=num_proc
     )
-    if pretrain_indices:
-        sample_indices = random.sample(pretrain_indices, min(len(pretrain_indices), 2))
-        for idx in sample_indices:
-            label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
-            text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            orig_text = tokenizer.decode(input_ids[idx])
-            print(f"\033[33mPretraining ex sample {idx+1}: {text}\033[0m")
+    if len(filtered_data) > 0:
+        filtered_data = filtered_data.shuffle()
+        for i, sample in enumerate(filtered_data):
+            text, orig_text = get_masked_and_orig_text(sample)
             print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
-    if instruct_indices:
-        sample_indices = random.sample(instruct_indices, min(len(instruct_indices), 2))
-        for idx in sample_indices:
-            label = [pad_tk if tk == -100 else tk for tk in labels[idx]]
-            text = tokenizer.decode(label).replace(pad_str, "<mask>")
-            orig_text = tokenizer.decode(input_ids[idx])
-            print(f"\033[33mInstruction ex sample {idx+1}: {text}\033[0m")
-            print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
-
-
-def form_data_pools(data, pretrain_tk):
-    """
-    Sorts data indices into pretraining and instruction pools
-    """
-    pretrain_indices = []
-    instruct_indices = []
-    for i in tqdm(range(len(data)), desc="Data type sorting"):
-        if pretrain_tk in data[i]:
-            pretrain_indices.append(i)
-        else:
-            instruct_indices.append(i)
-    return pretrain_indices, instruct_indices
+            print(
+                f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m"
+            )
+            if i > 1:
+                break
 
 
 def main(args: DataProcessArgs):
+    print("\033[92m data arguments are:\033[0m")
+    print("\033[36m" + args.model_dump_json() + "\033[0m")
+    NUM_PROC = args.num_cpu_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
@@ -224,14 +216,14 @@ def main(args: DataProcessArgs):
         lambda x: {
             "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True)
         },
-        num_proc=16,
+        num_proc=NUM_PROC,
     )
 
     print("\033[38;2;255;165;0mten largest length percentiles:")
     lens = np.array(
-        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=16)[
-            "len"
-        ]
+        data_with_input_ids.map(
+            lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC
+        )["len"]
     )
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
@@ -267,16 +259,18 @@ def main(args: DataProcessArgs):
             eos_tk,
             args.max_seq_len,
         ),
-        num_proc=16,
+        num_proc=NUM_PROC,
     )
     log_rank_0(
         f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
     )
 
     print("\033[92mCategorizing training data type...\033[0m")
-    pretrain_indices, instruct_indices = form_data_pools(
-        data_with_input_ids["input_ids"],
-        pretrain_tk=get_sp_token(tokenizer, "<|pretrain|>"),
+    data_with_input_ids = data_with_input_ids.map(
+        lambda x: {
+            "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]
+        },
+        num_proc=NUM_PROC,
     )
 
     _prefill_unmask_message_content = partial(
@@ -290,17 +284,26 @@ def main(args: DataProcessArgs):
     print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
-        num_proc=16,
+        num_proc=NUM_PROC,
     )
 
-    preview_samples(
+    print("\033[92m Samples Previews...\033[0m")
+    print("\033[92m \n \033[0m")
+    print_masked_samples(
+        data_with_labels,
         tokenizer,
         pad_tk,
         SPECIAL_TOKENS.pad,
-        data_with_labels["labels"],
-        data_with_labels["input_ids"],
-        pretrain_indices,
-        instruct_indices,
+        is_pretrain=True,
+        num_proc=NUM_PROC,
+    )
+    print_masked_samples(
+        data_with_labels,
+        tokenizer,
+        pad_tk,
+        SPECIAL_TOKENS.pad,
+        is_pretrain=False,
+        num_proc=NUM_PROC,
     )
 
     # extract only labels and messages formatted into a new dataset
@@ -342,6 +345,12 @@ if __name__ == "__main__":
         ),
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
+    parser.add_argument(
+        "--num_cpu_procs",
+        type=int,
+        default=16,
+        help="Number of cpu processes for data processing",
+    )
     args = parser.parse_args()
     setup_logger(args.logging_level)
     data_process_args = DataProcessArgs(
@@ -350,6 +359,7 @@ if __name__ == "__main__":
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
         chat_tmpl_path=args.chat_tmpl_path,
+        num_cpu_procs=args.num_cpu_procs,
     )
     main(data_process_args)
 

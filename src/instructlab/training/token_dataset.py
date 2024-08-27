@@ -6,7 +6,6 @@ import os
 # Third Party
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 import numpy as np
 import torch
 
@@ -19,10 +18,10 @@ class TokenDataset(Dataset):
     def __init__(self, data_path):
         self.data = load_dataset("json", data_files=data_path, split="train")
         self.lengths = np.array(
-            [
-                len(x["input_ids"])
-                for x in tqdm(self.data, desc="Data length calculation", colour="cyan")
-            ]
+            self.data.map(
+                lambda x: {"len": len(x["input_ids"])},
+                num_proc=8,
+            )["len"]
         )
 
     def __len__(self):
