@@ -116,7 +116,6 @@ def unmask_message_content(
     in_pretraining = False
     unmasking = False
     i = 0
-    
     while i < len(sentence_tk):
         if sentence_tk[i] == pretrain_token:
             in_pretraining = True
@@ -138,7 +137,7 @@ def unmask_message_content(
         
         if in_pretraining or unmasking:
             labels[i] = sentence_tk[i]
-            i += 1
+        i += 1
 
     # Find indices of pretrain tokens and remove them from sentence and labels
     pretrain_indices = [
@@ -275,8 +274,9 @@ def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
         input_ids = sample["input_ids"]
-        label = [pad_tk[0] if tk == -100 else tk for tk in labels]
-        text = tokenizer.decode(label).replace(pad_str, "<mask>")
+        mask_id = get_sp_token(tokenizer, "<MASK>")[0]
+        label = [mask_id if tk == -100 else tk for tk in labels]
+        text = tokenizer.decode(label)
         orig_text = tokenizer.decode(input_ids)
         return text, orig_text
 
@@ -301,14 +301,14 @@ def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
-    eos_tk, pad_tk, bos_tk, system_tk, user_tk, assistant_tk = [get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token) for sp in SPECIAL_TOKENS.__annotations__.keys()]
+    system_tk, user_tk, assistant_tk, eos_tk, pad_tk, bos_tk = [get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token) for sp in SPECIAL_TOKENS.__annotations__.keys()]
     log_rank_0(
         f"Special tokens: eos: {eos_tk}, pad: {pad_tk}, bos: {bos_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
     )
 
     # Adding after tokenizer setup as these are temp tokens, not to be saved
     tokenizer.add_special_tokens(
-        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>"]}
+        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<MASK>"]}
     )
 
     try:
@@ -360,7 +360,7 @@ def main(args: DataProcessArgs):
     print(
         f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
     )
-
+    # from ipdb import set_trace; set_trace()
     print("\033[92mchecking the validity of the samples...\033[0m")
     data_with_input_ids = data_with_input_ids.filter(
         lambda x: check_valid_sample(
@@ -385,19 +385,19 @@ def main(args: DataProcessArgs):
         },
         num_proc=NUM_PROC,
     )
-
+    
     _prefill_unmask_message_content = partial(
         unmask_message_content,
-        user_token=user_tk,
-        assist_token=assistant_tk,
-        system_token=system_tk,
+        user_tokens=user_tk,
+        assist_tokens=assistant_tk,
+        system_tokens=system_tk,
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>"),
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>"),
     )
     print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
-        num_proc=NUM_PROC,
+        # num_proc=NUM_PROC,
     )
 
     print("\033[92m Samples Previews...\033[0m")
