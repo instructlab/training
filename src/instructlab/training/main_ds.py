@@ -163,6 +163,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         "LlamaForCausalLM",
         "Starcoder2ForCausalLM",
         "GemmaForCausalLM",
+        "MixtralForCausalLM",
     ], f"Model class name: {model.__class__.__name__} is not supported."
 
     model = convert_loss_to_reduce_sum(model, is_granite=args.is_granite)
