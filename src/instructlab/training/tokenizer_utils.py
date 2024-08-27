@@ -38,7 +38,7 @@ class SpecialTokens:
 def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
 
-    if not SPECIAL_TOKENS.pad:
+    if not SPECIAL_TOKENS.pad.token:
         SPECIAL_TOKENS.pad = SPECIAL_TOKENS.eos
     tokenizer.add_special_tokens(
         {
