@@ -1,0 +1,179 @@
+pull_request_rules:
+- name: auto-merge
+  description: automatic merge for main with >= 2 approved reviews, all requested reviews have given feedback, not held, and CI is successful
+  conditions:
+    - "#approved-reviews-by>=2"
+    - "#review-requested=0"
+    - "#changes-requested-reviews-by=0"
+    - or:
+      - base=main
+      - base~=^release-
+    - label!=hold
+    - label!=do-not-merge
+    - label!=needs-rebase
+    - check-success=DCO
+
+    # The files conditions regex should match the globs in workflow files
+    # If workflow configuration files in .github/ are changed, the actionlint check must pass
+    - or:
+      - and:
+        - check-success=actionlint
+        - or:
+          - files~=^\.github/(actions|workflows)/.*\.ya?ml$
+          - files~=^\.github/workflows/actionlint\.
+      - and:
+        - -files~=^\.github/(actions|workflows)/.*\.ya?ml$
+        - -files~=^\.github/workflows/actionlint\.
+
+    # e2e workflow
+    - or:
+      - and:
+        - check-success=e2e
+        - or:
+          - files~=\.py$
+          - files=pyproject.toml
+          - files~=^requirements.*\.txt$
+          - files=.github/workflows/e2e.yml
+      - and:
+        - -files~=\.py$
+        - -files=pyproject.toml
+        - -files~=^requirements.*\.txt$
+        - -files=.github/workflows/e2e.yml
+
+    # lint must pass if files change that would trigger this job
+    - or:
+      - and:
+        - check-success=lint-workflow-complete
+        - or:
+          # see .github/workflows/lint.yml and test.yml
+          - files~=\.py$
+          - files=pyproject.toml
+          - files~=^requirements.*\.txt$
+          - files=tox.ini
+          - files~=^scripts/[^/]+\.sh$
+          - files=.github/workflows/lint.yml
+      - and:
+        - -files~=\.py$
+        - -files=pyproject.toml
+        - -files~=^requirements.*\.txt$
+        - -files=tox.ini
+        - -files~=^scripts/[^/]+\.sh$
+        - -files=.github/workflows/lint.yml
+
+
+  actions:
+    merge:
+      method: merge
+    delete_head_branch:
+
+- name: label-cicd
+  description: Automatically apply CI/CD label
+  conditions:
+    - or:
+      - files=.github/mergify.yml
+      - files~=^\.github/(actions|workflows)/
+      - files=scripts/ruff.sh
+      - files=.pre-commit-config.yaml
+      - files=.pylintrc
+      - files~=^\.spellcheck[^/]+$
+      - files=tox.ini
+      - files=.markdownlint-cli2.yaml
+  actions:
+    label:
+      add:
+        - CI/CD
+
+- name: label-documentation
+  description: Automatically apply documentation label
+  conditions:
+    - or:
+      - files~=^[^/]+\.md$
+  actions:
+    label:
+      add:
+        - documentation
+
+- name: label-testing
+  description: Automatically apply testing label
+  conditions:
+    - or:
+      - files~=^tests/
+      - files=tox.ini
+  actions:
+    label:
+      add:
+        - testing
+
+- name: ping author on conflicts and add 'needs-rebase' label
+  conditions:
+      - conflict
+      - -closed
+  actions:
+    label:
+      add:
+        - needs-rebase
+    comment:
+      message: |
+       This pull request has merge conflicts that must be resolved before it can be
+       merged. @{{author}} please rebase it. https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/syncing-a-fork
+
+- name: remove 'needs-rebase' label when conflict is resolved
+  conditions:
+      - -conflict
+      - -closed
+  actions:
+    label:
+      remove:
+        - needs-rebase
+
+- name: release-branch-label
+  description: Automatically apply the release-branch label to release branch PRs
+  conditions:
+    - base~=^release-
+  actions:
+    label:
+      add:
+        - release-branch
+
+- name: Apply ci-failure label if any CI checks have failed
+  conditions:
+      - "#check-failure>0"
+  actions:
+    label:
+      add:
+        - ci-failure
+
+- name: Remove ci-failure label if no failures are present
+  conditions:
+      - "#check-failure=0"
+  actions:
+    label:
+      remove:
+        - ci-failure
+
+- name: Apply 'one-approval' label if one of the maintainer approved the PR
+  conditions:
+      - "#approved-reviews-by=1"
+  actions:
+    label:
+      add:
+        - one-approval
+
+- name: Remove 'one-approval' label if the approval was reset
+  conditions:
+      - "#approved-reviews-by!=1"
+  actions:
+    label:
+      remove:
+        - one-approval
+
+- name: label-dependencies
+  description: Automatically apply dependencies label
+  conditions:
+    - or:
+      - files~=^requirements.*\.txt$
+      - files~=^requirements/
+  actions:
+    label:
+      add:
+        - dependencies
