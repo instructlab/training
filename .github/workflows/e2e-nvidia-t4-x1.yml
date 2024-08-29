@@ -95,6 +95,7 @@ jobs:
       - name: Fetch and checkout PR
         id: fetch_pr
         if: github.event_name == 'pull_request_target'
+        working-directory: "${{ env.GITHUB_WORKSPACE }}/training"
         run: |
           git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-${{ github.event.pull_request.number }}
           git checkout pr-${{ github.event.pull_request.number }}
