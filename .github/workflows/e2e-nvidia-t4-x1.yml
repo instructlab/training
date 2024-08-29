@@ -16,11 +16,9 @@ on:
       - main
       - release-*
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 
 jobs:
   start-runner:
@@ -52,6 +50,7 @@ jobs:
               {"Key": "Name", "Value": "instructlab-ci-github-small-runner"},
               {"Key": "GitHubRepository", "Value": "${{ github.repository }}"}
             ]
+  
   e2e:
     name: E2E Test
     needs: start-runner
@@ -64,29 +63,30 @@ jobs:
 
     steps:
       # for debugging
-      - name: Print Environment State
+      - name: Print environment state
         run: |
           echo "Current Working Directory: $PWD"
           echo "Files in Local Directory:"
           ls -l
-      - name: Checkout
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
-        with:
-          # https://github.com/actions/checkout/issues/249
-          fetch-depth: 0
-          repository: 'instructlab/instructlab'
-          path: instructlab
 
-      - name: Checkout
+      - name: Checkout instructlab/instructlab
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
         with:
+          repository: "instructlab/instructlab"
+          path: "instructlab"
           # https://github.com/actions/checkout/issues/249
           fetch-depth: 0
-          repository: 'instructlab/training'
-          path: 'training'
+
+      - name: Checkout instructlab/training
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          repository: "instructlab/training"
+          path: "training"
+          # https://github.com/actions/checkout/issues/249
+          fetch-depth: 0
 
       # for debugging
-      - name: Print Environment State
+      - name: Print environment state
         run: |
           echo "Current Working Directory: $PWD"
           echo "Files in Local Directory:"
@@ -95,17 +95,17 @@ jobs:
       - name: Fetch and checkout PR
         id: fetch_pr
         if: github.event_name == 'pull_request_target'
+        working-directory: "${{ env.GITHUB_WORKSPACE }}/training"
         run: |
           git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-${{ github.event.pull_request.number }}
           git checkout pr-${{ github.event.pull_request.number }}
- 
 
-      - name: Install Packages
+      - name: Install system packages
         run: |
           cat /etc/os-release
           sudo dnf install -y gcc gcc-c++ make git python3.11 python3.11-devel
 
-      - name: Install instructlab repo
+      - name: Install instructlab
         working-directory: "${{ env.GITHUB_WORKSPACE }}/instructlab"
         run: |
           export PATH="/home/ec2-user/.local/bin:/usr/local/cuda/bin:$PATH"
@@ -121,19 +121,12 @@ jobs:
           python3.11 -m pip install packaging wheel setuptools-scm
           python3.11 -m pip install .[cuda]
 
-
-      - name: Install training library stuff
+      - name: Update instructlab-training library
         working-directory: "${{ env.GITHUB_WORKSPACE }}/training"
         run: |
           . "${{ env.GITHUB_WORKSPACE }}/instructlab/venv/bin/activate"
           pip install .
           pip install .[cuda]
-
-      - name: ilab system info
-        working-directory: "${{ env.GITHUB_WORKSPACE }}/instructlab"
-        run: |
-          . venv/bin/activate
-          ilab system info
 
       - name: Run e2e test
         working-directory: "${{ env.GITHUB_WORKSPACE }}/instructlab"
