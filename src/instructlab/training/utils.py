@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Standard
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -689,7 +691,7 @@ def save_hf_format_ds(
     log_rank_0(f"saving took {time.time() - start} seconds")
 
 
-# this is native deepspeed saving with optimizer, schediuler
+# this is native deepspeed saving with optimizer, scheduler
 def save_model_ds_native(
     args,
     model,

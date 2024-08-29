@@ -1,10 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Standard
 import os
 
 # Third Party
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 import numpy as np
 import torch
 
@@ -19,9 +20,9 @@ class TokenDataset(Dataset):
         self.lengths = np.array(
             self.data.map(
                 lambda x: {"len": len(x["input_ids"])},
-                num_proc = 16,
-                )['len']
-            )
+                num_proc=8,
+            )["len"]
+        )
 
     def __len__(self):
         return len(self.data)

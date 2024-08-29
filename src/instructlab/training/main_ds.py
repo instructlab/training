@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Standard
 from datetime import timedelta
 from pathlib import Path
@@ -14,6 +16,7 @@ from deepspeed.runtime.zero.utils import ZeRORuntimeException
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
+from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -59,7 +62,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         "train_micro_batch_size_per_gpu": samples_per_gpu,
         "steps_per_print": 1,
         "zero_optimization": {
-            "stage": 2,
+            "stage": 3,
             # this option is only supported with DeepSpeed ZeRO stage 3
             "offload_param": {"device": "none"},
             "offload_optimizer": {"device": "none"},
@@ -247,7 +250,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-
+    deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
+    torch.distributed.breakpoint()
+    # pylint: disable=unbalanced-tuple-unpacking
     model, _, _, lr_scheduler = deepspeed.initialize(
         model=model,
         optimizer=optimizer,
@@ -337,12 +342,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
     world_size = int(os.environ["WORLD_SIZE"])
 
     batch_size = args.effective_batch_size // grad_accum
-    args.save_samples = (args.save_samples // batch_size) * batch_size
-    (
-        print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-        if local_rank == 0
-        else None
-    )
+
+    if args.save_samples > 0:
+        args.save_samples = (args.save_samples // batch_size) * batch_size
+        (
+            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
+            if local_rank == 0
+            else None
+        )
+
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         (
@@ -440,7 +448,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     }
                 )
 
-            if global_step * batch_size % args.save_samples == 0:
+            if args.save_samples > 0 and (
+                global_step * batch_size % args.save_samples == 0
+            ):
                 save_hf_format_ds(
                     args,
                     model,
@@ -464,6 +474,15 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+
+        if args.checkpoint_at_epoch:
+            save_hf_format_ds(
+                args,
+                model,
+                tokenizer,
+                global_step * args.samples_per_gpu * world_size,
+                is_lora=bool(args.lora_r),
+            )
     if args.save_last:
         save_hf_format_ds(
             args,
@@ -541,6 +560,25 @@ def main(args):
         sampler=args.sampler,
         seed=args.seed,
     )
+    if len(train_loader) == 0:
+        # this happens sometimes when we have more GPUs than data to process. In this case
+        # we should either alert the user to switch samplers, or do it automatically and
+        # warn them about it happening
+        print(
+            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        )
+        args.sampler = "distributed"
+        train_loader = setup_dataloader(
+            dataset,
+            tokenizer.pad_token_id,
+            num_workers=8,
+            is_granite=args.is_granite,
+            max_batch_len=args.max_batch_len,
+            packing_max_batch_len=packing_max_batch_len,
+            samples_per_gpu=args.samples_per_gpu,
+            sampler=args.sampler,
+            seed=args.seed,
+        )
 
     if args.local_rank == 0:
         metric_logger.log_sync(
@@ -571,6 +609,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # early validation logic here
+    if train_args.max_batch_len < train_args.max_seq_len:
+        raise ValueError(
+            f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
+        )
 
     # process the training data
     if not os.path.exists(train_args.data_output_dir):
@@ -579,7 +622,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         DataProcessArgs(
             # XXX(osilkin): make a decision here, either:
             #   1. the CLI is fully responsible for managing where the data is written
-            #   2. we never cache it and simply write it to a tmp file everytime.
+            #   2. we never cache it and simply write it to a tmp file every time.
             #
             # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
             # where the user has a defined place for new temporary data to be written.
@@ -614,6 +657,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
     ]
+
+    if train_args.checkpoint_at_epoch:
+        command.append("--checkpoint_at_epoch")
 
     if train_args.mock_data:
         command.append("--mock_data")
@@ -677,8 +723,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     finally:
         if "process" not in locals() or process is None:
             return
+        if process.poll() == 0:
+            print("\033[92mOperation completed successfully! 🎉\033[0m")
+        else:
+            print("\033[91mOperation failed, terminating process.\033[0m")
 
-        print("\033[91mTerminating process 🤖\033[0m")
         process.terminate()
         try:
             process.wait(timeout=60)
@@ -721,7 +770,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--num_warmup_steps", type=int, default=1000)
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
-    parser.add_argument("--save_samples", type=int)
+    parser.add_argument(
+        "--save_samples",
+        type=int,
+        help="The number of samples seen between each checkpoint save. If --save_samples<=0, this feature is disabled.",
+    )
     parser.add_argument(
         "--save_samples_ds",
         type=int,
@@ -730,6 +783,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--save_last", action="store_true", help="save after finishing training"
+    )
+    parser.add_argument(
+        "--checkpoint_at_epoch",
+        action="store_true",
+        help="Save a model checkpoint after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)

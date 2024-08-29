@@ -25,25 +25,21 @@ taken from https://github.com/imoneoi/multipack_sampler
 
 # Standard
 from typing import List, Optional
-import os
 
 # Third Party
-import torch
-from torch.utils.data import DataLoader, Sampler
+from torch.utils.data import Sampler
 import numba
 import numpy as np
+import torch
 import torch.distributed as dist
-
-# First Party
-from instructlab.training.utils import make_collate_fn
 
 
 def find_max_pack_len_with_padding(
-  dataset,
-  samples_per_minibatch,
-  num_gpus,
-  avg_sample_len,
-  seed, 
+    dataset,
+    samples_per_minibatch,
+    num_gpus,
+    avg_sample_len,
+    seed,
 ):
     """
     This function calculates the maximum batch length with padding for a given dataset. it uses a binary search to find the optimal addition to the average sample length that will result in the average batch size per minibatch being less than or equal to the number of samples per minibatch.
@@ -58,6 +54,7 @@ def find_max_pack_len_with_padding(
     Returns:
     - The maximum batch length with padding for the given dataset.
     """
+
     def get_effective_samples_per_minibatch(num_tokens_per_gpu):
         """
         This nested function calculates the effective number of samples per minibatch for a given number of tokens per GPU.
@@ -80,25 +77,33 @@ def find_max_pack_len_with_padding(
         )
         batches = sampler.generate_batches()
         return len(dataset) / len(batches)
-    
+
     samples_per_gpu = samples_per_minibatch / num_gpus
-    
+
     addition = int(avg_sample_len * 0.1 * samples_per_gpu)
     packing_max_batch_len = int(avg_sample_len * samples_per_gpu)
-    
-    avg_bs_per_minibatch = get_effective_samples_per_minibatch(packing_max_batch_len+addition)
+
+    avg_bs_per_minibatch = get_effective_samples_per_minibatch(
+        packing_max_batch_len + addition
+    )
     while avg_bs_per_minibatch <= samples_per_minibatch:
         addition *= 2
-        avg_bs_per_minibatch = get_effective_samples_per_minibatch(packing_max_batch_len+addition)
+        avg_bs_per_minibatch = get_effective_samples_per_minibatch(
+            packing_max_batch_len + addition
+        )
 
     l = 0
     r = addition
     while r - l > 1:
         addition = (l + r) // 2
-        avg_bs_per_minibatch = get_effective_samples_per_minibatch(packing_max_batch_len+addition)
+        avg_bs_per_minibatch = get_effective_samples_per_minibatch(
+            packing_max_batch_len + addition
+        )
 
         # check if simulation resulted in batch sizes close enough to goal and adjust if needed
-        if abs(avg_bs_per_minibatch - samples_per_minibatch) <= max(10, round(avg_bs_per_minibatch * 0.02)):
+        if abs(avg_bs_per_minibatch - samples_per_minibatch) <= max(
+            10, round(avg_bs_per_minibatch * 0.02)
+        ):
             break
         if avg_bs_per_minibatch > samples_per_minibatch:
             r = addition
@@ -106,6 +111,7 @@ def find_max_pack_len_with_padding(
             l = addition
 
     return packing_max_batch_len + addition
+
 
 def find_packing_max_batch_len_and_grad_accum(
     num_gpus,
@@ -143,7 +149,7 @@ def find_packing_max_batch_len_and_grad_accum(
     grad_accum = 0
     while packing_max_batch_len > max_batch_len_per_gpu:
         grad_accum += 1
-        samples_per_minibatch = (effective_batch_size / grad_accum)
+        samples_per_minibatch = effective_batch_size / grad_accum
         samples_per_gpu = samples_per_minibatch / num_gpus
         if int(avg_sample_len * samples_per_gpu) < dataset.get_lengths().max():
             raise RuntimeError(

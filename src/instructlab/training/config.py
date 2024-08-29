@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Collection of config objects used in the InstructLab training library.
 """
@@ -48,7 +50,10 @@ class DataProcessArgs(BaseModel):
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
     chat_tmpl_path: str
-    num_parallel_procs: int
+    num_cpu_procs: int = Field(
+        default=16,
+        description="this is the number of CPU procs we use for data processing parallelization",
+    )
 
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
@@ -140,6 +145,7 @@ class TrainingArgs(BaseModel):
     warmup_steps: int
     is_padding_free: bool
     random_seed: int = 42
+    checkpoint_at_epoch: bool = False
 
     mock_data: Optional[bool] = False
     mock_data_len: int = 0

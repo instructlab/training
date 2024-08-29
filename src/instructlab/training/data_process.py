@@ -1,13 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Standard
 from functools import partial
 from pathlib import Path
 import os
-import random
 
 # Third Party
 from datasets import load_dataset
-from tqdm import tqdm
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, AutoTokenizer
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 import numpy as np
 
 # First Party
@@ -281,15 +281,17 @@ def print_masked_samples(data, tokenizer, is_pretrain):
         for i, sample in enumerate(filtered_data):
             text, orig_text = get_masked_and_orig_text(sample)
             print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
-            print(f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m")
+            print(
+                f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m"
+            )
             if i > 1:
                 break
+
 
 def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
-    global NUM_PROC 
-    NUM_PROC= args.num_parallel_procs
+    NUM_PROC = args.num_cpu_procs
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
@@ -303,7 +305,18 @@ def main(args: DataProcessArgs):
         {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<MASK>"]}
     )
 
-    data = load_dataset("json", data_files=args.data_path, split="train")
+    try:
+        data = load_dataset("json", data_files=args.data_path, split="train")
+    except:
+        # pylint: disable=raise-missing-from,broad-exception-raised
+        raise Exception(
+            "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
+        )
+
+    if data.num_rows == 0:
+        raise ValueError(
+            "The provided dataset is empty, please make sure that your dataset contains samples and try again."
+        )
 
     print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
     data_with_input_ids = data.map(
@@ -315,9 +328,9 @@ def main(args: DataProcessArgs):
 
     print("\033[38;2;255;165;0mten largest length percentiles:")
     lens = np.array(
-        data_with_input_ids.map(lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC)[
-            "len"
-        ]
+        data_with_input_ids.map(
+            lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC
+        )["len"]
     )
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
@@ -329,6 +342,10 @@ def main(args: DataProcessArgs):
         f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
     )
     print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    if num_dropped_samples == len(data):
+        raise RuntimeError(
+            f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
+        )
 
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
@@ -357,7 +374,9 @@ def main(args: DataProcessArgs):
 
     print("\033[92mCategorizing training data type...\033[0m")
     data_with_input_ids = data_with_input_ids.map(
-        lambda x: {'is_pretrain':get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]},
+        lambda x: {
+            "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>") in x["input_ids"]
+        },
         num_proc=NUM_PROC,
     )
     
@@ -368,11 +387,11 @@ def main(args: DataProcessArgs):
         system_tokens=system_tk,
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>"),
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>"),
+        num_proc=NUM_PROC,
     )
     print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
-        # num_proc=NUM_PROC,
     )
 
     print("\033[92m Samples Previews...\033[0m")
@@ -420,10 +439,10 @@ if __name__ == "__main__":
         help="Path to desired chat template and special tokens, defaults to IBM generic.",
     )
     parser.add_argument(
-        "--num_proc",
+        "--num_cpu_procs",
         type=int,
         default=16,
-        help="Number of processes for data processing"
+        help="Number of cpu processes for data processing",
     )
     args = parser.parse_args()
     setup_logger(args.logging_level)
@@ -433,7 +452,7 @@ if __name__ == "__main__":
         max_seq_len=args.max_seq_len,
         model_path=args.model_name_or_path,
         chat_tmpl_path=args.chat_tmpl_path,
-        num_parallel_procs=args.num_proc,
+        num_cpu_procs=args.num_cpu_procs,
     )
     main(data_process_args)
 
