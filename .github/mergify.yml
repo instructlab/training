@@ -60,7 +60,6 @@ pull_request_rules:
         - -files~=^scripts/[^/]+\.sh$
         - -files=.github/workflows/lint.yml
 
-
   actions:
     merge:
       method: merge
