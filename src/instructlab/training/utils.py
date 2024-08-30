@@ -373,7 +373,7 @@ def prepare_universal_checkpoint_from_latest(output_dir):
     Be aware that this creates an extra dir `zero/` in the checkpoint dir,
     which doubles the DS checkpoint storage requirement.
     - DS checkpoints store 3X model parameters in 32bit.
-    - e.g., will be 6X a model paramter-only checkpoint in 16bit.
+    - e.g., will be 6X a model parameter-only checkpoint in 16bit.
 
     Note that this requires a latest version of deepspeed. It kind of works if
     the model is not saving universal checkpoint info, but only in the
@@ -509,7 +509,7 @@ def ensure_loadable_granite_checkpoint(
         # in different nodes
         tmpdir = Path(tmpdir) / f"tmp.{group_rank}"
         if os.path.exists(tmpdir) and (not dist.is_initialized() or local_rank == 0):
-            # need to delete if it exists because import doesnt like it to
+            # need to delete if it exists because import doesn't like it to
             shutil.rmtree(tmpdir, ignore_errors=True)
 
         if not dist.is_initialized() or local_rank == 0:
@@ -670,7 +670,7 @@ def save_hf_format_ds(
                 save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
                 tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
                 tokenizer.save_pretrained(tmpdir)
-                # export doesnt like the directory to exist
+                # export doesn't like the directory to exist
                 shutil.rmtree(output_dir)
 
                 export_to_huggingface(
