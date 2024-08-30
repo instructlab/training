@@ -95,7 +95,7 @@ jobs:
       - name: Fetch and checkout PR
         id: fetch_pr
         if: github.event_name == 'pull_request_target'
-        working-directory: "${{ env.GITHUB_WORKSPACE }}/training"
+        working-directory: "./training"
         run: |
           git fetch origin pull/${{ github.event.pull_request.number }}/head:pr-${{ github.event.pull_request.number }}
           git checkout pr-${{ github.event.pull_request.number }}
@@ -106,7 +106,7 @@ jobs:
           sudo dnf install -y gcc gcc-c++ make git python3.11 python3.11-devel
 
       - name: Install instructlab
-        working-directory: "${{ env.GITHUB_WORKSPACE }}/instructlab"
+        working-directory: "./instructlab"
         run: |
           export PATH="/home/ec2-user/.local/bin:/usr/local/cuda/bin:$PATH"
           python3.11 -m venv --upgrade-deps venv
@@ -122,14 +122,14 @@ jobs:
           python3.11 -m pip install .[cuda]
 
       - name: Update instructlab-training library
-        working-directory: "${{ env.GITHUB_WORKSPACE }}/training"
+        working-directory: "./training"
         run: |
-          . "${{ env.GITHUB_WORKSPACE }}/instructlab/venv/bin/activate"
+          . ../instructlab/venv/bin/activate"
           pip install .
           pip install .[cuda]
 
       - name: Run e2e test
-        working-directory: "${{ env.GITHUB_WORKSPACE }}/instructlab"
+        working-directory: "./instructlab"
         run: |
           . venv/bin/activate
           ./scripts/basic-workflow-tests.sh -T
