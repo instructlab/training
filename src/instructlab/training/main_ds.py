@@ -48,7 +48,6 @@ from instructlab.training.utils import (
     save_model_ds_native,
     set_random_seed,
     setup_logger,
-    extract_flattened_gradients,
 )
 import instructlab.training.data_process as dp
 
@@ -334,6 +333,23 @@ def maybe_resume_training(args, model):
 
     # we will update the start step here
     return model
+
+# function for collecting layer-wise / decoder-layer-wise gradients
+def extract_flattened_gradients(model):
+    layer_gradients = []
+    for layer in model.model.layers:
+        grads = []
+        for param in layer.parameters():
+            grad = deepspeed.utils.safe_get_full_grad(param).detach().cpu().view(-1)
+            if grad is not None:
+                grads.append(grad)
+            # if param.grad is not None:
+                # Flatten the gradients and concatenate them into a single vector
+                # grads.append(param.grad.detach().cpu().view(-1))
+        if grads:
+            grads_concat = torch.cat(grads)  # Concatenate all flattened gradients for the layer
+            layer_gradients.append(grads_concat)
+    return layer_gradients
 
 
 def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
