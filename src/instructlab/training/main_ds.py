@@ -13,6 +13,7 @@ import time
 # Third Party
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
+import torch.distributed
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
@@ -21,6 +22,7 @@ from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
 import deepspeed
+from accelerate import Accelerator
 import torch
 
 # First Party
@@ -250,28 +252,32 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
-    torch.distributed.breakpoint()
+    # deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
+    # Add IPython embed point for debugging on rank 0
+    # if int(os.environ["LOCAL_RANK"]) == 0:
+    #     from IPython import embed
+    #     embed()
+    # torch.distributed.barrier()
     # pylint: disable=unbalanced-tuple-unpacking
-    model, _, _, lr_scheduler = deepspeed.initialize(
-        model=model,
-        optimizer=optimizer,
-        config=get_ds_config(
-            world_size=torch.distributed.get_world_size(),
-            samples_per_gpu=args.samples_per_gpu,
-            grad_accum=grad_accum,
-            opts=DeepSpeedOptions(
-                cpu_offload_optimizer=args.cpu_offload_optimizer,
-                cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
-                cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
-                save_samples=args.save_samples_ds,
-            ),
-        ),
-        lr_scheduler=lr_scheduler,
-        dist_init_required=True,
-    )
+    # model, _, _, lr_scheduler = deepspeed.initialize(
+    #     model=model,
+    #     optimizer=optimizer,
+    #     config=get_ds_config(
+    #         world_size=torch.distributed.get_world_size(),
+    #         samples_per_gpu=args.samples_per_gpu,
+    #         grad_accum=grad_accum,
+    #         opts=DeepSpeedOptions(
+    #             cpu_offload_optimizer=args.cpu_offload_optimizer,
+    #             cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+    #             cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+    #             save_samples=args.save_samples_ds,
+    #         ),
+    #     ),
+    #     lr_scheduler=lr_scheduler,
+    #     dist_init_required=True,
+    # )
     # model = torch.compile(model)
-    return model
+    return model, lr_scheduler, optimizer
 
 
 # this function is to check if the checkpoint provided can be resumed
@@ -512,7 +518,8 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    deepspeed.init_distributed(timeout=timedelta(minutes=30))
+    # deepspeed.init_distributed(timeout=timedelta(minutes=30))
+    torch.distributed.init_process_group("nccl")
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
@@ -595,8 +602,42 @@ def main(args):
             }
         )
 
-    model = setup_model(args, tokenizer, train_loader, grad_accum)
-    model = maybe_resume_training(args, model)
+    model, lr_scheduler, optimizer = setup_model(args, tokenizer, train_loader, grad_accum)
+    # model = maybe_resume_training(args, model)
+    ds_config = get_ds_config(
+            world_size=torch.distributed.get_world_size(),
+            samples_per_gpu=args.samples_per_gpu,
+            grad_accum=grad_accum,
+            opts=DeepSpeedOptions(
+                cpu_offload_optimizer=args.cpu_offload_optimizer,
+                cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+                cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+                save_samples=args.save_samples_ds,
+            ),
+        )
+    from accelerate.utils import DeepSpeedPlugin
+    deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
+    ds_plugin = DeepSpeedPlugin(
+        hf_ds_config=ds_config,
+        # gradient_accumulation_steps=grad_accum,
+        # zero_stage=3,
+        # zero3_init_flag=True,
+        transformer_moe_cls_names="MixtralSparseMoeBlock",
+    )
+    accelerator = Accelerator(deepspeed_plugin=ds_plugin, even_batches=False)
+    # if torch.distributed.get_rank() == 0:
+    #     from IPython import embed
+    #     embed()
+    
+    # torch.distributed.barrier()
+    model, optimizer, train_loader, lr_scheduler = accelerator.prepare(
+        model, optimizer, train_loader, lr_scheduler
+    )
+    if torch.distributed.get_rank() == 0:
+        from IPython import embed
+        embed()
+    
+    torch.distributed.barrier()
 
     train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
 
