@@ -434,11 +434,13 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             model.backward(pos_loss_grad, retain_graph=True)
             
             # extract the gradients only on rank 0
+
             if local_rank == 0:
                 pos_grad = extract_flattened_gradients(model)
 
             model.zero_grad()
             model.backward(neg_loss_grad, retain_graph=True)
+
             if local_rank == 0:
                 neg_grad = extract_flattened_gradients(model)
 
@@ -450,9 +452,9 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 print(grad_sim)
                 avg_grad_sim = sum(grad_sim) / len(grad_sim)
 
-            # compute the gradnorm of the two gradients
-            pos_grad_norm = torch.norm(torch.cat(pos_grad))
-            neg_grad_norm = torch.norm(torch.cat(neg_grad))
+                # compute the gradnorm of the two gradients
+                pos_grad_norm = torch.norm(torch.cat(pos_grad))
+                neg_grad_norm = torch.norm(torch.cat(neg_grad))
 
             model.zero_grad()
             loss = (pos_loss / num_loss_counted_tokens_pos + args.beta * neg_loss / (aggregated_values[3] * args.num_negatives)) * world_size
