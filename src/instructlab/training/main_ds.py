@@ -62,7 +62,7 @@ def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         "train_micro_batch_size_per_gpu": samples_per_gpu,
         "steps_per_print": 1,
         "zero_optimization": {
-            "stage": 3,
+            "stage": 2,
             # this option is only supported with DeepSpeed ZeRO stage 3
             "offload_param": {"device": "none"},
             "offload_optimizer": {"device": "none"},
