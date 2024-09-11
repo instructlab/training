@@ -251,7 +251,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
     deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
-    torch.distributed.breakpoint()
     # pylint: disable=unbalanced-tuple-unpacking
     model, _, _, lr_scheduler = deepspeed.initialize(
         model=model,
@@ -425,7 +424,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     float(global_grad_norm) if global_grad_norm is not None else None
                 )
                 weight_norm = float(
-                    model.optimizer.single_partition_of_fp32_groups[0].norm()
+                    # model.optimizer.single_partition_of_fp32_groups[0].norm()
+                    0.0
                 )
 
                 metric_logger.log_sync(
