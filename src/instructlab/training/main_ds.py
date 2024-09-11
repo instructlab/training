@@ -416,18 +416,23 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             # collecting gradients for each of the losses
             model.zero_grad()
             model.backward(pos_loss_grad, retain_graph=True)
-            pos_grad = extract_flattened_gradients(model)
+            
+            # extract the gradients only on rank 0
+            if local_rank == 0:
+                pos_grad = extract_flattened_gradients(model)
 
             model.zero_grad()
             model.backward(neg_loss_grad, retain_graph=True)
-            neg_grad = extract_flattened_gradients(model)
+            if local_rank == 0:
+                neg_grad = extract_flattened_gradients(model)
 
-            # compute layer-wise cosine similarity of the gradients
-            grad_sim = []
-            for g1, g2 in zip(pos_grad, neg_grad):
-                sim = torch.nn.functional.cosine_similarity(g1, g2, dim=0)
-                grad_sim.append(sim.item())
-            avg_grad_sim = sum(grad_sim) / len(grad_sim)
+                # compute layer-wise cosine similarity of the gradients
+                grad_sim = []
+                for g1, g2 in zip(pos_grad, neg_grad):
+                    sim = torch.nn.functional.cosine_similarity(g1, g2, dim=0)
+                    grad_sim.append(sim.item())
+                print(grad_sim)
+                avg_grad_sim = sum(grad_sim) / len(grad_sim)
 
             # compute the gradnorm of the two gradients
             pos_grad_norm = torch.norm(torch.cat(pos_grad))
