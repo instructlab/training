@@ -48,6 +48,7 @@ from instructlab.training.utils import (
     save_model_ds_native,
     set_random_seed,
     setup_logger,
+    extract_flattened_gradients,
 )
 import instructlab.training.data_process as dp
 
@@ -409,6 +410,30 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
             num_loss_counted_tokens_pos = aggregated_values[1]
             num_loss_counted_tokens_neg = aggregated_values[2]
+            pos_loss_grad = pos_loss / num_loss_counted_tokens_pos * world_size
+            neg_loss_grad = args.beta * neg_loss / (aggregated_values[3] * args.num_negatives) * world_size
+
+            # collecting gradients for each of the losses
+            model.zero_grad()
+            model.backward(pos_loss_grad, retain_graph=True)
+            pos_grad = extract_flattened_gradients(model)
+
+            model.zero_grad()
+            model.backward(neg_loss_grad, retain_graph=True)
+            neg_grad = extract_flattened_gradients(model)
+
+            # compute layer-wise cosine similarity of the gradients
+            grad_sim = []
+            for g1, g2 in zip(pos_grad, neg_grad):
+                sim = torch.nn.functional.cosine_similarity(g1, g2, dim=0)
+                grad_sim.append(sim.item())
+            avg_grad_sim = sum(grad_sim) / len(grad_sim)
+
+            # compute the gradnorm of the two gradients
+            pos_grad_norm = torch.norm(torch.cat(pos_grad))
+            neg_grad_norm = torch.norm(torch.cat(neg_grad))
+
+            model.zero_grad()
             loss = (pos_loss / num_loss_counted_tokens_pos + args.beta * neg_loss / (aggregated_values[3] * args.num_negatives)) * world_size
 
             # print(
@@ -455,6 +480,10 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                         "neg_rewards": float(aggregated_values[6] / (aggregated_values[3] * args.num_negatives)),
                         "total_loss": float(aggregated_values[4] / num_loss_counted_tokens_pos - args.beta * aggregated_values[5] / (aggregated_values[3] * args.num_negatives)),
                         "gradnorm": global_grad_norm,
+                        "layer_grad_sim": grad_sim,
+                        "avg_grad_sim": avg_grad_sim,
+                        "pos_grad_norm": pos_grad_norm,
+                        "neg_grad_norm": neg_grad_norm,
                         "weight_norm": weight_norm,
                     }
                 )

@@ -719,6 +719,20 @@ def ensure_loadable_granite_checkpoint(
             # at this point, we can be confident that the tmpdir is no longer needed
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+# function for collecting layer-wise / decoder-layer-wise gradients
+def extract_flattened_gradients(model):
+    layer_gradients = []
+    for layer in model.model.layers:
+        grads = []
+        for param in layer.parameters():
+            if param.grad is not None:
+                # Flatten the gradients and concatenate them into a single vector
+                grads.append(param.grad.detach().cpu().view(-1))
+        if grads:
+            grads_concat = torch.cat(grads)  # Concatenate all flattened gradients for the layer
+            layer_gradients.append(grads_concat)
+    return layer_gradients
+
 
 # this function is for supporting gradient checkpointing for padding free
 # dolomite
