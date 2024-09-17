@@ -628,18 +628,14 @@ def main(args):
         transformer_moe_cls_names="MixtralSparseMoeBlock",
     )
     accelerator = Accelerator(deepspeed_plugin=ds_plugin, even_batches=False)
-    # if torch.distributed.get_rank() == 0:
-    #     from IPython import embed
-    #     embed()
-    
-    # torch.distributed.barrier()
     model, optimizer, train_loader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_loader, lr_scheduler
     )
-    if torch.distributed.get_rank() == 0:
-        from IPython import embed
-        embed()
-    
+    accelerator.save_model(model, "/new_data/aldo/test_ckpt/", max_shard_size="10GB", safe_serialization=True)
+
+    if args.local_rank == 0:
+        print(f"\033[93mModel prepared and accelerator initialized\033[0m")
+        from IPython import embed; embed()
     torch.distributed.barrier()
 
     train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
