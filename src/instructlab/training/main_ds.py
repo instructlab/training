@@ -623,7 +623,7 @@ def main(args):
                 save_samples=args.save_samples_ds,
             ),
         )
-    from accelerate.utils import DeepSpeedPlugin
+    from accelerate.utils import DeepSpeedPlugin, FullyShardedDataParallelPlugin
     # deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
     ds_plugin = DeepSpeedPlugin(
         hf_ds_config=ds_config,
