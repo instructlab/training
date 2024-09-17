@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+from copy import deepcopy
 from datetime import timedelta
 from pathlib import Path
 import argparse
@@ -44,6 +45,7 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
+    log_rank_0,
     patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
@@ -343,7 +345,7 @@ def maybe_resume_training(args, model):
     return model
 
 
-def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
+def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_loader, grad_accum, metric_logger):
     model.train()
 
     global_step = 1
@@ -351,6 +353,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
     world_size = int(os.environ["WORLD_SIZE"])
 
     batch_size = args.effective_batch_size // grad_accum
+    samples_seen = 0
 
     if args.save_samples > 0:
         args.save_samples = (args.save_samples // batch_size) * batch_size
@@ -370,8 +373,8 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
             else None
         )
 
+
     for epoch in range(args.num_epochs):
-        torch.distributed.barrier()
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
@@ -382,7 +385,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
+        # aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -390,70 +393,76 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                 if local_rank == 0:
                     inner_pb.update(1)
                 continue
-
             start = time.time()
-            aggregated_values[0] = batch.pop("num_loss_counted_tokens")
-            aggregated_values[1] = len(batch["input_ids"])
+            num_loss_counted_tokens = float(torch.tensor([batch.pop("num_loss_counted_tokens")]))
+            micro_batch_size = float(len(batch["input_ids"]))
+            samples_seen += micro_batch_size
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
-
             output = model(
                 **batch,
                 use_cache=False,
             )
             loss = output.loss
+            log_loss = loss.detach().item()
 
-            aggregated_values[2] = loss.item()
+            num_loss_counted_tokens, micro_batch_size, log_loss =  map(float, accelerator.reduce(torch.tensor([num_loss_counted_tokens, batch_size, log_loss],
+                                                                                             dtype=torch.float32,
+                                                                                             device=accelerator.device).to(local_rank),
+                                                                                reduction="sum"))
+            samples_seen += micro_batch_size
 
-            all_reduce(aggregated_values, op=ReduceOp.SUM)
-
-            num_loss_counted_tokens = aggregated_values[0]
+            # num_loss_counted_tokens = aggregated_values[0]
             loss = (
                 loss / num_loss_counted_tokens * world_size
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
-
             print(
                 f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
             )
             print(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
+            accelerator.backward(loss)
 
-            model.backward(loss)
-            model.step()
+            if global_step % grad_accum == 0:
+                global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                # global_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = model.lr_scheduler.get_last_lr()[0]
+                current_lr = lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
-                global_grad_norm = model.get_global_grad_norm()
-                global_grad_norm = (
-                    float(global_grad_norm) if global_grad_norm is not None else None
-                )
-                weight_norm = float(
-                    model.optimizer.single_partition_of_fp32_groups[0].norm()
-                )
+                # global_grad_norm = model.get_global_grad_norm() if hasattr(model, "get_global_grad_norm") else global_grad_norm
+                # global_grad_norm = (
+                #     float(global_grad_norm) if global_grad_norm is not None else None
+                # )
+                # weight_norm = float(
+                #     model.optimizer.single_partition_of_fp32_groups[0].norm()
+                # )
 
                 metric_logger.log_sync(
                     {
                         "epoch": epoch,
                         "step": global_step,
                         "rank": torch.distributed.get_rank(),
-                        "loss": loss.item(),
+                        # "loss": loss.item(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "batch_size": int(aggregated_values[1]),
+                        "batch_size": int(micro_batch_size),
                         "total_loss": float(
-                            aggregated_values[2] / num_loss_counted_tokens
+                            log_loss / num_loss_counted_tokens
                         ),
-                        "gradnorm": global_grad_norm,
-                        "weight_norm": weight_norm,
+                        # "gradnorm": global_grad_norm,
+                        # "weight_norm": weight_norm,
                     }
                 )
 
@@ -478,12 +487,11 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
                     tokenizer,
                     global_step * args.samples_per_gpu * world_size,
                 )
-
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
-
+            # torch.cuda.synchronize()
+            # torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
             save_hf_format_ds(
                 args,
@@ -619,26 +627,22 @@ def main(args):
             ),
         )
     from accelerate.utils import DeepSpeedPlugin
-    deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
+    # deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
     ds_plugin = DeepSpeedPlugin(
         hf_ds_config=ds_config,
         # gradient_accumulation_steps=grad_accum,
         # zero_stage=3,
         # zero3_init_flag=True,
-        transformer_moe_cls_names="MixtralSparseMoeBlock",
+        # transformer_moe_cls_names="MixtralSparseMoeBlock",
     )
     accelerator = Accelerator(deepspeed_plugin=ds_plugin, even_batches=False)
-    model, optimizer, train_loader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_loader, lr_scheduler
+    accelerator.device
+    accelerator.even_batches = False
+    model, optimizer, _, lr_scheduler = accelerator.prepare(
+        model, optimizer, deepcopy(train_loader), lr_scheduler
     )
-    accelerator.save_model(model, "/new_data/aldo/test_ckpt/", max_shard_size="10GB", safe_serialization=True)
 
-    if args.local_rank == 0:
-        print(f"\033[93mModel prepared and accelerator initialized\033[0m")
-        from IPython import embed; embed()
-    torch.distributed.barrier()
-
-    train(args, model, tokenizer, train_loader, grad_accum, metric_logger)
+    train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_loader, grad_accum, metric_logger)
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()

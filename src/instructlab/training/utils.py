@@ -624,6 +624,22 @@ def _copy_no_lora_dict(state_dict):
     return cleaned_state_dict
 
 
+def save_hf_format_accelerate(
+        args,
+        model,
+        tokenizer,
+        accelerator,
+        samples_seen,
+        convert_granite=True,
+        is_lora=False,
+):
+    log_rank_0(
+        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
+        to_print=True,
+    )
+    start = time.time()
+    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+
 def save_hf_format_ds(
     args,
     model,
