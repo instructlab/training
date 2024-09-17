@@ -119,6 +119,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
                 use_padding_free_transformer=True,
             )
     else:
+        if args.router_aux_loss_coef:
+           base_model_args["router_aux_loss_coef"] = args.router_aux_loss_coef
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
     if len(tokenizer) > model.config.vocab_size:
@@ -231,17 +233,55 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
+    assert not ((args.freeze_attn or args.freeze_embeddings) and args.gate_only), "--freeze_attn/--freeze_embeddings and --gate_only cannot be passed in the same time"
+
+    _is_trainable = lambda name: True
+
+    if args.freeze_attn:
+        print("setting for --freeze_attn")
+        for name, param in model.named_parameters():
+            if "self_attn" in name:
+                param.requires_grad = False
+
+        if args.freeze_embeddings:
+            _is_trainable = lambda name: not "self_attn" in name and not "embed_tokens" in name
+        else:
+            _is_trainable = lambda name: not "self_attn" in name
+    
+    if args.freeze_embeddings:
+        print("setting for --freeze_embeddings")
+        for name, param in model.named_parameters():
+            if "embed_tokens" in name:
+                param.requires_grad = False
+
+        if args.freeze_attn:
+            _is_trainable = lambda name: not "embed_tokens" in name and not "self_attn" in name
+        else:
+            _is_trainable = lambda name: not "embed_tokens" in name
+
+    if args.gate_only:
+        print("setting for --gate_only")
+        for name, param in model.named_parameters():
+            # NOTE we have to keep embed_tokens as well otherwise no gradient from "inputs"
+            if not ("embed_tokens" in name or "block_sparse_moe.gate" in name):
+                param.requires_grad = False
+
+        _is_trainable = lambda name: "block_sparse_moe.gate" in name
+
+    optim_parameters = [param for name, param in model.named_parameters()
+                        if _is_trainable(name)]
+
     # need to use this only when the CPU offload optimizer is enabled
     if args.cpu_offload_optimizer:
         print(
             "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
         )
         optimizer = DeepSpeedCPUAdam(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            optim_parameters, lr=args.learning_rate, betas=(0.9, 0.95)
         )
     else:
         optimizer = FusedAdam(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            optim_parameters, lr=args.learning_rate, betas=(0.9, 0.95)
         )
 
     lr_scheduler = get_scheduler(
@@ -834,6 +874,10 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
+    parser.add_argument("--router_aux_loss_coef", type=float)
+    parser.add_argument("--freeze_embeddings", action="store_true")
+    parser.add_argument("--freeze_attn", action="store_true")
+    parser.add_argument("--gate_only", action="store_true")
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
