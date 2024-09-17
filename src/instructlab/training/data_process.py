@@ -265,11 +265,6 @@ def add_is_pretrain_sample(example, pretrain_tk):
     if pretrain_tk in example["input_ids"]:
         example["is_pretrain"] = True
 
-def add_is_pretrain_sample(example, pretrain_tk):
-    if pretrain_tk in example["input_ids"]:
-        example["is_pretrain"] = True
-
-
 def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc):
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
@@ -397,11 +392,16 @@ def main(args: DataProcessArgs):
     print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
+<<<<<<< HEAD
         # num_proc=NUM_PROC,
+=======
+        num_proc=NUM_PROC,
+>>>>>>> bf35e40 (fixed data process)
     )
 
     print("\033[92m Samples Previews...\033[0m")
     print("\033[92m \n \033[0m")
+<<<<<<< HEAD
     print_masked_samples(
         data_with_labels,
         tokenizer,
@@ -418,6 +418,10 @@ def main(args: DataProcessArgs):
         is_pretrain=False,
         num_proc=NUM_PROC,
     )
+=======
+    print_masked_samples(data_with_labels, tokenizer, is_pretrain=True, num_proc=NUM_PROC)
+    print_masked_samples(data_with_labels, tokenizer, is_pretrain=False, num_proc=NUM_PROC)
+>>>>>>> bf35e40 (fixed data process)
 
     # extract only labels and messages formatted into a new dataset
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
