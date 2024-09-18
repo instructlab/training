@@ -26,7 +26,8 @@ from accelerate import Accelerator
 import torch
 
 # First Party
-from instructlab.training import config, setup_accelerator
+from instructlab.training import config
+from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.config import (
     DataProcessArgs,
@@ -352,7 +353,7 @@ def train(
                 float,
                 accelerator.reduce(
                     torch.tensor(
-                        [num_loss_counted_tokens, batch_size, log_loss],
+                        [num_loss_counted_tokens, micro_batch_size, log_loss],
                         dtype=torch.float32,
                         device=accelerator.device,
                     ).to(local_rank),
