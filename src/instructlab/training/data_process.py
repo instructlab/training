@@ -314,6 +314,7 @@ def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
             if i > 1:
                 break
 
+
 def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
