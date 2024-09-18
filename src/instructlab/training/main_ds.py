@@ -490,6 +490,7 @@ def train(args, model, tokenizer, train_loader, grad_accum, metric_logger):
 
 
 def main(args):
+    raise Exception("within the main loop")
     # Third Party
     import yaml
 
@@ -606,7 +607,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
-    raise Exception("error here")
     # early validation logic here
     if train_args.max_batch_len < train_args.max_seq_len:
         raise ValueError(
