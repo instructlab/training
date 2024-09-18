@@ -50,14 +50,10 @@ class DataProcessArgs(BaseModel):
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
     chat_tmpl_path: str
-<<<<<<< HEAD
     num_cpu_procs: int = Field(
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",
     )
-=======
-    num_parallel_procs: int
->>>>>>> 8602d22 (increased performance of data process and made a flag for the number of parallel processes)
 
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
