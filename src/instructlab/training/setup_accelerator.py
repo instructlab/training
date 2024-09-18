@@ -26,10 +26,10 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         "train_micro_batch_size_per_gpu": samples_per_gpu,
         "steps_per_print": 1,
         "zero_optimization": {
-            "stage": 2,
+            "stage": 3,
             # this option is only supported with DeepSpeed ZeRO stage 3
-            "offload_param": {"device": "none"},
-            "offload_optimizer": {"device": "none"},
+            "offload_param": {"device": "cpu"},
+            "offload_optimizer": {"device": "cpu"},
         },
         "bf16": {"enabled": True},
         "gradient_clipping": 1.0,
