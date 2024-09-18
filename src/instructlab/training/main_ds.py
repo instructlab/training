@@ -191,7 +191,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-    
+
     accelerator = setup_accelerator(args, model, grad_accum)
     if args.sharding_framework == "fsdp":
         model = accelerator.prepare(model)
@@ -221,7 +221,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    model, _, lr_scheduler ,optimizer = accelerator.prepare(
+    model, _, lr_scheduler, optimizer = accelerator.prepare(
         model, deepcopy(train_loader), lr_scheduler, optimizer
     )
     return model, lr_scheduler, optimizer, accelerator
@@ -786,7 +786,10 @@ if __name__ == "__main__":
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
     parser.add_argument(
-        "--sharding_framework", type=str, choices=["deepspeed", "fsdp"], default="deepspeed"
+        "--sharding_framework",
+        type=str,
+        choices=["deepspeed", "fsdp"],
+        default="deepspeed",
     )
     parser.add_argument(
         "--sharding_strategy",
