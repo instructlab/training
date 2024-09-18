@@ -554,7 +554,6 @@ def apply_gradient_checkpointing(
     model: torch.nn.Module,
     **kwargs,
 ) -> None:
-
     def block_checkpointing(
         model: torch.nn.Module,
         block_name: str,

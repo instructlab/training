@@ -11,9 +11,6 @@ from transformers import AutoTokenizer
 from instructlab.training.utils import log_rank_0
 
 
-from dataclasses import dataclass, field
-
-
 @dataclass
 class TokenInfo:
     token: str

@@ -2,8 +2,6 @@
 
 # Standard
 from copy import deepcopy
-from datetime import timedelta
-from functools import partial
 from pathlib import Path
 import argparse
 import math
@@ -13,31 +11,29 @@ import subprocess
 import time
 
 # Third Party
+from accelerate import Accelerator
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
-import torch.distributed
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
-from accelerate import Accelerator
 import torch
+import torch.distributed
 
 # First Party
 from instructlab.training import config
-from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.async_logger import AsyncStructuredLogger
-from instructlab.training.config import (
+from instructlab.training.config import (  # DeepSpeedOptions,
     DataProcessArgs,
-    # DeepSpeedOptions,
     TorchrunArgs,
     TrainingArgs,
 )
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
+from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
@@ -46,7 +42,6 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
-    patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
@@ -353,7 +348,6 @@ def train(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(len(batch["input_ids"]))
-            samples_seen += micro_batch_size
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
@@ -375,7 +369,7 @@ def train(
                     reduction="sum",
                 ),
             )
-            samples_seen += micro_batch_size
+            samples_seen += int(micro_batch_size)
 
             # num_loss_counted_tokens = aggregated_values[0]
             loss = (
