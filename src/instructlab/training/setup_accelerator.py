@@ -54,6 +54,7 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
 def get_fsdp_config(args, model):
     # Third Party
     from accelerate.utils import FullyShardedDataParallelPlugin
+    from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 
     block_name = model._no_split_modules[0]
 
@@ -72,6 +73,7 @@ def get_fsdp_config(args, model):
         ),
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
         sharding_strategy=ShardingStrategy[args.sharding_strategy],
+        cpu_offload=CPUOffload(args.cpu_offload_params),
     )
     return fsdp_plugin
 

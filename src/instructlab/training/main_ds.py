@@ -43,7 +43,6 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
-    patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
@@ -350,7 +349,7 @@ def train(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(len(batch["input_ids"]))
-            samples_seen += micro_batch_size
+            samples_seen += int(micro_batch_size)
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
@@ -372,7 +371,7 @@ def train(
                     reduction="sum",
                 ),
             )
-            samples_seen += micro_batch_size
+            samples_seen += int(micro_batch_size)
 
             # num_loss_counted_tokens = aggregated_values[0]
             loss = (
@@ -453,14 +452,22 @@ def train(
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
-        # if args.checkpoint_at_epoch:
-        #     save_hf_format_ds(
-        #         args,
-        #         model,
-        #         tokenizer,
-        #         global_step * args.samples_per_gpu * world_size,
-        #         is_lora=bool(args.lora_r),
-        #     )
+        if args.checkpoint_at_epoch:
+            save_hf_format_accelerate(
+                args,
+                model,
+                tokenizer,
+                accelerator,
+                samples_seen,
+                is_lora=bool(args.lora_r),
+            )
+            #     save_hf_format_ds(
+            #         args,
+            #         model,
+            #         tokenizer,
+            #         global_step * args.samples_per_gpu * world_size,
+            #         is_lora=bool(args.lora_r),
+            #     )
     if args.save_last:
         save_hf_format_accelerate(
             args,
@@ -705,7 +712,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
             command.append("--cpu_offload_optimizer_pin_memory")
 
-    # TODO: FSDP Options
+    # FSDP Options
+    if train_args.fsdp_options.cpu_offload_params:
+        command.append(f"--cpu_offload_params")
 
     # specify the sharding strategy
     command.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
@@ -823,6 +832,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
+    )
+    parser.add_argument(
+        "--cpu_offload_params",
+        action="store_true",
+        default=False,
+        help="Offload to CPU when using FSDP.",
     )
     parser.add_argument(
         "--cpu_offload_optimizer_pin_memory",

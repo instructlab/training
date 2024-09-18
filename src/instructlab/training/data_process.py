@@ -22,7 +22,7 @@ def check_valid_sample(
     system_tk: int,
     assistant_tk: int,
     user_tk: int,
-    eos_tk: int,
+    eos_tk: list[int],
     max_len: int = 1024,
 ):
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
@@ -136,17 +136,14 @@ def unmask_message_content(
             in_pretraining = True
             i += 1
             continue
-        elif sentence_tk[i] == pretrain_end_token:
+        if sentence_tk[i] == pretrain_end_token:
             in_pretraining = False
             i += 1
             continue
 
         match = find_longest_match(i, [user_tokens, assist_tokens, system_tokens])
         if match:
-            if match == assist_tokens:
-                unmasking = True
-            else:
-                unmasking = False
+            unmasking = bool(match == assist_tokens)
             i += len(match)
             continue
 
@@ -185,8 +182,7 @@ def unmask_message_content(
 
     # 3. The labels have to be aligned with the sentence_tk unless they are masked
     assert all(
-        label in (-100, token)
-        for label, token in zip(final_labels, final_sentence_tk)
+        label in (-100, token) for label, token in zip(final_labels, final_sentence_tk)
     ), "Labels are not aligned with sentence tokens"
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
