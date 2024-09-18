@@ -686,8 +686,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             command.append("--lora_quant_bits=4")
 
     # specify which distributed training backend we use
-    train_args.append(
-        f"--distributed_training_backend={train_args.distributed_training_backend.value}"
+    command.append(
+        f"--distributed_training_framework={train_args.distributed_training_backend.value}"
     )
 
     # deepspeed opts
@@ -706,7 +706,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     # TODO: FSDP Options
 
     # specify the sharding strategy
-    train_args.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
+    command.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
 
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
