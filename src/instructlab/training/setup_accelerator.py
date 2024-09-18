@@ -28,8 +28,8 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
         "zero_optimization": {
             "stage": 3,
             # this option is only supported with DeepSpeed ZeRO stage 3
-            "offload_param": {"device": "cpu"},
-            "offload_optimizer": {"device": "cpu"},
+            "offload_param": {"device": "none"},
+            "offload_optimizer": {"device": "none"},
         },
         "bf16": {"enabled": True},
         "gradient_clipping": 1.0,
