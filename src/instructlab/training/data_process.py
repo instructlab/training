@@ -185,7 +185,7 @@ def unmask_message_content(
 
     # 3. The labels have to be aligned with the sentence_tk unless they are masked
     assert all(
-        label == -100 or label == token
+        label in (-100, token)
         for label, token in zip(final_labels, final_sentence_tk)
     ), "Labels are not aligned with sentence tokens"
 

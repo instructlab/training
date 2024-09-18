@@ -2,8 +2,6 @@
 
 # Standard
 from copy import deepcopy
-from datetime import timedelta
-from functools import partial
 from pathlib import Path
 import argparse
 import math
@@ -13,33 +11,30 @@ import subprocess
 import time
 
 # Third Party
+from accelerate import Accelerator
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
-import torch.distributed
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
-from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
-from accelerate import Accelerator
 import torch
+import torch.distributed
 
 # First Party
 from instructlab.training import config
-from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.async_logger import AsyncStructuredLogger
-from instructlab.training.config import (
+from instructlab.training.config import (  # DeepSpeedOptions,
     DataProcessArgs,
-    # DeepSpeedOptions,
+    DistributedTrainingBackend,
     TorchrunArgs,
     TrainingArgs,
-    DistributedTrainingBackend,
 )
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
+from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
