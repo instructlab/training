@@ -606,6 +606,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    raise Exception("error here")
     # early validation logic here
     if train_args.max_batch_len < train_args.max_seq_len:
         raise ValueError(
