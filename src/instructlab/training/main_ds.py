@@ -776,7 +776,7 @@ if __name__ == "__main__":
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
     parser.add_argument(
-        "--sharding_framework", type=str, choices=["deepspeed", "fsdp"], default="fsdp"
+        "--sharding_framework", type=str, choices=["deepspeed", "fsdp"], default="deepspeed"
     )
     parser.add_argument(
         "--sharding_strategy",
