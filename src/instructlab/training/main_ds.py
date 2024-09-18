@@ -192,27 +192,40 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    # need to use this only when the CPU offload optimizer is enabled
-    if args.cpu_offload_optimizer:
-        print(
-            "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-        )
-        optimizer = DeepSpeedCPUAdam(
+    
+    accelerator = setup_accelerator(args, model, grad_accum)
+    if args.sharding_framework == "fsdp":
+        model = accelerator.prepare(model)
+        optimizer = torch.optim.AdamW(
             model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
         )
+    elif args.sharding_framework == "deepspeed":
+        # need to use this only when the CPU offload optimizer is enabled
+        if args.cpu_offload_optimizer:
+            print(
+                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
+            )
+            optimizer = DeepSpeedCPUAdam(
+                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            )
+        else:
+            optimizer = FusedAdam(
+                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            )
     else:
-        optimizer = FusedAdam(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+        raise ValueError(
+            f"Sharding framework {args.sharding_framework} is not supported."
         )
-
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
         optimizer=optimizer,
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    return model, lr_scheduler, optimizer
+    model, _, lr_scheduler ,optimizer = accelerator.prepare(
+        model, deepcopy(train_loader), lr_scheduler, optimizer
+    )
+    return model, lr_scheduler, optimizer, accelerator
 
 
 # this function is to check if the checkpoint provided can be resumed
@@ -564,12 +577,8 @@ def main(args):
             }
         )
 
-    model, lr_scheduler, optimizer = setup_model(
+    model, lr_scheduler, optimizer, accelerator = setup_model(
         args, tokenizer, train_loader, grad_accum
-    )
-    accelerator = setup_accelerator(args, model, grad_accum)
-    model, optimizer, _, lr_scheduler = accelerator.prepare(
-        model, optimizer, deepcopy(train_loader), lr_scheduler
     )
 
     train(
