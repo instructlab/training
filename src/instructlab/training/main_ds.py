@@ -3,6 +3,7 @@
 # Standard
 from copy import deepcopy
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 import argparse
 import math
@@ -22,16 +23,15 @@ from transformers.models.mixtral.modeling_mixtral import MixtralSparseMoeBlock
 from torch.distributed import ReduceOp, all_reduce
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
-import deepspeed
 from accelerate import Accelerator
 import torch
 
 # First Party
-from instructlab.training import config
+from instructlab.training import config, setup_accelerator
 from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.config import (
     DataProcessArgs,
-    DeepSpeedOptions,
+    # DeepSpeedOptions,
     TorchrunArgs,
     TrainingArgs,
 )
@@ -46,46 +46,15 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
-    log_rank_0,
     patch_target_module,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
-    save_hf_format_ds,
-    save_model_ds_native,
+    save_hf_format_accelerate,
     set_random_seed,
     setup_logger,
 )
 import instructlab.training.data_process as dp
-
-
-def get_ds_config(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
-    ds_config = {
-        "train_batch_size": samples_per_gpu * world_size * grad_accum,
-        "gradient_accumulation_steps": grad_accum,
-        "train_micro_batch_size_per_gpu": samples_per_gpu,
-        "steps_per_print": 1,
-        "zero_optimization": {
-            "stage": 2,
-            # this option is only supported with DeepSpeed ZeRO stage 3
-            "offload_param": {"device": "none"},
-            "offload_optimizer": {"device": "none"},
-        },
-        "bf16": {"enabled": True},
-        "gradient_clipping": 1.0,
-        "prescale_gradients": False,
-        "wall_clock_breakdown": False,
-    }
-
-    if opts.cpu_offload_optimizer:
-        # this only works when the cpu offload optimizer is enabled
-        ds_config["zero_optimization"]["offload_optimizer"] = {
-            # CPU offloading is the only option available in ZeRO stage 2
-            "device": "cpu",
-            "pin_memory": opts.cpu_offload_optimizer_pin_memory,
-            "ratio": opts.cpu_offload_optimizer_ratio,
-        }
-    return ds_config
 
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
@@ -203,18 +172,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model, peft_config, gradient_checkpointing=not args.is_granite
         )
 
-        # patch DS to work with quantized models
-        # Standard
-        from functools import partial
-
-        # Third Party
-        from deepspeed import DeepSpeedEngine
-
-        if args.lora_quant_bits is not None:
-            patch_target_module(
-                "deepspeed.DeepSpeedEngine",
-                partial(DeepSpeedEngine, dont_change_device=True),
-            )
     elif not args.is_granite:
         model.gradient_checkpointing_enable()
 
@@ -254,31 +211,6 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    # deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
-    # Add IPython embed point for debugging on rank 0
-    # if int(os.environ["LOCAL_RANK"]) == 0:
-    #     from IPython import embed
-    #     embed()
-    # torch.distributed.barrier()
-    # pylint: disable=unbalanced-tuple-unpacking
-    # model, _, _, lr_scheduler = deepspeed.initialize(
-    #     model=model,
-    #     optimizer=optimizer,
-    #     config=get_ds_config(
-    #         world_size=torch.distributed.get_world_size(),
-    #         samples_per_gpu=args.samples_per_gpu,
-    #         grad_accum=grad_accum,
-    #         opts=DeepSpeedOptions(
-    #             cpu_offload_optimizer=args.cpu_offload_optimizer,
-    #             cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
-    #             cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
-    #             save_samples=args.save_samples_ds,
-    #         ),
-    #     ),
-    #     lr_scheduler=lr_scheduler,
-    #     dist_init_required=True,
-    # )
-    # model = torch.compile(model)
     return model, lr_scheduler, optimizer
 
 
@@ -342,7 +274,17 @@ def maybe_resume_training(args, model):
     return model
 
 
-def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_loader, grad_accum, metric_logger):
+def train(
+    args,
+    model,
+    optimizer,
+    lr_scheduler,
+    accelerator: Accelerator,
+    tokenizer,
+    train_loader,
+    grad_accum,
+    metric_logger,
+):
     model.train()
 
     global_step = 1
@@ -370,7 +312,7 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
             else None
         )
 
-
+    global_grad_norm = None
     for epoch in range(args.num_epochs):
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
@@ -391,7 +333,9 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
                     inner_pb.update(1)
                 continue
             start = time.time()
-            num_loss_counted_tokens = float(torch.tensor([batch.pop("num_loss_counted_tokens")]))
+            num_loss_counted_tokens = float(
+                torch.tensor([batch.pop("num_loss_counted_tokens")])
+            )
             micro_batch_size = float(len(batch["input_ids"]))
             samples_seen += micro_batch_size
             if not args.is_granite:
@@ -404,19 +348,23 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
             loss = output.loss
             log_loss = loss.detach().item()
 
-            num_loss_counted_tokens, micro_batch_size, log_loss =  map(float, accelerator.reduce(torch.tensor([num_loss_counted_tokens, batch_size, log_loss],
-                                                                                             dtype=torch.float32,
-                                                                                             device=accelerator.device).to(local_rank),
-                                                                                reduction="sum"))
+            num_loss_counted_tokens, micro_batch_size, log_loss = map(
+                float,
+                accelerator.reduce(
+                    torch.tensor(
+                        [num_loss_counted_tokens, batch_size, log_loss],
+                        dtype=torch.float32,
+                        device=accelerator.device,
+                    ).to(local_rank),
+                    reduction="sum",
+                ),
+            )
             samples_seen += micro_batch_size
 
             # num_loss_counted_tokens = aggregated_values[0]
             loss = (
                 loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when deepspeed averages by world_size, it will be the correct loss.
-            print(
-                f"\033[93mPer-token loss scaled by world size: {(loss/num_loss_counted_tokens) * world_size}\033[0m"
-            )
+            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
             print(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
@@ -435,10 +383,14 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
                 current_lr = lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
-                # global_grad_norm = model.get_global_grad_norm() if hasattr(model, "get_global_grad_norm") else global_grad_norm
-                # global_grad_norm = (
-                #     float(global_grad_norm) if global_grad_norm is not None else None
-                # )
+                global_grad_norm = (
+                    model.get_global_grad_norm()
+                    if hasattr(model, "get_global_grad_norm")
+                    else global_grad_norm
+                )
+                global_grad_norm = (
+                    float(global_grad_norm) if global_grad_norm is not None else None
+                )
                 # weight_norm = float(
                 #     model.optimizer.single_partition_of_fp32_groups[0].norm()
                 # )
@@ -455,9 +407,7 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "batch_size": int(micro_batch_size),
-                        "total_loss": float(
-                            log_loss / num_loss_counted_tokens
-                        ),
+                        "total_loss": float(log_loss / num_loss_counted_tokens),
                         # "gradnorm": global_grad_norm,
                         # "weight_norm": weight_norm,
                     }
@@ -466,43 +416,45 @@ def train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_lo
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                save_hf_format_ds(
+                save_hf_format_accelerate(
                     args,
                     model,
                     tokenizer,
-                    global_step * args.samples_per_gpu * world_size,
+                    accelerator,
+                    samples_seen,
                     is_lora=bool(args.lora_r),
                 )
 
-            if (
-                args.save_samples_ds is not None
-                and global_step * batch_size % args.save_samples_ds == 0
-            ):
-                save_model_ds_native(
-                    args,
-                    model,
-                    tokenizer,
-                    global_step * args.samples_per_gpu * world_size,
-                )
+            # if (
+            #     args.save_samples_ds is not None
+            #     and global_step * batch_size % args.save_samples_ds == 0
+            # ):
+            #     save_model_ds_native(
+            #         args,
+            #         model,
+            #         tokenizer,
+            #         global_step * args.samples_per_gpu * world_size,
+            #     )
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            # torch.cuda.synchronize()
-            # torch.cuda.empty_cache()
-        if args.checkpoint_at_epoch:
-            save_hf_format_ds(
-                args,
-                model,
-                tokenizer,
-                global_step * args.samples_per_gpu * world_size,
-                is_lora=bool(args.lora_r),
-            )
+            torch.cuda.empty_cache()
+        # if args.checkpoint_at_epoch:
+        #     save_hf_format_ds(
+        #         args,
+        #         model,
+        #         tokenizer,
+        #         global_step * args.samples_per_gpu * world_size,
+        #         is_lora=bool(args.lora_r),
+        #     )
     if args.save_last:
-        save_hf_format_ds(
+        save_hf_format_accelerate(
             args,
             model,
             tokenizer,
-            global_step * args.samples_per_gpu * world_size,
+            accelerator,
+            samples_seen,
+            is_lora=bool(args.lora_r),
         )
 
 
@@ -610,36 +562,25 @@ def main(args):
             }
         )
 
-    model, lr_scheduler, optimizer = setup_model(args, tokenizer, train_loader, grad_accum)
-    # model = maybe_resume_training(args, model)
-    ds_config = get_ds_config(
-            world_size=torch.distributed.get_world_size(),
-            samples_per_gpu=args.samples_per_gpu,
-            grad_accum=grad_accum,
-            opts=DeepSpeedOptions(
-                cpu_offload_optimizer=args.cpu_offload_optimizer,
-                cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
-                cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
-                save_samples=args.save_samples_ds,
-            ),
-        )
-    from accelerate.utils import DeepSpeedPlugin, FullyShardedDataParallelPlugin
-    # deepspeed.utils.set_z3_leaf_modules(model, [MixtralSparseMoeBlock])
-    ds_plugin = DeepSpeedPlugin(
-        hf_ds_config=ds_config,
-        # gradient_accumulation_steps=grad_accum,
-        # zero_stage=3,
-        # zero3_init_flag=True,
-        # transformer_moe_cls_names="MixtralSparseMoeBlock",
+    model, lr_scheduler, optimizer = setup_model(
+        args, tokenizer, train_loader, grad_accum
     )
-    accelerator = Accelerator(deepspeed_plugin=ds_plugin, even_batches=False)
-    accelerator.device
-    accelerator.even_batches = False
+    accelerator = setup_accelerator(args, model, grad_accum)
     model, optimizer, _, lr_scheduler = accelerator.prepare(
         model, optimizer, deepcopy(train_loader), lr_scheduler
     )
 
-    train(args, model, optimizer, lr_scheduler, accelerator, tokenizer, train_loader, grad_accum, metric_logger)
+    train(
+        args,
+        model,
+        optimizer,
+        lr_scheduler,
+        accelerator,
+        tokenizer,
+        train_loader,
+        grad_accum,
+        metric_logger,
+    )
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
@@ -835,10 +776,13 @@ if __name__ == "__main__":
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
     parser.add_argument(
+        "--sharding_framework", type=str, choices=["deepspeed", "fsdp"], default="fsdp"
+    )
+    parser.add_argument(
         "--sharding_strategy",
         type=str,
         # choices=[e.name for e in ShardingStrategy],
-        default="FULL_SHARD",
+        default="SHARD_GRAD_OP",
         help="Sharding strategy to be used for distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")

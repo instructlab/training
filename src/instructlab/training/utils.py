@@ -532,26 +532,28 @@ def ensure_loadable_granite_checkpoint(
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def get_module_class_from_name(
+    model: torch.nn.Module, name: str
+) -> List[torch.nn.Module]:
+    modules_children = list(model.children())
+
+    if model.__class__.__name__ == name:
+        return model.__class__
+    elif len(modules_children) == 0:
+        return
+    else:
+        for child_module in modules_children:
+            module_class = get_module_class_from_name(child_module, name)
+            if module_class is not None:
+                return module_class
+
+
 # this function is for supporting gradient checkpointing for padding free
 # dolomite
 def apply_gradient_checkpointing(
     model: torch.nn.Module,
     **kwargs,
 ) -> None:
-    def get_module_class_from_name(
-        model: torch.nn.Module, name: str
-    ) -> List[torch.nn.Module]:
-        modules_children = list(model.children())
-
-        if model.__class__.__name__ == name:
-            return model.__class__
-        elif len(modules_children) == 0:
-            return
-        else:
-            for child_module in modules_children:
-                module_class = get_module_class_from_name(child_module, name)
-                if module_class is not None:
-                    return module_class
 
     def block_checkpointing(
         model: torch.nn.Module,
@@ -625,13 +627,13 @@ def _copy_no_lora_dict(state_dict):
 
 
 def save_hf_format_accelerate(
-        args,
-        model,
-        tokenizer,
-        accelerator,
-        samples_seen,
-        convert_granite=True,
-        is_lora=False,
+    args,
+    model,
+    tokenizer,
+    accelerator,
+    samples_seen,
+    convert_granite=True,
+    is_lora=False,
 ):
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
@@ -639,6 +641,25 @@ def save_hf_format_accelerate(
     )
     start = time.time()
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+
+    CONFIG_NAME = "config.json"
+    output_config_file = output_dir / CONFIG_NAME
+
+    if accelerator.is_main_process:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model.module.config.to_json_file(output_config_file)
+        tokenizer.save_pretrained(output_dir)
+
+    accelerator.save_model(
+        model,
+        save_directory=output_dir,
+        max_shard_size="10GB",
+        safe_serialization=True,
+    )
+
+    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+    log_rank_0(f"saving took {time.time() - start} seconds")
+
 
 def save_hf_format_ds(
     args,
