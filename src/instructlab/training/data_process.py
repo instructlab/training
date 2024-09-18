@@ -51,8 +51,14 @@ def check_valid_sample(
 
     return True
 
+
 def unmask_message_content(
-    example, user_tokens, assist_tokens, system_tokens, pretrain_token, pretrain_end_token
+    example,
+    user_tokens,
+    assist_tokens,
+    system_tokens,
+    pretrain_token,
+    pretrain_end_token,
 ):
     """
     Create labels for tokens in a sequence with special handling for pretraining tokens and role-specific sequences.
@@ -105,14 +111,23 @@ def unmask_message_content(
     """
     sentence_tk = example["input_ids"]
     labels = [-100] * len(sentence_tk)
-    
+
     def check_sequence(tokens, start_idx):
-        return tokens == sentence_tk[start_idx:start_idx + len(tokens)]
-    
+        return tokens == sentence_tk[start_idx : start_idx + len(tokens)]
+
     def find_longest_match(start_idx, sequences):
-        return max((seq for seq in sequences if seq and len(sentence_tk) - start_idx >= len(seq) and check_sequence(seq, start_idx)), 
-                   key=len, default=None)
-    
+        return max(
+            (
+                seq
+                for seq in sequences
+                if seq
+                and len(sentence_tk) - start_idx >= len(seq)
+                and check_sequence(seq, start_idx)
+            ),
+            key=len,
+            default=None,
+        )
+
     in_pretraining = False
     unmasking = False
     i = 0
@@ -134,7 +149,7 @@ def unmask_message_content(
                 unmasking = False
             i += len(match)
             continue
-        
+
         if in_pretraining or unmasking:
             labels[i] = sentence_tk[i]
         i += 1
@@ -154,20 +169,28 @@ def unmask_message_content(
 
     # Assertions
     special_sequences = [user_tokens, assist_tokens, system_tokens]
-    
+
     # 1. No special sequence of tokens should be unmasked
     for i in range(len(final_sentence_tk)):
         for seq in special_sequences:
-            if final_sentence_tk[i:i+len(seq)] == seq:
-                assert all(final_labels[i+j] == -100 for j in range(len(seq))), f"Special sequence {seq} is unmasked"
+            if final_sentence_tk[i : i + len(seq)] == seq:
+                assert all(
+                    final_labels[i + j] == -100 for j in range(len(seq))
+                ), f"Special sequence {seq} is unmasked"
 
     # 2. No pretrain tokens should be in the final sentence_tk
-    assert all(token not in [pretrain_token, pretrain_end_token] for token in final_sentence_tk), "Pretrain tokens found in final sentence"
+    assert all(
+        token not in [pretrain_token, pretrain_end_token] for token in final_sentence_tk
+    ), "Pretrain tokens found in final sentence"
 
     # 3. The labels have to be aligned with the sentence_tk unless they are masked
-    assert all(label == -100 or label == token for label, token in zip(final_labels, final_sentence_tk)), "Labels are not aligned with sentence tokens"
+    assert all(
+        label == -100 or label == token
+        for label, token in zip(final_labels, final_sentence_tk)
+    ), "Labels are not aligned with sentence tokens"
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
+
 
 # def unmask_message_content(
 #     example, user_token, assist_token, system_token, pretrain_token, pretrain_end_token
@@ -261,11 +284,13 @@ def unmask_message_content(
 
 #     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
+
 def add_is_pretrain_sample(example, pretrain_tk):
     if pretrain_tk in example["input_ids"]:
         example["is_pretrain"] = True
 
-def print_masked_samples(data, tokenizer, pad_tk, pad_str, is_pretrain, num_proc):
+
+def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
         input_ids = sample["input_ids"]
@@ -296,7 +321,10 @@ def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
-    system_tk, user_tk, assistant_tk, eos_tk, pad_tk, bos_tk = [get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token) for sp in SPECIAL_TOKENS.__annotations__.keys()]
+    system_tk, user_tk, assistant_tk, eos_tk, pad_tk, bos_tk = [
+        get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token)
+        for sp in SPECIAL_TOKENS.__annotations__.keys()
+    ]
     log_rank_0(
         f"Special tokens: eos: {eos_tk}, pad: {pad_tk}, bos: {bos_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
     )
@@ -380,7 +408,7 @@ def main(args: DataProcessArgs):
         },
         num_proc=NUM_PROC,
     )
-    
+
     _prefill_unmask_message_content = partial(
         unmask_message_content,
         user_tokens=user_tk,

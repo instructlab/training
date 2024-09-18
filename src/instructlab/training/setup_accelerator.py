@@ -15,8 +15,10 @@ from accelerate import Accelerator
 from instructlab.training.config import DeepSpeedOptions
 from instructlab.training.utils import get_module_class_from_name, patch_target_module
 
+
 def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
     from accelerate.utils import DeepSpeedPlugin
+
     ds_config = {
         "train_batch_size": samples_per_gpu * world_size * grad_accum,
         "gradient_accumulation_steps": grad_accum,
@@ -43,12 +45,14 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
             "ratio": opts.cpu_offload_optimizer_ratio,
         }
     ds_plugin = DeepSpeedPlugin(
-            hf_ds_config=ds_config,
-        )
+        hf_ds_config=ds_config,
+    )
     return ds_plugin
+
 
 def get_fsdp_config(args, model):
     from accelerate.utils import FullyShardedDataParallelPlugin
+
     block_name = model._no_split_modules[0]
 
     fsdp_plugin = FullyShardedDataParallelPlugin(
@@ -68,6 +72,7 @@ def get_fsdp_config(args, model):
         sharding_strategy=ShardingStrategy[args.sharding_strategy],
     )
     return fsdp_plugin
+
 
 def setup_accelerator(args, model, grad_accum):
     if args.sharding_framework == "deepspeed":
@@ -91,7 +96,7 @@ def setup_accelerator(args, model, grad_accum):
                     cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
                     cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
                     save_samples=args.save_samples_ds,
-                    ),
+                ),
             ),
         }
     elif args.sharding_framework == "fsdp":
@@ -101,7 +106,7 @@ def setup_accelerator(args, model, grad_accum):
     else:
         raise ValueError(f"Unknown sharding framework: {args.sharding_framework}")
     accelerator = Accelerator(
-        **accel_args, 
+        **accel_args,
     )
     accelerator.even_batches = False
     return accelerator
