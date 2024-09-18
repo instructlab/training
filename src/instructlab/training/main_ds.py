@@ -27,9 +27,9 @@ from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.config import (  # DeepSpeedOptions,
     DataProcessArgs,
+    DistributedTrainingBackend,
     TorchrunArgs,
     TrainingArgs,
-    DistributedTrainingBackend,
 )
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
@@ -690,7 +690,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--distributed_training_framework={train_args.distributed_training_backend.value}"
     )
 
-    # deepspeed opts
+    # deepspeed options
     if train_args.deepspeed_options.save_samples:
         command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
     if train_args.deepspeed_options.cpu_offload_optimizer:
@@ -703,7 +703,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
             command.append("--cpu_offload_optimizer_pin_memory")
 
-    # TODO: FSDP Options
+    # FSDP Options
+    if train_args.fsdp_options.cpu_offload_params:
+        command.extend(
+            [
+                "--cpu_offload_params_fsdp",
+            ]
+        )
 
     # specify the sharding strategy
     command.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
@@ -821,6 +827,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
         help="Offload optimizer to CPU when using DeepSpeed. This configures it to use ZeRO stage 2.",
+    )
+    parser.add_argument(
+        "--cpu_offload_params_fsdp",
+        action="store_true",
+        default=False,
+        help="Offload to CPU when using FSDP.",
     )
     parser.add_argument(
         "--cpu_offload_optimizer_pin_memory",
