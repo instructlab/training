@@ -118,20 +118,21 @@ class DeepSpeedOptions(BaseModel):
 
 
 # public API
+class ShardingStrategies(Enum):
+    FULL_SHARD = "FULL_SHARD"
+    SHARD_GRAD_OP = "SHARD_GRAD_OP"
+    NO_SHARD = "NO_SHARD"
+    HYBRID_SHARD = "HYBRID_SHARD"
+
+
+# public API
 class FSDPOptions(BaseModel):
     """
     Represents the options for configuring FSDP which are exposed by the Training Library
     """
 
     cpu_offload_params: Optional[bool] = False
-
-
-# public API
-class ShardingStrategies(Enum):
-    FULL_SHARD = "FULL_SHARD"
-    SHARD_GRAD_OP = "SHARD_GRAD_OP"
-    NO_SHARD = "NO_SHARD"
-    HYBRID_SHARD = "HYBRID_SHARD"
+    sharding_strategy: ShardingStrategies = ShardingStrategies.SHARD_GRAD_OP
 
 
 # public API
@@ -181,9 +182,10 @@ class TrainingArgs(BaseModel):
         )
     )
     fsdp_options: FSDPOptions = Field(
-        default_factory=lambda: FSDPOptions(cpu_offload_params=False)
+        default_factory=lambda: FSDPOptions(
+            cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
+        )
     )
-    sharding_strategy: ShardingStrategies = ShardingStrategies.SHARD_GRAD_OP
     distributed_training_backend: DistributedTrainingBackend = (
         DistributedTrainingBackend.DEEPSPEED
     )

@@ -712,7 +712,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     # specify the sharding strategy
-    command.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
+    command.append(
+        f"--fsdp_sharding_strategy={train_args.fsdp_options.sharding_strategy.value}"
+    )
 
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
@@ -809,11 +811,11 @@ if __name__ == "__main__":
         default=DistributedTrainingBackend.DEEPSPEED.value,
     )
     parser.add_argument(
-        "--sharding_strategy",
+        "--fsdp_sharding_strategy",
         type=str,
         # choices=[e.name for e in ShardingStrategy],
         default="SHARD_GRAD_OP",
-        help="Sharding strategy to be used for distributed training.",
+        help="Sharding strategy to be used for FSDP distributed training.",
     )
     parser.add_argument("--is_granite", action="store_true")
     parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora

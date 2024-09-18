@@ -72,7 +72,7 @@ def get_fsdp_config(args, model):
             buffer_dtype=torch.bfloat16,
         ),
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
-        sharding_strategy=ShardingStrategy[args.sharding_strategy],
+        sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
     )
     return fsdp_plugin
