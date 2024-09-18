@@ -35,6 +35,7 @@ from instructlab.training.config import (
     # DeepSpeedOptions,
     TorchrunArgs,
     TrainingArgs,
+    DistributedTrainingBackend,
 )
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
@@ -194,7 +195,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     accelerator = setup_accelerator(args, model, grad_accum)
-    if args.sharding_framework == "fsdp":
+    if args.distributed_training_framework == "fsdp":
         model = accelerator.prepare(model)
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -202,7 +203,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             betas=(0.9, 0.95),
             weight_decay=0.0,
         )
-    elif args.sharding_framework == "deepspeed":
+    elif args.distributed_training_framework == "deepspeed":
         # need to use this only when the CPU offload optimizer is enabled
         if args.cpu_offload_optimizer:
             print(
@@ -217,7 +218,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             )
     else:
         raise ValueError(
-            f"Sharding framework {args.sharding_framework} is not supported."
+            f"Sharding framework {args.distributed_training_framework} is not supported."
         )
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
@@ -691,6 +692,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         if quantization_is_enabled:
             command.append("--lora_quant_bits=4")
 
+    # specify which distributed training backend we use
+    train_args.append(
+        f"--distributed_training_backend={train_args.distributed_training_backend.value}"
+    )
+
     # deepspeed opts
     if train_args.deepspeed_options.save_samples:
         command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
@@ -703,6 +709,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
         if train_args.deepspeed_options.cpu_offload_optimizer_pin_memory:
             command.append("--cpu_offload_optimizer_pin_memory")
+
+    # TODO: FSDP Options
+
+    # specify the sharding strategy
+    train_args.append(f"--sharding_strategy={train_args.sharding_strategy.value}")
 
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
@@ -790,10 +801,13 @@ if __name__ == "__main__":
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
     parser.add_argument(
-        "--sharding_framework",
+        "--distributed_training_framework",
         type=str,
-        choices=["deepspeed", "fsdp"],
-        default="deepspeed",
+        choices=[
+            DistributedTrainingBackend.DEEPSPEED.value,
+            DistributedTrainingBackend.FSDP.value,
+        ],
+        default=DistributedTrainingBackend.DEEPSPEED.value,
     )
     parser.add_argument(
         "--sharding_strategy",

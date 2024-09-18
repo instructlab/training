@@ -75,7 +75,7 @@ def get_fsdp_config(args, model):
 
 
 def setup_accelerator(args, model, grad_accum):
-    if args.sharding_framework == "deepspeed":
+    if args.distributed_training_framework == "deepspeed":
         # Third Party
         from deepspeed import DeepSpeedEngine
 
@@ -99,12 +99,14 @@ def setup_accelerator(args, model, grad_accum):
                 ),
             ),
         }
-    elif args.sharding_framework == "fsdp":
+    elif args.distributed_training_framework == "fsdp":
         accel_args = {
             "fsdp_plugin": get_fsdp_config(args, model),
         }
     else:
-        raise ValueError(f"Unknown sharding framework: {args.sharding_framework}")
+        raise ValueError(
+            f"Unknown sharding framework: {args.distributed_training_framework}"
+        )
     accelerator = Accelerator(
         **accel_args,
     )
