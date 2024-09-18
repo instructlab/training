@@ -196,7 +196,10 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     if args.sharding_framework == "fsdp":
         model = accelerator.prepare(model)
         optimizer = torch.optim.AdamW(
-            model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=0.0,
         )
     elif args.sharding_framework == "deepspeed":
         # need to use this only when the CPU offload optimizer is enabled
