@@ -645,16 +645,26 @@ def save_hf_format_accelerate(
     output_config_file = output_dir / CONFIG_NAME
 
     if accelerator.is_main_process:
+        if is_lora:
+            model.module.merge_adapter()
+            curr_state = model.module.state_dict()
+            state_to_save = _copy_no_lora_dict(curr_state)
+            model.module.state_dict = state_to_save
+
         output_dir.mkdir(parents=True, exist_ok=True)
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
-    accelerator.save_model(
-        model,
-        save_directory=output_dir,
-        max_shard_size="10GB",
-        safe_serialization=True,
-    )
+        accelerator.save_model(
+            model,
+            save_directory=output_dir,
+            max_shard_size="10GB",
+            safe_serialization=True,
+        )
+
+        if is_lora:
+            model.module.state_dict = curr_state
+            model.module.unmerge_adapter
 
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")

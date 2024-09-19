@@ -900,7 +900,7 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --gradient_accumulation_steps=2 \
 --save_samples=250000 \
 --log_level="INFO" \
---sharding_strategy="HYBRID_SHARD" \
+--fsdp_sharding_strategy="HYBRID_SHARD" \
 --is_granite \
 --max_batch_len 70000 \
 --seed=42
