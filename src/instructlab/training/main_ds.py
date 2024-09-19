@@ -8,6 +8,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import time
 
 # Third Party
@@ -707,6 +708,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
     process = None
+    failure = False
     try:
         process = StreamablePopen(
             f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
@@ -720,7 +722,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     finally:
         if "process" not in locals() or process is None:
             return
-        if process.poll() == 0:
+        failure = process.poll() != 0
+        if not failure:
             print("\033[92mOperation completed successfully! 🎉\033[0m")
         else:
             print("\033[91mOperation failed, terminating process.\033[0m")
@@ -731,6 +734,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         except subprocess.TimeoutExpired:
             print("\033[91mProcess did not terminate in time, killing it.\033[0m")
             process.kill()
+
+        if failure:
+            sys.exit(1)
 
 
 if __name__ == "__main__":
