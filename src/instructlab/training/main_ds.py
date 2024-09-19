@@ -745,6 +745,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
     process = None
     interrupt: KeyboardInterrupt | Exception | None = None
+    failure = False
     try:
         process = StreamablePopen(
             f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
@@ -755,19 +756,20 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         print("Training subprocess interrupted by user.")
         interrupt = e
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        print("Unexpected exception received during distributed training")
         interrupt = e
     finally:
         if "process" not in locals() or process is None:
             return
-        if process.poll() == 0:
-            print("\033[92mTraining subprocess exited successfully! 🎉\033[0m")
+
+        failure = process.poll() != 0
+        if not failure:
+            print("\033[92mOperation completed successfully! 🎉\033[0m")
         else:
             print(
                 "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
             )
 
-        print("Sending interrupt signal to Training subprocess.")
         process.terminate()
         try:
             print("Waiting for process to exit, 60s...")
@@ -779,8 +781,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             process.kill()
 
         if interrupt:
-            print(f"Error caught from training subprocess.: {interrupt}")
             raise interrupt
+        if failure:
+            raise RuntimeError(
+                "Suffered a failure during distributed training. Please see the training logs for more context."
+            )
 
 
 if __name__ == "__main__":
