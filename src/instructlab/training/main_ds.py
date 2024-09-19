@@ -451,14 +451,22 @@ def train(
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
-        # if args.checkpoint_at_epoch:
-        #     save_hf_format_ds(
-        #         args,
-        #         model,
-        #         tokenizer,
-        #         global_step * args.samples_per_gpu * world_size,
-        #         is_lora=bool(args.lora_r),
-        #     )
+        if args.checkpoint_at_epoch:
+            save_hf_format_accelerate(
+                args,
+                model,
+                tokenizer,
+                accelerator,
+                samples_seen,
+                is_lora=bool(args.lora_r),
+            )
+            #     save_hf_format_ds(
+            #         args,
+            #         model,
+            #         tokenizer,
+            #         global_step * args.samples_per_gpu * world_size,
+            #         is_lora=bool(args.lora_r),
+            #     )
     if args.save_last:
         save_hf_format_accelerate(
             args,
