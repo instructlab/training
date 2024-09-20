@@ -635,6 +635,12 @@ def save_dict_accelerate(
     old_get_state = accelerator.get_state_dict
     accelerator.get_state_dict = _copy_no_lora_dict
 
+    def skip_precheck_loops():
+        return []
+
+    state_to_save.modules = skip_precheck_loops
+    state_to_save.parameters = skip_precheck_loops
+
     accelerator.save_model(
         state_to_save,
         save_directory=save_directory,
