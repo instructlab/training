@@ -8,6 +8,8 @@ import re
 import subprocess
 import time
 from functools import partial
+import sys
+print(sys.executable)
 
 # Third Party
 # from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
@@ -16,7 +18,9 @@ from transformers.models.mistral.modeling_mistral import (
     MistralDecoderLayer,
 )
 
+
 import torch.distributed as dist
+
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
@@ -34,6 +38,18 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
 # import deepspeed
 import torch
+
+# JKUNSTLE
+import habana_frameworks.torch.distributed.hccl
+os.environ["PT_HPU_LAZY_MODE"] = "0"
+device_hpu = torch.device('hpu')
+print(f"DEVICE HPU: {device_hpu}")
+os.environ["TORCH_CPP_LOG_LEVEL"]="WARNING"
+os.environ["TORCH_DISTRIBUTED_DEBUG"]="INFO"
+os.environ["TORCH_SHOW_CPP_STACKTRACES"]="1"
+
+
+import habana_frameworks.torch.hpu as htorch
 
 # First Party
 from instructlab.training import config
@@ -242,6 +258,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     #     lr_scheduler=lr_scheduler,
     #     dist_init_required=True,
     # )
+    print(f"ON RANK {args.local_rank} USING DEVICE {device_hpu}")
+    model.to(device_hpu)
     model = FSDP(
         model,
         auto_wrap_policy=partial(
@@ -262,8 +280,10 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         ),
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
         sharding_strategy=ShardingStrategy[args.sharding_strategy],
-        device_id=torch.cuda.current_device(),
+        device_id=torch.device("hpu", torch.hpu.current_device()),
     )
+    print(f"ON RANK {args.local_rank} FINISHED INITIALIZING FSDP")
+
         # granite gradient checkpointing is handled uniformly
     # for both lora and full here
     # dist.breakpoint()
@@ -306,6 +326,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
     # model = torch.compile(model)
+
+    print(f"ON RANK {args.local_rank} FINISHED MODEL SETUP")
     return model, optimizer, lr_scheduler
 
 
@@ -395,6 +417,7 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
     #         if local_rank == 0
     #         else None
     #     )
+    print("IN TRAINING LOOP")
     for epoch in range(args.num_epochs):
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
@@ -406,8 +429,9 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
+        aggregated_values = torch.zeros(3, dtype=torch.float32).to(device_hpu)
         global_grad_norm = None
+        print(f"IN EPOCH: {epoch}")
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -419,20 +443,29 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
             start = time.time()
             aggregated_values[0] = batch.pop("num_loss_counted_tokens")
             aggregated_values[1] = len(batch["input_ids"])
+            print("SENDING DATA TO DEVICE")
             if not args.is_granite:
                 for k in batch:
-                    batch[k] = batch[k].to(local_rank)
+                    batch[k] = batch[k].to(device_hpu)
+            print("CHECKING SYNC")
             no_sync = model.no_sync if global_step % grad_accum != 0 else nullcontext
             with no_sync():
-                output = model(
-                    **batch,
-                    use_cache=False,
-                )
-                loss = output.loss
+                print(f"FORWARD RANK:{local_rank}")
+                with torch.autocast(device_type="hpu", dtype=torch.bfloat16):
+                        output = model(
+                                **batch,
+                                use_cache=False,
+                            )
+                        print(f"LOSS AT RANK: {local_rank}")
+                        loss = output.loss
 
+                print(f"LOSS ITEM AT RANK: {local_rank}")
                 aggregated_values[2] = loss.item()
 
+                print("ALL REDUCE")
                 all_reduce(aggregated_values, op=ReduceOp.SUM)
+
+                print("ALL REDUCE DONE")
 
                 num_loss_counted_tokens = aggregated_values[0]
                 loss = (
@@ -459,8 +492,8 @@ def train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_ac
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+                cuda_mem_allocated = htorch.memory_allocated() / (1024**3)
+                cuda_malloc_retries = htorch.memory_stats()["num_alloc_retries"]
                 # global_grad_norm = model.get_global_grad_norm()
                 global_grad_norm = (
                     float(global_grad_norm) if global_grad_norm is not None else None
@@ -546,19 +579,25 @@ def main(args):
     tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    # torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    # deepspeed.init_distributed(timeout=timedelta(minutes=30))
-    dist.init_process_group(
-        "nccl",
-        #  timeout=timedelta(hours=1),
-    )
+
+    args.world_size = int(os.environ["WORLD_SIZE"])
+
+    print(f"SETTING UP DIST; RANK: {args.local_rank}; WS: {args.world_size}")
+    #JKUNSTLE
+    import habana_frameworks.torch.distributed.hccl
+    dist.init_process_group(backend='hccl', rank=args.local_rank, world_size=args.world_size)
+    print("DIST INITED")
+
     dist.barrier()
+    print("PASSED BARRIER")
     args.global_rank = dist.get_rank()
     # tensor = torch.ByteTensor([False]).cuda()
     # dist.all_reduce(tensor)
     # dist.barrier()
 
+    print("SETUP DATASET")
     dataset = setup_dataset(
         args.data_path,
         mock=args.mock_data,
@@ -617,9 +656,11 @@ def main(args):
             }
         )
 
+    print("SETTING UP MODEL")
     model, optimizer, lr_scheduler = setup_model(args, tokenizer, train_loader, grad_accum)
     # model = maybe_resume_training(args, model)
 
+    print("STARTING TRAINING")
     train(args, model, optimizer, lr_scheduler, tokenizer, train_loader, grad_accum, metric_logger)
 
     dist.barrier()
@@ -653,8 +694,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
+
     command = [
-        "torchrun",
+	f"/opt/app-root/bin/python3.11",
+	f"-m",
+	f"torch.distributed.run",
         f"--nnodes={torch_args.nnodes}",
         f"--node_rank={torch_args.node_rank}",
         f"--nproc_per_node={torch_args.nproc_per_node}",
@@ -669,7 +713,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--learning_rate={train_args.learning_rate}",
         f"--num_warmup_steps={train_args.warmup_steps}",
         f"--save_samples={train_args.save_samples}",
-        f"--log_level=INFO",
+        f"--log_level=DEBUG",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
@@ -837,6 +881,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
     args = parser.parse_args()
+    import sys
+    print(sys.executable)
     set_random_seed(args.seed)
     main(args)
 
