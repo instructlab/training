@@ -625,6 +625,26 @@ def _copy_no_lora_dict(state_dict):
     return cleaned_state_dict
 
 
+def save_dict_accelerate(
+    accelerator,
+    state_to_save,
+    save_directory,
+    max_shard_size="10GB",
+    safe_serialization=True,
+):
+    old_get_state = accelerator.get_state_dict
+    accelerator.get_state_dict = _copy_no_lora_dict
+
+    accelerator.save_model(
+        state_to_save,
+        save_directory=save_directory,
+        max_shard_size=max_shard_size,
+        safe_serialization=safe_serialization,
+    )
+
+    accelerator.get_state_dict = old_get_state
+
+
 def save_hf_format_accelerate(
     args,
     model,
@@ -647,24 +667,27 @@ def save_hf_format_accelerate(
     if accelerator.is_main_process:
         if is_lora:
             model.module.merge_adapter()
-            curr_state = model.module.state_dict()
-            state_to_save = _copy_no_lora_dict(curr_state)
-            model.module.state_dict = state_to_save
+            model_state = model.module.state_dict()
 
         output_dir.mkdir(parents=True, exist_ok=True)
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="10GB",
-            safe_serialization=True,
-        )
-
         if is_lora:
-            model.module.state_dict = curr_state
+            accelerator.save(
+                model_state,
+                save_directory=output_dir,
+                max_shard_size="10GB",
+                safe_serialization=True,
+            )
             model.module.unmerge_adapter
+        else:
+            accelerator.save_model(
+                model,
+                save_directory=output_dir,
+                max_shard_size="10GB",
+                safe_serialization=True,
+            )
 
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
