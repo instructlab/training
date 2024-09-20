@@ -674,7 +674,8 @@ def save_hf_format_accelerate(
         tokenizer.save_pretrained(output_dir)
 
         if is_lora:
-            accelerator.save(
+            save_dict_accelerate(
+                accelerator,
                 model_state,
                 save_directory=output_dir,
                 max_shard_size="10GB",
