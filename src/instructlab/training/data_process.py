@@ -221,6 +221,10 @@ def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
 
 
 def main(args: DataProcessArgs):
+    
+    if not os.path.exists(args.data_output_path):
+        os.makedirs(args.data_output_path, exist_ok=True)
+    
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
     NUM_PROC = args.num_cpu_procs
