@@ -198,6 +198,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             weight_decay=0.0,
         )
     elif args.distributed_training_framework == "deepspeed":
+        model = accelerator.prepare(model)
         # need to use this only when the CPU offload optimizer is enabled
         if args.cpu_offload_optimizer:
             print(
@@ -220,8 +221,10 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    model, _, lr_scheduler, optimizer = accelerator.prepare(
-        model, deepcopy(train_loader), lr_scheduler, optimizer
+    optimizer, _, lr_scheduler = accelerator.prepare(
+        optimizer,
+        deepcopy(train_loader),
+        lr_scheduler,
     )
     return model, lr_scheduler, optimizer, accelerator
 

@@ -688,16 +688,18 @@ def save_hf_format_accelerate(
                 safe_serialization=True,
             )
             model.module.unmerge_adapter
-        else:
-            accelerator.save_model(
-                model,
-                save_directory=output_dir,
-                max_shard_size="10GB",
-                safe_serialization=True,
-            )
+
+    if not is_lora:
+        accelerator.save_model(
+            model,
+            save_directory=output_dir,
+            max_shard_size="10GB",
+            safe_serialization=True,
+        )
 
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
+    dist.barrier()
 
 
 def save_hf_format_ds(
