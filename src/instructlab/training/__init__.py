@@ -28,9 +28,13 @@ from .config import (
 
 
 # defer import of main_ds
-def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs, process_data: bool = True) -> None:
+def run_training(
+    torch_args: TorchrunArgs, train_args: TrainingArgs, process_data: bool = True
+) -> None:
     """Wrapper around the main training job that calls torchrun."""
     # Local
     from .main_ds import run_training
 
-    return run_training(torch_args=torch_args, train_args=train_args, process_data=process_data)
+    return run_training(
+        torch_args=torch_args, train_args=train_args, process_data=process_data
+    )
