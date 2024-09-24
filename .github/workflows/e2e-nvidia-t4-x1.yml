@@ -134,7 +134,7 @@ jobs:
         working-directory: ./instructlab
         run: |
           . venv/bin/activate
-          ./scripts/basic-workflow-tests.sh -T
+          ./scripts/basic-workflow-tests.sh -a
 
   stop-runner:
     name: Stop external EC2 runner
