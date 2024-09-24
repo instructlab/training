@@ -8,22 +8,7 @@ SPECIAL_TOKENS = SpecialTokens(
     eos=TokenInfo("</s>", add_to_tokenizer=True),
     user=TokenInfo("[INST]", add_to_tokenizer=False),
     assistant=TokenInfo("[/INST]", add_to_tokenizer=False),
-    # user="[INST]",
-    # assistant="[/INST]",
 )
-
-# CHAT_TEMPLATE = (
-#     "{{ '<s>' }}"
-#     "{% for message in messages %}"
-#     "{% if message['role'] == 'pretraining' %}"
-#     "{{'<|pretrain|>' + message['content'] + '</s>' + '<|/pretrain|>'}}"
-#     "{% elif message['role'] == 'user' %}"
-#     "{{ '[INST] ' + message['content'] + ' [/INST]' }}"
-#     "{% elif message['role'] == 'assistant' %}"
-#     "{{ message['content'] + '</s>'}}"
-#     "{% endif %}"
-#     "{% endfor %}"
-# )
 
 CHAT_TEMPLATE = (
     "{%- if messages[0]['role'] == 'system' %}"

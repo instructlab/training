@@ -346,7 +346,6 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        # aggregated_values = torch.zeros(3, dtype=torch.float32).to(local_rank)
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -393,7 +392,6 @@ def train(
 
             if global_step % grad_accum == 0:
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                # global_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -470,13 +468,7 @@ def train(
                 samples_seen,
                 is_lora=bool(args.lora_r),
             )
-            #     save_hf_format_ds(
-            #         args,
-            #         model,
-            #         tokenizer,
-            #         global_step * args.samples_per_gpu * world_size,
-            #         is_lora=bool(args.lora_r),
-            #     )
+
     if args.save_last:
         save_hf_format_accelerate(
             args,
@@ -918,7 +910,7 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --gradient_accumulation_steps=2 \
 --save_samples=250000 \
 --log_level="INFO" \
---fsdp_sharding_strategy="HYBRID_SHARD" \
+--fsdp_sharding_strategy="SHARD_GRAD_OP" \
 --is_granite \
 --max_batch_len 70000 \
 --seed=42
