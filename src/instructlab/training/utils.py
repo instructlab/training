@@ -670,6 +670,13 @@ def save_hf_format_accelerate(
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
 
+    get_state_dict_unpatched = accelerator.get_state_dict
+
+    def _get_state_dict_patched(model, unwrap=False):
+        return get_state_dict_unpatched(model, unwrap=unwrap)
+
+    accelerator.get_state_dict = _get_state_dict_patched
+
     if accelerator.is_main_process:
         if is_lora:
             model.module.merge_adapter()
@@ -700,6 +707,8 @@ def save_hf_format_accelerate(
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
     dist.barrier()
+
+    accelerator.get_state_dict = get_state_dict_unpatched
 
 
 def save_hf_format_ds(

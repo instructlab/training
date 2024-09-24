@@ -6,6 +6,7 @@ py-cpuinfo
 # replace custom pytorch images with the 2.3.0
 torch>=2.3.0a0
 transformers>=4.41.2
+accelerate>=0.34.2
 datasets>=2.15.0
 numba
 # Note: numpy ranges copied from instructlab/instructlab
