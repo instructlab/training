@@ -77,7 +77,7 @@ jobs:
                   path: dist
 
             - name: "Upload to Test PyPI"
-              uses: pypa/gh-action-pypi-publish@ec4db0b4ddc65acdf4bff5fa45ac92d78b56bdf0 # v1.9.0
+              uses: pypa/gh-action-pypi-publish@897895f1e160c830e369f9779632ebc134688e1b # v1.10.2
               with:
                   repository-url: https://test.pypi.org/legacy/
 
@@ -128,4 +128,4 @@ jobs:
                   rm ./dist/*.sigstore
 
             - name: "Upload to PyPI"
-              uses: pypa/gh-action-pypi-publish@ec4db0b4ddc65acdf4bff5fa45ac92d78b56bdf0 # v1.9.0
+              uses: pypa/gh-action-pypi-publish@897895f1e160c830e369f9779632ebc134688e1b # v1.10.2
