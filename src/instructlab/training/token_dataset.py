@@ -85,6 +85,7 @@ def setup_dataset(
 
 def setup_dataloader(
     dataset: Dataset,
+    multiprocessing: str,
     pad_token_id: int,
     num_workers: int = 8,
     is_granite=False,
@@ -128,6 +129,7 @@ def setup_dataloader(
     dataloader = DataLoader(
         dataset,
         **sampler,
+        multiprocessing_context=multiprocessing,
         num_workers=num_workers,
         collate_fn=collate_fn,
     )

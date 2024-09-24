@@ -28,8 +28,6 @@ from instructlab.dolomite.hf_models import (
 )
 from rich.logging import RichHandler
 from safetensors.torch import save_file
-from torch import distributed as dist
-from torch.distributed import get_rank, is_initialized
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -37,6 +35,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 )
 import numpy as np
 import torch
+import torch.distributed
 import torch.nn.functional as F
 
 
@@ -480,7 +479,7 @@ def prepare_universal_checkpoint_from_latest(output_dir):
         with open(latest_file, "w") as f:
             f.write(step_folder)
 
-    dist.barrier()
+    torch.distributed.barrier()
     log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
 
@@ -508,26 +507,28 @@ def ensure_loadable_granite_checkpoint(
         # Assumption: tmpdir should be accessible by all ranks, even those
         # in different nodes
         tmpdir = Path(tmpdir) / f"tmp.{group_rank}"
-        if os.path.exists(tmpdir) and (not dist.is_initialized() or local_rank == 0):
-            # need to delete if it exists because import doesn't like it to
+        if os.path.exists(tmpdir) and (
+            not torch.distributed.is_initialized() or local_rank == 0
+        ):
+            # need to delete if it exists because import doesnt like it to
             shutil.rmtree(tmpdir, ignore_errors=True)
 
-        if not dist.is_initialized() or local_rank == 0:
+        if not torch.distributed.is_initialized() or local_rank == 0:
             import_from_huggingface(model_name_or_path, tmpdir)
 
-        if dist.is_initialized():
+        if torch.distributed.is_initialized():
             # the first barrier is to wait for local rank 0 to finish converting the model
             # and place into tmpdir
-            dist.barrier()
+            torch.distributed.barrier()
 
         # return tmpdir out for loading
         yield tmpdir
 
-        if dist.is_initialized():
+        if torch.distributed.is_initialized():
             # the second barrier is to wait for all the models to finish loading
-            dist.barrier()
+            torch.distributed.barrier()
 
-        if not dist.is_initialized() or local_rank == 0:
+        if not torch.distributed.is_initialized() or local_rank == 0:
             # at this point, we can be confident that the tmpdir is no longer needed
             shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -603,7 +604,7 @@ def get_caller(num_frames=1):
 
 def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
     if rank is None:
-        rank = get_rank() if is_initialized() else 0
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
     if rank <= 0:
         if include_caller:
             msg = f"{get_caller(num_frames=2)}: {msg}"
@@ -632,7 +633,11 @@ def save_hf_format_ds(
     convert_granite=True,
     is_lora=False,
 ):
-    model_to_save = model.module
+    if torch.cuda.is_available():
+        model_to_save = model.module
+    else:
+        # if not using DS, the model is an actual model not model_engine
+        model_to_save = model
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
         to_print=True,
@@ -647,7 +652,7 @@ def save_hf_format_ds(
     else:
         WEIGHTS_NAME = "pytorch_model.bin"
     output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if torch.distributed.get_rank() == 0:
+    if not torch.cuda.is_available() or torch.distributed.get_rank() == 0:
         if is_lora:
             model_to_save.merge_adapter()
 
@@ -686,7 +691,8 @@ def save_hf_format_ds(
         if is_lora:
             model_to_save.unmerge_adapter()
 
-    dist.barrier()
+    if torch.cuda.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
 
