@@ -665,7 +665,13 @@ def save_hf_format_accelerate(
         to_print=True,
     )
     start = time.time()
-    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+
+    final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+    if args.is_granite and convert_granite:
+        tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
+        output_dir = Path(tmpdir.name)
+    else:
+        output_dir = final_output_dir
 
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
@@ -683,6 +689,11 @@ def save_hf_format_accelerate(
             model_state = model.module.state_dict()
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        if not model.module.config.architectures and convert_granite:
+            model.module.config.architectures = ["LlamaForCausalLM"]
+            warnings.warn(
+                f"Adding architectures to ckpt: {model.module.config.architectures}",
+            )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
@@ -704,7 +715,19 @@ def save_hf_format_accelerate(
             safe_serialization=True,
         )
 
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+    if args.is_granite and convert_granite:
+        if torch.distributed.get_rank() == 0:
+            # export doesnt like the directory to exist
+            if final_output_dir.exists():
+                shutil.rmtree(final_output_dir)
+            export_to_huggingface(
+                pretrained_model_name_or_path=tmpdir.name,
+                save_path=final_output_dir,
+                model_type="llama",
+            )
+            tmpdir.cleanup()
+
+    log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
     dist.barrier()
 
