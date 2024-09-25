@@ -79,7 +79,7 @@ def setup_optimizer(args, model, accelerator):
         raise ValueError(
             f"Sharding framework {args.distributed_training_framework} is not supported."
         )
-    return optimizer
+    return model, optimizer
 
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
@@ -218,7 +218,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     accelerator = setup_accelerator(args, model, grad_accum)
-    optimizer = setup_optimizer(args, model, accelerator)
+    model, optimizer = setup_optimizer(args, model, accelerator)
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
