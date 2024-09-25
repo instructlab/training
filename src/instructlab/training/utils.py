@@ -703,7 +703,7 @@ def save_hf_format_accelerate(
                 accelerator,
                 model_state,
                 save_directory=output_dir,
-                max_shard_size="10GB",
+                max_shard_size="5GB",
                 safe_serialization=True,
             )
             model.module.unmerge_adapter()
@@ -712,21 +712,20 @@ def save_hf_format_accelerate(
         accelerator.save_model(
             model,
             save_directory=output_dir,
-            max_shard_size="10GB",
+            max_shard_size="5GB",
             safe_serialization=True,
         )
 
-    if args.is_granite and convert_granite:
-        if torch.distributed.get_rank() == 0:
-            # export doesnt like the directory to exist
-            if final_output_dir.exists():
-                shutil.rmtree(final_output_dir)
-            export_to_huggingface(
-                pretrained_model_name_or_path=tmpdir.name,
-                save_path=final_output_dir,
-                model_type="llama",
-            )
-            tmpdir.cleanup()
+    if args.is_granite and convert_granite and accelerator.is_main_process:
+        # export doesnt like the directory to exist
+        if final_output_dir.exists():
+            shutil.rmtree(final_output_dir)
+        export_to_huggingface(
+            pretrained_model_name_or_path=tmpdir.name,
+            save_path=final_output_dir,
+            model_type="llama",
+        )
+        tmpdir.cleanup()
 
     log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
