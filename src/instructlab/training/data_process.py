@@ -31,6 +31,8 @@ def check_valid_sample(
     if not eos_tk[0] in (whole_sentence_tk[-1], whole_sentence_tk[-2]):
         return False
 
+    # NOTE - below checks are no longer strictly required, but we may want to revisit to make sure there's nothing we need to bring back in validity checking
+
     # special_tokens = [system_tk, assistant_tk, user_tk]
     # if not any(token in whole_sentence_tk for token in special_tokens):
     #     return True
