@@ -25,7 +25,7 @@ import torch.distributed
 # First Party
 from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
-from instructlab.training.config import (  # DeepSpeedOptions,
+from instructlab.training.config import (
     DataProcessArgs,
     DistributedTrainingBackend,
     TorchrunArgs,
@@ -500,7 +500,6 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    # deepspeed.init_distributed(timeout=timedelta(minutes=30))
     torch.distributed.init_process_group("nccl")
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()

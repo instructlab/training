@@ -3,7 +3,7 @@
 # Standard
 from collections import OrderedDict
 from contextlib import contextmanager
-from copy import copy, deepcopy
+from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,7 +27,6 @@ from instructlab.dolomite.hf_models import (
     import_from_huggingface,
 )
 from rich.logging import RichHandler
-from safetensors.torch import save_file
 from torch import distributed as dist
 from torch.distributed import get_rank, is_initialized
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
@@ -638,6 +637,7 @@ def save_dict_accelerate(
     def skip_precheck_loops():
         return []
 
+    # The save model does a loop over modules and params in order to determine how to get state dict. Since we already have the state dict directly, we want to bypass those checks.
     state_to_save.modules = skip_precheck_loops
     state_to_save.parameters = skip_precheck_loops
 
@@ -705,7 +705,7 @@ def save_hf_format_accelerate(
                 max_shard_size="10GB",
                 safe_serialization=True,
             )
-            model.module.unmerge_adapter
+            model.module.unmerge_adapter()
 
     if not is_lora:
         accelerator.save_model(
@@ -732,73 +732,6 @@ def save_hf_format_accelerate(
     dist.barrier()
 
     accelerator.get_state_dict = get_state_dict_unpatched
-
-
-def save_hf_format_ds(
-    args,
-    model,
-    tokenizer,
-    samples_seen,
-    convert_granite=True,
-    is_lora=False,
-):
-    model_to_save = model.module
-    log_rank_0(
-        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    CONFIG_NAME = "config.json"
-    if args.is_granite:
-        # save if in a temp directory first then convert it
-        WEIGHTS_NAME = "model.safetensors"
-        MODEL_TYPE = "llama"
-    else:
-        WEIGHTS_NAME = "pytorch_model.bin"
-    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if torch.distributed.get_rank() == 0:
-        if is_lora:
-            model_to_save.merge_adapter()
-
-        model_state = model_to_save.state_dict()
-        if is_lora:
-            model_state = _copy_no_lora_dict(model_state)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_model_file = output_dir / WEIGHTS_NAME
-        output_config_file = output_dir / CONFIG_NAME
-
-        tmp_conf = copy(model_to_save.config)
-        if not tmp_conf.architectures:
-            tmp_conf.architectures = ["LlamaForCausalLM"]
-            warnings.warn(
-                f"No architectures provided in base model config, adding architectures to ckpt: {tmp_conf.architectures}",
-            )
-
-        if args.is_granite and convert_granite:
-            with TemporaryDirectory("w") as tmpdir:
-                save_file(model_state, Path(tmpdir) / WEIGHTS_NAME)
-                tmp_conf.to_json_file(Path(tmpdir) / CONFIG_NAME)
-                tokenizer.save_pretrained(tmpdir)
-                # export doesn't like the directory to exist
-                shutil.rmtree(output_dir)
-
-                export_to_huggingface(
-                    pretrained_model_name_or_path=tmpdir,
-                    save_path=output_dir,
-                    model_type=MODEL_TYPE,
-                )
-        else:
-            torch.save(model_state, str(output_model_file))
-            tmp_conf.to_json_file(str(output_config_file))
-            tokenizer.save_pretrained(str(output_dir))
-
-        if is_lora:
-            model_to_save.unmerge_adapter()
-
-    dist.barrier()
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 # this is native deepspeed saving with optimizer, scheduler
