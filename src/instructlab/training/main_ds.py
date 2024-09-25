@@ -53,6 +53,35 @@ from instructlab.training.utils import (
 import instructlab.training.data_process as dp
 
 
+def setup_optimizer(args, model, accelerator):
+    if args.distributed_training_framework == "fsdp":
+        model = accelerator.prepare(model)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(0.9, 0.95),
+            weight_decay=0.0,
+        )
+    elif args.distributed_training_framework == "deepspeed":
+        # need to use this only when the CPU offload optimizer is enabled
+        if args.cpu_offload_optimizer:
+            print(
+                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
+            )
+            optimizer = DeepSpeedCPUAdam(
+                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            )
+        else:
+            optimizer = FusedAdam(
+                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
+            )
+    else:
+        raise ValueError(
+            f"Sharding framework {args.distributed_training_framework} is not supported."
+        )
+    return optimizer
+
+
 def setup_model(args, tokenizer, train_loader, grad_accum):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
@@ -189,31 +218,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     accelerator = setup_accelerator(args, model, grad_accum)
-    if args.distributed_training_framework == "fsdp":
-        model = accelerator.prepare(model)
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.0,
-        )
-    elif args.distributed_training_framework == "deepspeed":
-        # need to use this only when the CPU offload optimizer is enabled
-        if args.cpu_offload_optimizer:
-            print(
-                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-            )
-            optimizer = DeepSpeedCPUAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-        else:
-            optimizer = FusedAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-    else:
-        raise ValueError(
-            f"Sharding framework {args.distributed_training_framework} is not supported."
-        )
+    optimizer = setup_optimizer(args, model, accelerator)
+
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
         optimizer=optimizer,
