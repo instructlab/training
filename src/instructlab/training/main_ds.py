@@ -421,7 +421,6 @@ def train(
                         "epoch": epoch,
                         "step": global_step,
                         "rank": torch.distributed.get_rank(),
-                        # "loss": loss.item(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
