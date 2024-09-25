@@ -410,10 +410,12 @@ def train(
                 global_grad_norm = (
                     float(global_grad_norm) if global_grad_norm is not None else None
                 )
+                # TODO - Bring back weight_norm gather
                 # weight_norm = float(
                 #     model.optimizer.single_partition_of_fp32_groups[0].norm()
                 # )
 
+                # TODO - Bring back consistent gradnorm and weight_norm logging
                 metric_logger.log_sync(
                     {
                         "epoch": epoch,
