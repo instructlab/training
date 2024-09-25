@@ -27,7 +27,7 @@ from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
 from instructlab.training.config import (
     DataProcessArgs,
-    DistributedTrainingBackend,
+    DistributedBackend,
     TorchrunArgs,
     TrainingArgs,
 )
@@ -698,7 +698,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     # specify which distributed training backend we use
     command.append(
-        f"--distributed_training_framework={train_args.distributed_training_backend.value}"
+        f"--distributed_training_framework={train_args.distributed_backend.value}"
     )
 
     # deepspeed options
@@ -816,10 +816,10 @@ if __name__ == "__main__":
         "--distributed_training_framework",
         type=str,
         choices=[
-            DistributedTrainingBackend.DEEPSPEED.value,
-            DistributedTrainingBackend.FSDP.value,
+            DistributedBackend.DEEPSPEED.value,
+            DistributedBackend.FSDP.value,
         ],
-        default=DistributedTrainingBackend.DEEPSPEED.value,
+        default=DistributedBackend.DEEPSPEED.value,
     )
     parser.add_argument(
         "--fsdp_sharding_strategy",

@@ -131,6 +131,11 @@ Here is a breakdown of the general options:
 | mock_data_len | Max length of a single mock data sample. Equivalent to `max_seq_len` but for mock data. |
 | deepspeed_options | Config options to specify for the DeepSpeed optimizer. |
 | lora | Options to specify if you intend to perform a LoRA train instead of a full fine-tune. |
+| chat_tmpl_path | Specifies the chat template / special tokens for training. |
+| checkpoint_at_epoch | Whether or not we should save a checkpoint at the end of each epoch. |
+| fsdp_options | The settings for controlling FSDP when it's selected as the distributed backend. |
+| distributed_backend | Specifies which distributed training backend to use. Supported options are "fsdp" and "deepspeed". |
+| disable_flash_attn | Disables flash attention when set to true. This allows for training on older devices. |
 
 #### `DeepSpeedOptions`
 
@@ -141,8 +146,24 @@ allow you to customize aspects of the ZeRO stage 2 optimizer.
 | Field | Description |
 | --- | --- |
 | cpu_offload_optimizer | Whether or not to do CPU offloading in DeepSpeed stage 2. |
+| cpu_offload_optimizer_ratio | Floating point between 0 & 1. Specifies the ratio of parameters updating (i.e. optimizer step) on CPU side. |
+| cpu_offload_optimizer_pin_memory | If true, offload to page-locked CPU memory. This could boost throughput at the cost of extra memory overhead. |
+| save_samples | The number of samples to see before saving a DeepSpeed checkpoint. |
 
-#### `loraOptions`
+#### `FSDPOptions`
+
+Like DeepSpeed, we only expose a number of parameters for you to modify with FSDP.
+They are listed below:
+
+| Field | Description |
+| --- | --- |
+| cpu_offload_params | When set to true, offload parameters from the accelerator onto the CPU. This is an all-or-nothing option. |
+| sharding_strategy | Specifies the model sharding strategy that FSDP should use. Valid options are:  `FULL_SHARD` (ZeRO-3), `HYBRID_SHARD` (ZeRO-3*), `SHARD_GRAD_OP` (ZeRO-2), and `NO_SHARD`. |
+
+> [!NOTE]
+> For `sharding_strategy` - Only `SHARD_GRAD_OP` has been extensively tested and is actively supported by this library.
+
+#### `LoraOptions`
 
 If you'd like to do a LoRA train, you can specify a LoRA
 option to `TrainingArgs` via the `LoraOptions` object.

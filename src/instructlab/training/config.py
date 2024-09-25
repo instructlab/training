@@ -29,7 +29,7 @@ class DeepSpeedOffloadStrategy(Enum):
 
 
 # public API
-class DistributedTrainingBackend(Enum):
+class DistributedBackend(Enum):
     FSDP: str = "fsdp"
     DEEPSPEED: str = "deepspeed"
 
@@ -186,9 +186,7 @@ class TrainingArgs(BaseModel):
             cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
         )
     )
-    distributed_training_backend: DistributedTrainingBackend = (
-        DistributedTrainingBackend.DEEPSPEED
-    )
+    distributed_backend: DistributedBackend = DistributedBackend.DEEPSPEED
 
     disable_flash_attn: Optional[bool] = False
 

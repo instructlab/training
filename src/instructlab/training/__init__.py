@@ -9,7 +9,7 @@ __all__ = (
     "run_training",
     "FSDPOptions",
     "ShardingStrategies",
-    "DistributedTrainingBackend",
+    "DistributedBackend",
 )
 
 # Local
@@ -17,7 +17,7 @@ from .config import (
     DataProcessArgs,
     DeepSpeedOffloadStrategy,
     DeepSpeedOptions,
-    DistributedTrainingBackend,
+    DistributedBackend,
     FSDPOptions,
     LoraOptions,
     QuantizeDataType,
