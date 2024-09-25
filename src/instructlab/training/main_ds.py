@@ -53,9 +53,8 @@ from instructlab.training.utils import (
 import instructlab.training.data_process as dp
 
 
-def setup_optimizer(args, model, accelerator):
+def setup_optimizer(args, model):
     if args.distributed_training_framework == "fsdp":
-        model = accelerator.prepare(model)
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=args.learning_rate,
@@ -79,7 +78,7 @@ def setup_optimizer(args, model, accelerator):
         raise ValueError(
             f"Sharding framework {args.distributed_training_framework} is not supported."
         )
-    return model, optimizer
+    return optimizer
 
 
 def setup_model(args, tokenizer, train_loader, grad_accum):
@@ -218,7 +217,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     accelerator = setup_accelerator(args, model, grad_accum)
-    model, optimizer = setup_optimizer(args, model, accelerator)
+    if args.distributed_training_framework == "fsdp":
+        model = accelerator.prepare(model)
+    optimizer = setup_optimizer(args, model)
 
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler,
@@ -226,19 +227,12 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-    if args.distributed_training_framework == "fsdp":
-        optimizer, _, lr_scheduler = accelerator.prepare(
-            optimizer,
-            deepcopy(train_loader),
-            lr_scheduler,
-        )
-    elif args.distributed_training_framework == "deepspeed":
-        model, optimizer, _, lr_scheduler = accelerator.prepare(
-            model,
-            optimizer,
-            deepcopy(train_loader),
-            lr_scheduler,
-        )
+    model, optimizer, _, lr_scheduler = accelerator.prepare(
+        model,
+        optimizer,
+        deepcopy(train_loader),
+        lr_scheduler,
+    )
     return model, lr_scheduler, optimizer, accelerator
 
 
