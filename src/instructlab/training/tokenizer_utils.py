@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 # Third Party
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizer
 
 # First Party
 from instructlab.training.utils import log_rank_0
@@ -34,7 +34,9 @@ class SpecialTokens:
         ]
 
 
-def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
+def setup_tokenizer(
+    model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE
+) -> PreTrainedTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
 
     if not SPECIAL_TOKENS.pad.token:
@@ -59,8 +61,12 @@ def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
         tokenizer.add_eos_token = False
 
     tokenizer.chat_template = CHAT_TEMPLATE
-    assert len(get_sp_token(tokenizer, SPECIAL_TOKENS.eos.token)) == 1
-    assert len(get_sp_token(tokenizer, SPECIAL_TOKENS.pad.token)) == 1
+    assert (
+        len(get_sp_token(tokenizer, SPECIAL_TOKENS.eos.token)) == 1
+    ), "EOS token doesn't exist or is of incorrect length"
+    assert (
+        len(get_sp_token(tokenizer, SPECIAL_TOKENS.pad.token)) == 1
+    ), "Padding token doesn't exist or is of incorrect length"
     return tokenizer
 
 

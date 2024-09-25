@@ -21,6 +21,7 @@ import warnings
 
 # Third Party
 # pylint: disable=no-name-in-module
+from accelerate import Accelerator
 from instructlab.dolomite.hf_models import (
     GPTDolomiteConfig,
     export_to_huggingface,
@@ -533,7 +534,7 @@ def ensure_loadable_granite_checkpoint(
 
 def get_module_class_from_name(
     model: torch.nn.Module, name: str
-) -> List[torch.nn.Module]:
+) -> torch.nn.Module | None:
     modules_children = list(model.children())
 
     if model.__class__.__name__ == name:
@@ -628,7 +629,7 @@ def save_dict_accelerate(
     accelerator,
     state_to_save,
     save_directory,
-    max_shard_size="10GB",
+    max_shard_size="5GB",
     safe_serialization=True,
 ):
     old_get_state = accelerator.get_state_dict
@@ -655,7 +656,7 @@ def save_hf_format_accelerate(
     args,
     model,
     tokenizer,
-    accelerator,
+    accelerator: Accelerator,
     samples_seen,
     convert_granite=True,
     is_lora=False,
