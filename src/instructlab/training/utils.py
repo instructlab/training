@@ -92,11 +92,14 @@ class StreamablePopen(subprocess.Popen):
         # remove the stderr and stdout from kwargs
         kwargs.pop("stderr", None)
         kwargs.pop("stdout", None)
+        self.output_file = output_file
 
         super().__init__(
             *args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs
         )
-        with open(output_file, "wb") as full_log_file:
+
+    def listen(self):
+        with open(self.output_file, "wb") as full_log_file:
             while True:
                 byte = self.stdout.read(1)
                 if byte:

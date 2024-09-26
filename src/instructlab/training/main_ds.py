@@ -726,32 +726,45 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--fsdp_sharding_strategy={train_args.fsdp_options.sharding_strategy.value}"
     )
 
-    print(f"\033[92mRunning command: {' '.join(command)}\033[0m")
+    print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
     process = None
+    interrupt: KeyboardInterrupt | Exception | None = None
     try:
         process = StreamablePopen(
             f"{train_args.ckpt_output_dir}/full_logs_global{torch_args.node_rank}.log",
             command,
         )
-
-    except KeyboardInterrupt:
-        print("Process interrupted by user")
+        process.listen()
+    except KeyboardInterrupt as e:
+        print("Training subprocess interrupted by user.")
+        interrupt = e
     except Exception as e:
         print(f"An error occurred: {str(e)}")
+        interrupt = e
     finally:
         if "process" not in locals() or process is None:
             return
         if process.poll() == 0:
-            print("\033[92mOperation completed successfully! 🎉\033[0m")
+            print("\033[92mTraining subprocess exited successfully! 🎉\033[0m")
         else:
-            print("\033[91mOperation failed, terminating process.\033[0m")
+            print(
+                "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
+            )
 
+        print("Sending interrupt signal to Training subprocess.")
         process.terminate()
         try:
+            print("Waiting for process to exit, 60s...")
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            print("\033[91mProcess did not terminate in time, killing it.\033[0m")
+            print(
+                "\033[91mTraining subprocess did not terminate before timeout, sending SIGKILL.\033[0m"
+            )
             process.kill()
+
+        if interrupt:
+            print(f"Error caught from training subprocess.: {interrupt}")
+            raise interrupt
 
 
 if __name__ == "__main__":
