@@ -29,6 +29,12 @@ class DeepSpeedOffloadStrategy(Enum):
 
 
 # public API
+class DistributedBackend(Enum):
+    FSDP: str = "fsdp"
+    DEEPSPEED: str = "deepspeed"
+
+
+# public API
 class QuantizeDataType(Enum):
     """
     Defines what datatype we use during quantization.
@@ -112,6 +118,24 @@ class DeepSpeedOptions(BaseModel):
 
 
 # public API
+class ShardingStrategies(Enum):
+    FULL_SHARD = "FULL_SHARD"
+    SHARD_GRAD_OP = "SHARD_GRAD_OP"
+    NO_SHARD = "NO_SHARD"
+    HYBRID_SHARD = "HYBRID_SHARD"
+
+
+# public API
+class FSDPOptions(BaseModel):
+    """
+    Represents the options for configuring FSDP which are exposed by the Training Library
+    """
+
+    cpu_offload_params: Optional[bool] = False
+    sharding_strategy: ShardingStrategies = ShardingStrategies.SHARD_GRAD_OP
+
+
+# public API
 class TrainingArgs(BaseModel):
     """
     This class represents the arguments being used by the training script.
@@ -157,6 +181,12 @@ class TrainingArgs(BaseModel):
             cpu_offload_optimizer_pin_memory=False,
         )
     )
+    fsdp_options: FSDPOptions = Field(
+        default_factory=lambda: FSDPOptions(
+            cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
+        )
+    )
+    distributed_backend: DistributedBackend = DistributedBackend.DEEPSPEED
 
     disable_flash_attn: Optional[bool] = False
 

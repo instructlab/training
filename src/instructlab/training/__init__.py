@@ -7,6 +7,9 @@ __all__ = (
     "TorchrunArgs",
     "TrainingArgs",
     "run_training",
+    "FSDPOptions",
+    "ShardingStrategies",
+    "DistributedBackend",
 )
 
 # Local
@@ -14,8 +17,11 @@ from .config import (
     DataProcessArgs,
     DeepSpeedOffloadStrategy,
     DeepSpeedOptions,
+    DistributedBackend,
+    FSDPOptions,
     LoraOptions,
     QuantizeDataType,
+    ShardingStrategies,
     TorchrunArgs,
     TrainingArgs,
 )
