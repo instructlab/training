@@ -80,6 +80,6 @@ tests: check-tox ## Run type checks.
 
 
 .PHONY: fix
-fix: check-tox ## Fix everything that's fixable by the automaed tooling.
+fix: check-tox ## Fix everything that's fixable by the automated tooling.
 	tox -e fix
 
