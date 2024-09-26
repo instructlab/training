@@ -54,14 +54,14 @@ import instructlab.training.data_process as dp
 
 
 def setup_optimizer(args, model):
-    if args.distributed_training_framework == "fsdp":
+    if args.distributed_training_framework == DistributedBackend.FSDP.value:
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=args.learning_rate,
             betas=(0.9, 0.95),
             weight_decay=0.0,
         )
-    elif args.distributed_training_framework == "deepspeed":
+    elif args.distributed_training_framework == DistributedBackend.DEEPSPEED.value:
         # need to use this only when the CPU offload optimizer is enabled
         if args.cpu_offload_optimizer:
             print(
@@ -217,7 +217,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     accelerator = setup_accelerator(args, model, grad_accum)
-    if args.distributed_training_framework == "fsdp":
+    if args.distributed_training_framework == DistributedBackend.FSDP.value:
         model = accelerator.prepare(model)
     optimizer = setup_optimizer(args, model)
 
