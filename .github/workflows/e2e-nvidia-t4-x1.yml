@@ -15,6 +15,12 @@ on:
     branches:
       - main
       - release-*
+    paths:
+      # note this should match the merging criteria in 'mergify.yml'
+      - '**.py'
+      - 'pyproject.toml'
+      - 'requirements**.txt'
+      - '.github/workflows/e2e-nvidia-t4-x1.yml' # Follow-on workflow
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
