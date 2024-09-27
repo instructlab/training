@@ -130,6 +130,7 @@ They are listed below:
 
 > [!NOTE]
 > For `sharding_strategy` - Only `SHARD_GRAD_OP` has been extensively tested and is actively supported by this library.
+
 ### `loraOptions`
 
 LoRA options currently supported:

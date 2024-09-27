@@ -28,6 +28,7 @@ pull_request_rules:
     # e2e workflow
     - or:
       - and:
+        # note this should match the triggering criteria in 'e2e-nvidia-t4-x1.yml'
         - check-success=e2e-workflow-complete
         - or:
           - files~=\.py$
@@ -40,12 +41,12 @@ pull_request_rules:
         - -files~=^requirements.*\.txt$
         - -files=.github/workflows/e2e-nvidia-t4-x1.yml
 
-    # lint must pass if files change that would trigger this job
+    # code lint workflow
     - or:
       - and:
+        # note this should match the triggering criteria in 'lint.yml'
         - check-success=lint-workflow-complete
         - or:
-          # see .github/workflows/lint.yml and test.yml
           - files~=\.py$
           - files=pyproject.toml
           - files~=^requirements.*\.txt$
@@ -59,6 +60,18 @@ pull_request_rules:
         - -files=tox.ini
         - -files~=^scripts/[^/]+\.sh$
         - -files=.github/workflows/lint.yml
+
+    - or:
+      - and:
+        - check-success=markdown-lint
+        - or:
+          - files~=\.md$
+          - files=.markdownlint-cli2.yaml
+          - files=.github/workflows/docs.yml
+      - and:
+        - -files~=\.md$
+        - -files=.markdownlint-cli2.yaml
+        - -files=.github/workflows/docs.yml
 
   actions:
     merge:
