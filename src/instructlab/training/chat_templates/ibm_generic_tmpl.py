@@ -23,5 +23,8 @@ CHAT_TEMPLATE = (
     "{% elif message['role'] == 'assistant' %}"
     "{{'<|assistant|>' + '\n' + message['content'] + '<|endoftext|>' + ('' if loop.last else '\n')}}"
     "{% endif %}"
+    "{% if loop.last and add_generation_prompt %}"
+    "{{ '<|assistant|>' + '\n' }}"
+    "{% endif %}"
     "{% endfor %}"
 )
