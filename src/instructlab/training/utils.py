@@ -870,8 +870,13 @@ def load_latest_full_state(args, accelerator) -> None:
     if not output_dir.is_dir():
         return
 
-    # picks checkpoint with the largest number of samples seen, by name.
-    checkpoint_list = sorted(list(output_dir.iterdir()), reverse=True)
+    # picks checkpoint with the largest number of samples by splitting the "samples_NNNN" string on _
+    # and comparing the number at the end of the string
+    checkpoint_list = sorted(
+        list(output_dir.iterdir()),
+        reverse=True,
+        key=lambda x: int(str(x).rsplit("_", maxsplit=1)[-1]),
+    )
 
     if len(checkpoint_list) == 0:
         log_rank_0(
