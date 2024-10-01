@@ -43,9 +43,11 @@ from instructlab.training.utils import (
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
     ensure_loadable_granite_checkpoint,
+    load_latest_full_state,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
     retrieve_chat_template,
+    save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
     setup_logger,
@@ -316,6 +318,10 @@ def train(
     batch_size = args.effective_batch_size // grad_accum
     samples_seen = 0
 
+    if hasattr(args, "samples_seen"):
+        print(f"\033[93mUpdating 'samples_seen' {args.samples_seen}\033[0m")
+        samples_seen = args.samples_seen
+
     if args.save_samples > 0:
         args.save_samples = (args.save_samples // batch_size) * batch_size
         (
@@ -335,7 +341,7 @@ def train(
         )
 
     global_grad_norm = None
-    for epoch in range(args.num_epochs):
+    for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
@@ -346,6 +352,7 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
+        # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -437,13 +444,14 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                save_hf_format_accelerate(
-                    args,
-                    model,
-                    tokenizer,
-                    accelerator,
-                    samples_seen,
+                save_checkpoint(
+                    args=args,
+                    accelerator=accelerator,
+                    model=model,
+                    tokenizer=tokenizer,
+                    samples_seen=samples_seen,
                     is_lora=bool(args.lora_r),
+                    hf_format=True,
                 )
 
             # if (
@@ -461,13 +469,16 @@ def train(
                 inner_pb.update(1)
             torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
-            save_hf_format_accelerate(
-                args,
-                model,
-                tokenizer,
-                accelerator,
-                samples_seen,
+            save_checkpoint(
+                args=args,
+                accelerator=accelerator,
+                model=model,
+                tokenizer=tokenizer,
+                samples_seen=samples_seen,
                 is_lora=bool(args.lora_r),
+                full_state=args.accelerate_full_state_at_epoch,
+                hf_format=True,
+                epoch=epoch,
             )
 
     if args.save_last:
@@ -588,6 +599,8 @@ def main(args):
         args, tokenizer, train_loader, grad_accum
     )
 
+    load_latest_full_state(args=args, accelerator=accelerator)
+
     train(
         args,
         model,
@@ -660,6 +673,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.checkpoint_at_epoch:
         command.append("--checkpoint_at_epoch")
+
+    if train_args.accelerate_full_state_at_epoch:
+        command.append("--accelerate_full_state_at_epoch")
 
     if train_args.mock_data:
         command.append("--mock_data")
@@ -776,6 +792,12 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument(
+        "--current_epoch",
+        type=int,
+        default=0,
+        help="Helpful flag for resuming on a later epoch. Sets dataloader correctly.",
+    )
+    parser.add_argument(
         "--last_step",
         type=int,
         default=0,
@@ -819,6 +841,11 @@ if __name__ == "__main__":
         "--checkpoint_at_epoch",
         action="store_true",
         help="Save a model checkpoint after finishing an epoch.",
+    )
+    parser.add_argument(
+        "--accelerate_full_state_at_epoch",
+        action="store_true",
+        help="Save full model state using Accelerate after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--seed", type=int, default=42)

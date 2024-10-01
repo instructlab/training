@@ -781,3 +781,114 @@ def set_random_seed(seed):
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+
+
+def save_checkpoint(
+    args,
+    accelerator: Accelerator,
+    model,
+    tokenizer,
+    samples_seen,
+    is_lora: bool,
+    epoch: int = None,
+    hf_format: bool = True,
+    full_state: bool = False,
+) -> None:
+    if hf_format:
+        save_hf_format_accelerate(
+            args=args,
+            model=model,
+            accelerator=accelerator,
+            tokenizer=tokenizer,
+            samples_seen=samples_seen,
+            is_lora=is_lora,
+        )
+
+    if full_state:
+        save_full_state(
+            args=args,
+            accelerator=accelerator,
+            is_lora=is_lora,
+            epoch=epoch,
+            samples_seen=samples_seen,
+        )
+
+
+def save_full_state(args, accelerator, is_lora: bool, epoch: int, samples_seen: int):
+    """
+    Saves model, optimizer, and lr_scheduler state.
+    TODO: save model config - decided not to do this.
+    TODO: save tokenizer - decided not to do this.
+    TODO: handle LoRA
+    TODO: handle granite
+    """
+    if is_lora:
+        raise NotImplementedError("Can't save full state for LoRA at the moment.")
+
+    # if args.is_granite:
+    #     raise NotImplementedError("Can't save full state for Granite models yet.")
+
+    output_dir = Path(args.output_dir) / "full_state" / f"epoch_{epoch}"
+    log_rank_0(f"\033[93mSaving full model state in {output_dir}\033[0m", to_print=True)
+
+    # patch FSDP state dict method so it works correctly.
+    def _get_state_dict_patched(model, unwrap=False):
+        return get_state_dict_unpatched(model, unwrap=unwrap)
+
+    if args.distributed_training_framework == "fsdp":
+        get_state_dict_unpatched = accelerator.get_state_dict
+        accelerator.get_state_dict = _get_state_dict_patched
+
+    accelerator.save_state(
+        output_dir=output_dir,
+        # max_shard_size="5GB",
+        # safe_serialization=True,
+    )
+
+    # save metadata file for current training status
+    if accelerator.is_main_process:
+        # TODO: should we set the global_step here rather than calculating global_step
+        #   based on samples_seen?
+        metadata = {"current_epoch": epoch, "samples_seen": samples_seen}
+        torch.save(metadata, output_dir / "training_metadata.json")
+        log_rank_0(f"\033[93mSaving training state: {metadata}\033[0m", to_print=True)
+
+    log_rank_0(f"\033[93mModel state saved in: {output_dir}\033[0m", to_print=True)
+
+    # cleanup
+    if args.distributed_training_framework == "fsdp":
+        accelerator.get_state_dict = get_state_dict_unpatched
+
+
+def load_latest_full_state(args, accelerator) -> None:
+    """
+    Loads accelerator state from most recently saved checkpoint
+    in `output_dir/full_state`.
+    """
+    output_dir = Path(args.output_dir) / "full_state"
+
+    if not output_dir.is_dir():
+        return
+
+    # picks checkpoint with the largest number of samples seen, by name.
+    checkpoint_list = sorted(list(output_dir.iterdir()), reverse=True)
+
+    if len(checkpoint_list) == 0:
+        log_rank_0(
+            f"\033[93mNo checkpoints to load from: {output_dir}\033[0m", to_print=True
+        )
+        return
+
+    latest = checkpoint_list[0]
+
+    log_rank_0(f"\033[93mLoading state from: {latest}\033[0m", to_print=True)
+    accelerator.load_state(latest)
+
+    training_metadata = torch.load(latest / "training_metadata.json")
+    log_rank_0(
+        f"\033[93mTraining metadata loaded: {training_metadata}\033[0m", to_print=True
+    )
+
+    # previous epoch is basis for current epoch.
+    args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
+    args.__dict__["samples_seen"] = training_metadata["samples_seen"]
