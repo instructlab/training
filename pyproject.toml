@@ -6,26 +6,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "instructlab-training"
-authors = [
-    { name="InstructLab", email="dev@instructlab.ai" },
-]
+authors = [{ name = "InstructLab", email = "dev@instructlab.ai" }]
 description = "Training Library"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Environment :: Console",
-    "License :: OSI Approved :: Apache Software License",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: MacOS :: MacOS X",
-    "Operating System :: POSIX :: Linux",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: Implementation :: CPython",
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
 ]
 dynamic = ["dependencies", "optional-dependencies", "version"]
 
@@ -42,10 +40,10 @@ version_file = "src/instructlab/training/_version.py"
 local_scheme = "no-local-version"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
 
 [tool.setuptools.dynamic]
-dependencies = {file = ["requirements.txt"]}
+dependencies = { file = ["requirements.txt"] }
 optional-dependencies.cuda = { file = ["requirements-cuda.txt"] }
 
 [tool.setuptools.packages.find]
@@ -64,20 +62,20 @@ unfixable = []
 
 # Fixers will be enabled gradually.
 select = [
-    # "B",  # flake8-bugbear
-    # "E",  # pycodestyle
-    # "F",  # Pyflakes
-    "Q",  # flake8-quotes
-    # Ruff does not support isort's import_headings feature, yet.
-    # "I",  # isort
-    # "UP",  # pyupgrade
-    # "SIM",  # flake8-simplify
-    "TID",  # flake8-tidy-imports
+  # "B",  # flake8-bugbear
+  # "E",  # pycodestyle
+  # "F",  # Pyflakes
+  "Q", # flake8-quotes
+  # Ruff does not support isort's import_headings feature, yet.
+  # "I",  # isort
+  # "UP",  # pyupgrade
+  # "SIM",  # flake8-simplify
+  "TID", # flake8-tidy-imports
 ]
 ignore = [
-    # some embedded strings are longer than 88 characters
-    "E501",  # line too long
-    "TID252",  # Prefer absolute imports over relative imports from parent modules
+  # some embedded strings are longer than 88 characters
+  "E501",   # line too long
+  "TID252", # Prefer absolute imports over relative imports from parent modules
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
@@ -95,10 +93,15 @@ from-first = true
 known-local-folder = ["tuning"]
 
 [tool.mypy]
-disable_error_code = ["import-not-found", "import-untyped", "var-annotated", "attr-defined"]
+disable_error_code = [
+  "import-not-found",
+  "import-untyped",
+  "var-annotated",
+  "attr-defined",
+]
 exclude = [
-    "^src/instructlab/training/generate_data\\.py$",
-    "^src/instructlab/training/utils\\.py$",
+  "^src/instructlab/training/generate_data\\.py$",
+  "^src/instructlab/training/utils\\.py$",
 ]
 # honor excludes by not following there through imports
 follow_imports = "silent"
