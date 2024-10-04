@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # First Party
-from instructlab.training.tokenizer_utils import SpecialTokens, TokenInfo
+from instructlab.training.tokenizer_utils import SpecialTokens
 
 SPECIAL_TOKENS = SpecialTokens(
-    system=TokenInfo("<|system|>", add_to_tokenizer=True),
-    user=TokenInfo("<|user|>", add_to_tokenizer=True),
-    assistant=TokenInfo("<|assistant|>", add_to_tokenizer=True),
-    eos=TokenInfo("<|endoftext|>", add_to_tokenizer=True),
-    pad=TokenInfo("<|pad|>", add_to_tokenizer=True),
-    bos=TokenInfo("<|begginingoftext|>", add_to_tokenizer=True),
+    system="<|system|>",
+    user="<|user|>",
+    assistant="<|assistant|>",
+    eos="<|endoftext|>",
+    pad="<|pad|>",
 )
 
 CHAT_TEMPLATE = (

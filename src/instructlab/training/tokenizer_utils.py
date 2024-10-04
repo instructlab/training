@@ -2,55 +2,44 @@
 
 # Standard
 from dataclasses import dataclass, field
-from typing import List
 
 # Third Party
-from transformers import AutoTokenizer, PreTrainedTokenizer
+from transformers import AutoTokenizer
 
 # First Party
 from instructlab.training.utils import log_rank_0
 
 
 @dataclass
-class TokenInfo:
-    token: str
-    add_to_tokenizer: bool = False
-
-
-@dataclass
 class SpecialTokens:
-    system: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-    user: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-    assistant: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-    eos: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-    pad: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-    bos: TokenInfo = field(default_factory=lambda: TokenInfo(""))
-
-    def get_tokens_to_add(self) -> List[str]:
-        return [
-            token_info.token
-            for token_info in self.__dict__.values()
-            if token_info.add_to_tokenizer and token_info.token
-        ]
+    system: str = field(default="")
+    user: str = field(default="<|user|>")
+    assistant: str = field(default="<|assistant|>")
+    eos: str = field(default="<|endoftext|>")
+    pad: str = field(default="")
+    bos: str = field(default="<|begginingoftext|>")
 
 
-def setup_tokenizer(
-    model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE
-) -> PreTrainedTokenizer:
+def setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE):
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
 
-    if not SPECIAL_TOKENS.pad.token:
+    if not SPECIAL_TOKENS.pad:
         SPECIAL_TOKENS.pad = SPECIAL_TOKENS.eos
     tokenizer.add_special_tokens(
         {
-            "bos_token": SPECIAL_TOKENS.bos.token,
-            "eos_token": SPECIAL_TOKENS.eos.token,
-            "pad_token": SPECIAL_TOKENS.pad.token,
+            "bos_token": SPECIAL_TOKENS.bos,
+            "eos_token": SPECIAL_TOKENS.eos,
+            "pad_token": SPECIAL_TOKENS.pad,
         }
     )
-    tokenizer.add_special_tokens(
-        {"additional_special_tokens": SPECIAL_TOKENS.get_tokens_to_add()}
-    )
+
+    if SPECIAL_TOKENS.system:
+        add_token_list = [SPECIAL_TOKENS.system]
+    else:
+        add_token_list = []
+    add_token_list.extend([SPECIAL_TOKENS.user, SPECIAL_TOKENS.assistant])
+
+    tokenizer.add_special_tokens({"additional_special_tokens": add_token_list})
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
     ):
@@ -61,16 +50,10 @@ def setup_tokenizer(
         tokenizer.add_eos_token = False
 
     tokenizer.chat_template = CHAT_TEMPLATE
-    assert (
-        len(get_sp_token(tokenizer, SPECIAL_TOKENS.eos.token)) == 1
-    ), "EOS token doesn't exist or is of incorrect length"
-    assert (
-        len(get_sp_token(tokenizer, SPECIAL_TOKENS.pad.token)) == 1
-    ), "Padding token doesn't exist or is of incorrect length"
     return tokenizer
 
 
 def get_sp_token(tokenizer, sp_string):
     sp_token = tokenizer.encode(sp_string, add_special_tokens=False)
-    # assert 1 == len(sp_token)
-    return sp_token
+    assert 1 == len(sp_token)
+    return sp_token[0]
