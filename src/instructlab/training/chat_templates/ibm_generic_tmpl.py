@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # First Party
-from instructlab.training.tokenizer_utils import SpecialTokens
+from instructlab.training.tokenizer_utils import SpecialTokens, TokenInfo
 
 SPECIAL_TOKENS = SpecialTokens(
-    system="<|system|>",
-    user="<|user|>",
-    assistant="<|assistant|>",
-    eos="<|endoftext|>",
-    pad="<|pad|>",
+    system=TokenInfo("<|system|>", add_to_tokenizer=True),
+    user=TokenInfo("<|user|>", add_to_tokenizer=True),
+    assistant=TokenInfo("<|assistant|>", add_to_tokenizer=True),
+    eos=TokenInfo("<|endoftext|>", add_to_tokenizer=True),
+    pad=TokenInfo("<|pad|>", add_to_tokenizer=True),
+    bos=TokenInfo("<|begginingoftext|>", add_to_tokenizer=True),
 )
 
 CHAT_TEMPLATE = (
@@ -21,6 +22,9 @@ CHAT_TEMPLATE = (
     "{{'<|user|>' + '\n' + message['content'] + '\n'}}"
     "{% elif message['role'] == 'assistant' %}"
     "{{'<|assistant|>' + '\n' + message['content'] + '<|endoftext|>' + ('' if loop.last else '\n')}}"
+    "{% endif %}"
+    "{% if loop.last and add_generation_prompt %}"
+    "{{ '<|assistant|>' + '\n' }}"
     "{% endif %}"
     "{% endfor %}"
 )
