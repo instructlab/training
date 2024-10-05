@@ -635,9 +635,7 @@ def main(args):
 
 
 # public API
-def run_training(
-    torch_args: TorchrunArgs, train_args: TrainingArgs, process_data: bool = True
-) -> None:
+def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
@@ -647,7 +645,7 @@ def run_training(
             f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
         )
 
-    if process_data:
+    if train_args.process_data:
         dp.main(
             DataProcessArgs(
                 # XXX(osilkin): make a decision here, either:
