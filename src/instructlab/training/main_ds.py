@@ -454,7 +454,7 @@ def train(
                         "batch_size": int(micro_batch_size),
                         "total_loss": float(log_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
-                        # "gradnorm": global_grad_norm,
+                        "gradnorm": global_grad_norm,
                         # "weight_norm": weight_norm,
                     }
                 )
