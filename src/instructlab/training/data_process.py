@@ -345,7 +345,10 @@ def main(args: DataProcessArgs):
     )
 
     # extract only labels and messages formatted into a new dataset
-    data_with_labels = data_with_labels.select_columns(["labels", "input_ids"])
+    data_with_labels = data_with_labels.map(
+        lambda x: {"len": len(x["input_ids"]), }, num_proc=NUM_PROC
+    )
+    data_with_labels = data_with_labels.select_columns(["labels", "input_ids", "len"])
     # use path to get the stem of the file
     data_with_labels.to_json(Path(args.data_output_path) / f"data.jsonl")
 

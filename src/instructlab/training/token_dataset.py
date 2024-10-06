@@ -17,12 +17,15 @@ from instructlab.training.utils import log_rank_0, make_collate_fn
 class TokenDataset(Dataset):
     def __init__(self, data_path):
         self.data = load_dataset("json", data_files=data_path, split="train")
-        self.lengths = np.array(
-            self.data.map(
-                lambda x: {"len": len(x["input_ids"])},
-                num_proc=8,
-            )["len"]
-        )
+        if "len" not in self.data.column_names:
+            self.lengths = np.array(
+                self.data.map(
+                    lambda x: {"len": len(x["input_ids"])},
+                    num_proc=8,
+                )["len"]
+            )
+        else:
+            self.lengths = np.array(self.data["len"])
 
     def __len__(self):
         return len(self.data)
