@@ -52,6 +52,7 @@ from instructlab.training.utils import (
     save_hf_format_accelerate,
     set_random_seed,
     setup_logger,
+    supports_flash_attention,
 )
 import instructlab.training.data_process as dp
 
@@ -547,7 +548,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not args.is_granite,
+            is_padding=not args.is_granite or not supports_flash_attention(),
             dataset=dataset,
             seed=args.seed,
         )
