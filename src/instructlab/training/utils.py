@@ -110,6 +110,14 @@ class StreamablePopen(subprocess.Popen):
                 else:
                     break
 
+def supports_flash_attention(device_id=0):
+    """Check if a GPU supports FlashAttention."""
+    major, minor = torch.cuda.get_device_capability(device_id)
+    # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
+    is_sm8x = major == 8 and minor >= 0
+    is_sm90 = major == 9 and minor == 0
+    return is_sm8x or is_sm90
+
 
 def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
     rank = int(os.environ["RANK"])
@@ -143,58 +151,90 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
             }
 
     else:
+        if supports_flash_attention():
+            def pad_collate_fn(batch):
+                input_ids = []
+                labels = []
+                position_ids = []
+                total_len = 0
+                num_loss_counted_tokens = 0
 
-        def pad_collate_fn(batch):
-            lens = np.array([len(item["input_ids"]) for item in batch])
-            max_len = max(lens)
+                for item in batch:
+                    item_len = len(item["input_ids"])
+                    if total_len + item_len > max_batch_len:
+                        break
 
-            input_ids = torch.stack(
-                [
-                    F.pad(
-                        item["input_ids"],
-                        (max_len - len(item["input_ids"]), 0),
-                        mode="constant",
-                        value=pad_token_id,
-                    )
-                    for item in batch
-                ]
-            )
-            labels = torch.stack(
-                [
-                    F.pad(
-                        item["labels"],
-                        (max_len - len(item["labels"]), 0),
-                        mode="constant",
-                        value=-100,
-                    )
-                    for item in batch
-                ]
-            )
-            num_loss_counted_tokens = (labels != -100).sum()
+                    input_ids.extend(item["input_ids"].tolist())
+                    labels.extend(item["labels"].tolist())
+                    position_ids.extend(range(total_len, total_len + item_len))
+                    
+                    total_len += item_len
+                    num_loss_counted_tokens += (item["labels"] != -100).sum().item()
 
-            attention_mask = torch.stack(
-                [
-                    F.pad(
-                        item["attention_mask"],
-                        (max_len - len(item["attention_mask"]), 0),
-                        mode="constant",
-                        value=0,
-                    )
-                    for item in batch
-                ]
-            )
-            print(
-                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
+                print(
+                    f"\033[96m total length: {total_len} "
+                    f"num samples {len(batch)} - rank: {rank} "
+                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+                )
 
-            return {
-                "input_ids": input_ids,
-                "labels": labels,
-                "num_loss_counted_tokens": num_loss_counted_tokens,
-                "attention_mask": attention_mask,
-            }
+                return {
+                    "input_ids": torch.tensor([input_ids], dtype=torch.long),
+                    "labels": torch.tensor([labels], dtype=torch.long),
+                    "position_ids": torch.tensor([position_ids], dtype=torch.long),
+                    "num_loss_counted_tokens": num_loss_counted_tokens,
+                }
+        else:
+            def pad_collate_fn(batch):
+                lens = np.array([len(item["input_ids"]) for item in batch])
+                max_len = max(lens)
+
+                input_ids = torch.stack(
+                    [
+                        F.pad(
+                            item["input_ids"],
+                            (max_len - len(item["input_ids"]), 0),
+                            mode="constant",
+                            value=pad_token_id,
+                        )
+                        for item in batch
+                    ]
+                )
+                labels = torch.stack(
+                    [
+                        F.pad(
+                            item["labels"],
+                            (max_len - len(item["labels"]), 0),
+                            mode="constant",
+                            value=-100,
+                        )
+                        for item in batch
+                    ]
+                )
+                num_loss_counted_tokens = (labels != -100).sum()
+
+                attention_mask = torch.stack(
+                    [
+                        F.pad(
+                            item["attention_mask"],
+                            (max_len - len(item["attention_mask"]), 0),
+                            mode="constant",
+                            value=0,
+                        )
+                        for item in batch
+                    ]
+                )
+                print(
+                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
+                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
+                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+                )
+
+                return {
+                    "input_ids": input_ids,
+                    "labels": labels,
+                    "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "attention_mask": attention_mask,
+                }
 
     return pad_collate_fn
 
