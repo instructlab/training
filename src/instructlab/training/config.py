@@ -199,3 +199,6 @@ class TrainingArgs(BaseModel):
     # https://github.com/instructlab/training/issues/28
     # quantize_dtype: QuantizeDataType = QuantizeDataType.NONE
     lora: LoraOptions | None = None
+
+    # This field defines whether or not data processing will occur inside of `run_training()`
+    process_data: Optional[bool] = True

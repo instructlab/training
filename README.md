@@ -280,3 +280,55 @@ run_training(
     torchrun_args=torchrun_args,
     training_args=training_args,
 )
+
+```
+
+## Example training with separate data pre-processing
+
+If the machines in the example above have shared storage, users can pre-process the training dataset a single time so that it can then be distributed to each machine by making the following updates.
+
+```python
+from instructlab.training import (
+    run_training,
+    TorchrunArgs,
+    TrainingArgs,
+    DeepSpeedOptions,
+    DataProcessArgs,
+    data_process as dp
+)
+
+training_args = TrainingArgs(
+    # define data-specific arguments
+    model_path = "ibm-granite/granite-7b-base",
+    data_path = "path/to/dataset.jsonl",
+    ckpt_output_dir = "data/saved_checkpoints",
+    data_output_dir = "data/outputs",
+
+    # define model-trianing parameters
+    max_seq_len = 4096,
+    max_batch_len = 60000,
+    num_epochs = 10,
+    effective_batch_size = 3840,
+    save_samples = 250000,
+    learning_rate = 2e-6,
+    warmup_steps = 800,
+    is_padding_free = True, # set this to true when using Granite-based models
+    random_seed = 42,
+    process_data = True,
+)
+...
+
+data_process_args = DataProcessArgs(
+    data_output_path = training_args.data_output_dir,
+    model_path = training_args.model_path,
+    data_path = training_args.data_path,
+    max_seq_len = training_args.max_seq_len,
+    chat_tmpl_path =  training_args.chat_tmpl_path
+)
+
+dp.main(data_process_args)
+run_training(
+    torch_args=torchrun_args,
+    train_args=training_args,
+)
+```
