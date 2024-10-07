@@ -11,7 +11,7 @@ import torch
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
-from instructlab.training.utils import log_rank_0, make_collate_fn
+from instructlab.training.utils import log_rank_0, make_collate_fn, supports_flash_attention
 
 
 class TokenDataset(Dataset):
@@ -111,7 +111,7 @@ def setup_dataloader(
             num_replicas=world_size,
             rank=rank,
             seed=seed,
-            padding=not is_granite,
+            padding=not supports_flash_attention(),
         )
         sampler = {"batch_sampler": sampler}
     elif sampler == "distributed":
