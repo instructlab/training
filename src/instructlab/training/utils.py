@@ -110,6 +110,7 @@ class StreamablePopen(subprocess.Popen):
                 else:
                     break
 
+
 def supports_flash_attention(device_id=0):
     """Check if a GPU supports FlashAttention."""
     major, minor = torch.cuda.get_device_capability(device_id)
@@ -153,6 +154,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
 
     else:
         if supports_flash_attention():
+
             def pad_collate_fn(batch):
                 input_ids = []
                 labels = []
@@ -168,7 +170,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                     input_ids.extend(item["input_ids"].tolist())
                     labels.extend(item["labels"].tolist())
                     position_ids.extend(range(total_len, total_len + item_len))
-                    
+
                     total_len += item_len
                     num_loss_counted_tokens += (item["labels"] != -100).sum().item()
 
@@ -185,7 +187,9 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                     "num_loss_counted_tokens": num_loss_counted_tokens,
                     "num_samples": num_samples + 1,
                 }
+
         else:
+
             def pad_collate_fn(batch):
                 lens = np.array([len(item["input_ids"]) for item in batch])
                 max_len = max(lens)
