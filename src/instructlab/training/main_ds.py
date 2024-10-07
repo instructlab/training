@@ -553,7 +553,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not args.is_granite or not supports_flash_attention(),
+            is_padding=not (args.is_granite or supports_flash_attention()),
             dataset=dataset,
             seed=args.seed,
         )
