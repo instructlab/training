@@ -148,6 +148,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                 "input_ids": input_ids,
                 "labels": labels,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
+                "num_samples": len(batch),
             }
 
     else:
@@ -159,7 +160,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                 total_len = 0
                 num_loss_counted_tokens = 0
 
-                for item in batch:
+                for num_samples, item in enumerate(batch):
                     item_len = len(item["input_ids"])
                     if total_len + item_len > max_batch_len:
                         break
@@ -182,6 +183,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "num_samples": num_samples + 1,
                 }
         else:
             def pad_collate_fn(batch):
@@ -234,6 +236,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                     "labels": labels,
                     "num_loss_counted_tokens": num_loss_counted_tokens,
                     "attention_mask": attention_mask,
+                    "num_samples": len(batch),
                 }
 
     return pad_collate_fn

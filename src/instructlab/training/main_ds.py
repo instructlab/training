@@ -385,7 +385,9 @@ def train(
             num_loss_counted_tokens = float(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
-            micro_batch_size = float(len(batch["input_ids"]))
+            micro_batch_size = float(
+                torch.tensor([batch.pop("num_samples")])
+            )
             if not args.is_granite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
