@@ -116,5 +116,4 @@ def setup_accelerator(args, model, grad_accum):
         **accel_args,
     )
     accelerator.even_batches = False
-    accelerator.split_batches = True
     return accelerator
