@@ -253,6 +253,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         deepcopy(train_loader),
         lr_scheduler,
     )
+    #Necessary so that Accelerate does not step once per GPU
+    #see https://github.com/huggingface/accelerate/blob/127818fc27ebe5cb236357fff59ff1748326d643/src/accelerate/scheduler.py#L69
+    lr_scheduler.split_batches = True
     return model, lr_scheduler, optimizer, accelerator
 
 
