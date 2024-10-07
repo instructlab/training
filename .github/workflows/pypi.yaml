@@ -111,6 +111,7 @@ jobs:
             - name: "Sigstore sign package"
               uses: sigstore/gh-action-sigstore-python@f514d46b907ebcd5bedc05145c03b69c1edd8b46 # v3.0.0
               with:
+                  release-signing-artifacts: false
                   inputs: |
                       ./dist/*.tar.gz
                       ./dist/*.whl
@@ -125,7 +126,7 @@ jobs:
             # gh-action-pypi-publish has no option to ignore them.
             - name: "Remove sigstore signatures before uploading to PyPI"
               run: |
-                  rm ./dist/*.sigstore
+                  rm ./dist/*.sigstore.json
 
             - name: "Upload to PyPI"
               uses: pypa/gh-action-pypi-publish@ec4db0b4ddc65acdf4bff5fa45ac92d78b56bdf0 # v1.9.0
