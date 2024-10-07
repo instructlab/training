@@ -1,5 +1,4 @@
 # Standard
-from copy import deepcopy
 from functools import partial
 
 # Third Party
