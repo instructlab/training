@@ -1,4 +1,5 @@
 # Standard
+from copy import deepcopy
 from functools import partial
 
 # Third Party
@@ -80,6 +81,16 @@ def get_fsdp_config(args, model):
 
 def setup_accelerator(args, model, grad_accum):
     if args.distributed_training_framework == "deepspeed":
+        # Third Party
+        from deepspeed.runtime.lr_schedules import VALID_LR_SCHEDULES
+        new_lr_schedules = deepcopy(VALID_LR_SCHEDULES)
+        new_lr_schedules.append("LambdaLR")
+        
+        patch_target_module(
+            "deepspeed.runtime.lr_schedules.VALID_LR_SCHEDULES",
+            new_lr_schedules,
+        )
+        
         # Third Party
         from deepspeed import DeepSpeedEngine
 
