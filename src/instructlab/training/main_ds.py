@@ -536,9 +536,7 @@ def main(args):
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
-    flash_enabled = check_flash_attn_enabled(
-        args.flash_attn_disabled, args.use_dolomite
-    )
+    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
 
     dataset = setup_dataset(
         args.data_path,
