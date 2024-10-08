@@ -185,7 +185,7 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "num_samples": num_samples + 1,
+                    "num_samples": num_samples + 1,  # pylint: disable=W0631
                 }
 
         else:
