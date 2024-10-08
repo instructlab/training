@@ -11,11 +11,7 @@ import torch
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
-from instructlab.training.utils import (
-    log_rank_0,
-    make_collate_fn,
-    supports_flash_attention,
-)
+from instructlab.training.utils import log_rank_0, make_collate_fn
 
 
 class TokenDataset(Dataset):
@@ -95,6 +91,7 @@ def setup_dataloader(
     pad_token_id: int,
     num_workers: int = 8,
     use_dolomite=False,
+    flash_enabled=True,
     max_batch_len=60000,
     packing_max_batch_len=60000,
     samples_per_gpu=None,
@@ -102,7 +99,10 @@ def setup_dataloader(
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
-        pad_token_id, use_dolomite=use_dolomite, max_batch_len=max_batch_len
+        pad_token_id,
+        use_dolomite=use_dolomite,
+        flash_enabled=flash_enabled,
+        max_batch_len=max_batch_len,
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
@@ -115,7 +115,7 @@ def setup_dataloader(
             num_replicas=world_size,
             rank=rank,
             seed=seed,
-            padding=not supports_flash_attention(),
+            padding=not flash_enabled,
         )
         sampler = {"batch_sampler": sampler}
     elif sampler == "distributed":

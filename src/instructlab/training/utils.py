@@ -120,7 +120,9 @@ def supports_flash_attention(device_id=0):
     return is_sm8x or is_sm90
 
 
-def make_collate_fn(pad_token_id, use_dolomite=False, max_batch_len=60000):
+def make_collate_fn(
+    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
+):
     rank = int(os.environ["RANK"])
     if use_dolomite:
 
@@ -153,7 +155,7 @@ def make_collate_fn(pad_token_id, use_dolomite=False, max_batch_len=60000):
             }
 
     else:
-        if supports_flash_attention():
+        if flash_enabled:
 
             def pad_collate_fn(batch):
                 input_ids = []
