@@ -120,9 +120,9 @@ def supports_flash_attention(device_id=0):
     return is_sm8x or is_sm90
 
 
-def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
+def make_collate_fn(pad_token_id, use_dolomite=False, max_batch_len=60000):
     rank = int(os.environ["RANK"])
-    if is_granite:
+    if use_dolomite:
 
         def pad_collate_fn(batch):
             lens = np.array([len(item["input_ids"]) for item in batch])
@@ -246,11 +246,11 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False):
+def convert_loss_to_reduce_sum(model, use_dolomite=False):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
-    if is_granite:
+    if use_dolomite:
 
         def get_autoregressive_language_modeling_loss(
             lm_logits: torch.Tensor,
@@ -536,7 +536,7 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
 
 @contextmanager
-def ensure_loadable_granite_checkpoint(
+def ensure_loadable_dolomite_checkpoint(
     model_name_or_path: str,
     tmpdir: str,
 ):
@@ -709,7 +709,7 @@ def save_hf_format_accelerate(
     tokenizer,
     accelerator: Accelerator,
     samples_seen,
-    convert_granite=True,
+    convert_dolomite=True,
     is_lora=False,
 ):
     log_rank_0(
@@ -719,7 +719,7 @@ def save_hf_format_accelerate(
     start = time.time()
 
     final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if args.is_granite and convert_granite:
+    if args.use_dolomite and convert_dolomite:
         tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
         output_dir = Path(tmpdir.name)
     else:
@@ -741,7 +741,7 @@ def save_hf_format_accelerate(
             model_state = model.module.state_dict()
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        if not model.module.config.architectures and convert_granite:
+        if not model.module.config.architectures and convert_dolomite:
             model.module.config.architectures = ["LlamaForCausalLM"]
             warnings.warn(
                 f"Adding architectures to ckpt: {model.module.config.architectures}",
@@ -767,7 +767,7 @@ def save_hf_format_accelerate(
             safe_serialization=True,
         )
 
-    if args.is_granite and convert_granite and accelerator.is_main_process:
+    if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
         # export doesnt like the directory to exist
         if final_output_dir.exists():
             shutil.rmtree(final_output_dir)

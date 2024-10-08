@@ -171,7 +171,7 @@ class TrainingArgs(BaseModel):
     save_samples: int
     learning_rate: float
     warmup_steps: int
-    is_padding_free: bool
+    use_dolomite: bool
     random_seed: int = 42
     checkpoint_at_epoch: bool = True
     accelerate_full_state_at_epoch: bool = True
