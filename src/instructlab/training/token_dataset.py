@@ -11,7 +11,11 @@ import torch
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
-from instructlab.training.utils import log_rank_0, make_collate_fn, supports_flash_attention
+from instructlab.training.utils import (
+    log_rank_0,
+    make_collate_fn,
+    supports_flash_attention,
+)
 
 
 class TokenDataset(Dataset):
