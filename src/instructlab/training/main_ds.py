@@ -104,11 +104,19 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         "quantization_config": bnb_config,
     }
     if not args.disable_flash_attn:
-        base_model_args["attn_implementation"] = "flash_attention_2"
+        if supports_flash_attention():
+            base_model_args["attn_implementation"] = "flash_attention_2"
+            args.flash_enabled = True
+        else:
+            raise RuntimeError(
+                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
+            )
     elif args.use_dolomite:
         raise RuntimeError(
             "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
         )
+    else:
+        args.flash_enabled = False
 
     if args.use_dolomite:
         with ensure_loadable_dolomite_checkpoint(
@@ -552,7 +560,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or supports_flash_attention()),
+            is_padding=not (args.use_dolomite or args.flash_enabled),
             dataset=dataset,
             seed=args.seed,
         )
@@ -576,6 +584,7 @@ def main(args):
         tokenizer.pad_token_id,
         num_workers=8,
         use_dolomite=args.use_dolomite,
+        flash_enabled=args.flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
         samples_per_gpu=args.samples_per_gpu,
@@ -595,6 +604,7 @@ def main(args):
             tokenizer.pad_token_id,
             num_workers=8,
             use_dolomite=args.use_dolomite,
+            flash_enabled=args.flash_enabled,
             max_batch_len=args.max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
             samples_per_gpu=args.samples_per_gpu,
