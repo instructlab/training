@@ -41,6 +41,7 @@ from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
     apply_gradient_checkpointing,
+    check_flash_attn_enabled,
     convert_loss_to_reduce_sum,
     ensure_loadable_dolomite_checkpoint,
     get_projection_layer_names,
@@ -52,7 +53,6 @@ from instructlab.training.utils import (
     save_hf_format_accelerate,
     set_random_seed,
     setup_logger,
-    supports_flash_attention,
 )
 import instructlab.training.data_process as dp
 
@@ -85,7 +85,7 @@ def setup_optimizer(args, model):
     return optimizer
 
 
-def setup_model(args, tokenizer, train_loader, grad_accum):
+def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         # Third Party
@@ -103,20 +103,8 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
         "torch_dtype": torch.bfloat16,
         "quantization_config": bnb_config,
     }
-    if not args.disable_flash_attn:
-        if supports_flash_attention():
-            base_model_args["attn_implementation"] = "flash_attention_2"
-            args.flash_enabled = True
-        else:
-            raise RuntimeError(
-                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
-            )
-    elif args.use_dolomite:
-        raise RuntimeError(
-            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
-        )
-    else:
-        args.flash_enabled = False
+    if flash_enabled:
+        base_model_args["attn_implementation"] = "flash_attention_2"
 
     if args.use_dolomite:
         with ensure_loadable_dolomite_checkpoint(
@@ -548,6 +536,10 @@ def main(args):
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
+    flash_enabled = check_flash_attn_enabled(
+        args.flash_attn_disabled, args.use_dolomite
+    )
+
     dataset = setup_dataset(
         args.data_path,
         mock=args.mock_data,
@@ -560,7 +552,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or args.flash_enabled),
+            is_padding=not (args.use_dolomite or flash_enabled),
             dataset=dataset,
             seed=args.seed,
         )
@@ -584,7 +576,7 @@ def main(args):
         tokenizer.pad_token_id,
         num_workers=8,
         use_dolomite=args.use_dolomite,
-        flash_enabled=args.flash_enabled,
+        flash_enabled=flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
         samples_per_gpu=args.samples_per_gpu,
@@ -604,7 +596,7 @@ def main(args):
             tokenizer.pad_token_id,
             num_workers=8,
             use_dolomite=args.use_dolomite,
-            flash_enabled=args.flash_enabled,
+            flash_enabled=flash_enabled,
             max_batch_len=args.max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
             samples_per_gpu=args.samples_per_gpu,
@@ -628,7 +620,7 @@ def main(args):
         )
 
     model, lr_scheduler, optimizer, accelerator = setup_model(
-        args, tokenizer, train_loader, grad_accum
+        args, tokenizer, train_loader, grad_accum, flash_enabled
     )
 
     load_latest_full_state(args=args, accelerator=accelerator)
