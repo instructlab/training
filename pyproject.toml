@@ -45,6 +45,7 @@ package-dir = { "" = "src" }
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }
 optional-dependencies.cuda = { file = ["requirements-cuda.txt"] }
+optional-dependencies.rocm = { file = ["requirements-rocm.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
