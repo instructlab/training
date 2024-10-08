@@ -120,6 +120,23 @@ def supports_flash_attention(device_id=0):
     return is_sm8x or is_sm90
 
 
+def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
+    if not disable_flash_attn:
+        if supports_flash_attention():
+            flash_enabled = True
+        else:
+            raise RuntimeError(
+                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
+            )
+    elif use_dolomite:
+        raise RuntimeError(
+            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+        )
+    else:
+        flash_enabled = False
+    return flash_enabled
+
+
 def make_collate_fn(
     pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
 ):
