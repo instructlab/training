@@ -18,7 +18,8 @@ from torch.distributed.fsdp import (
     BackwardPrefetch,
     CPUOffload,
     MixedPrecision,
-    ShardingStrategy
+    ShardingStrategy,
+    FullStateDictConfig
 )
 from torch.utils.data import DistributedSampler, DataLoader
 
@@ -30,6 +31,7 @@ from typing import Callable
 from torch.nn import functional as F
 import argparse
 from peft import LoraConfig, LoraModel
+from accelerate import Accelerator, FullyShardedDataParallelPlugin
 
 
 def make_pad_collate_fn(pad_token_id: int | None) -> Callable:
@@ -133,7 +135,6 @@ def main(args):
             lora_dropout=0.1
         )
         model = LoraModel(model, lora_config, "default")
-
     
     wrap_policy=None
     if args.lora_r > 0:
@@ -148,58 +149,64 @@ def main(args):
             }
         )
 
-    model = FullyShardedDataParallel(
-        model,
-        auto_wrap_policy=wrap_policy,
-        backward_prefetch=BackwardPrefetch.BACKWARD_POST,
-        cpu_offload=CPUOffload(
-            offload_params=True,
-        ),
-        use_orig_params=False,
-        mixed_precision=MixedPrecision(
-            buffer_dtype=torch.bfloat16,
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.bfloat16
-        ),
-        sharding_strategy=ShardingStrategy.SHARD_GRAD_OP,
-        limit_all_gathers=True,
-        device_id=torch.cuda.current_device(),
+    accelerator = Accelerator(
+        fsdp_plugin=FullyShardedDataParallelPlugin(
+            auto_wrap_policy=wrap_policy,
+            backward_prefetch=BackwardPrefetch.BACKWARD_POST,
+            cpu_offload=CPUOffload(
+                offload_params=False,
+            ),
+            use_orig_params=False,
+            mixed_precision_policy=MixedPrecision(
+                buffer_dtype=torch.bfloat16,
+                param_dtype=torch.bfloat16,
+                reduce_dtype=torch.bfloat16
+            ),
+            sharding_strategy=ShardingStrategy.SHARD_GRAD_OP,
+            limit_all_gathers=True,
+        )
     )
+
+    print(f'accelerator device: {accelerator.device}')
+    model = accelerator.prepare(model)
+    # )
 
 
     optimizer = AdamW(model.parameters(), lr=1e-5)
+    optimizer, train_loader = accelerator.prepare(optimizer, train_loader)
 
-    model = model.train()
+
+    model.train()
 
     n_epochs = 1
-    memory_reserved = []
-    memory_allocated = []
-    try:
-        for n in range(1, n_epochs+1):
-            train_sampler.set_epoch(n)
-            i = 0
-            for batch in train_loader:
-                # single batch
-                for k in batch:
-                    batch[k] = batch[k].to(device)
-                outputs = model(**batch, use_cache=False)
-                optimizer.zero_grad()
-                print(f'[{i+1:3}/{len(train_loader)}] loss: {outputs.loss}')
-                outputs.loss.backward()
-                optimizer.step()
-                print(torch.cuda.memory_summary())
-                del outputs
-                i += 1
-                torch.cuda.empty_cache()
-    except Exception as e:
-        import json
-        with open(f'memory-data-{local_rank}.json', 'w') as outfile:
-            json.dump({
-                "memory_data": memory_reserved,
-                "memory_allocated": memory_allocated
-            }, outfile)
-        raise e
+    for n in range(1, n_epochs+1):
+        train_sampler.set_epoch(n)
+        i = 0
+        for batch in train_loader:
+            # single batch
+            # for k in batch:
+            #     batch[k] = batch[k].to(device)
+            outputs = model(**batch)
+            optimizer.zero_grad()
+            print(f'[{i+1:3}/{len(train_loader)}] loss: {outputs.loss}')
+            outputs.loss.backward()
+            optimizer.step()
+            # print(torch.cuda.memory_summary())
+            del outputs
+            i += 1
+            torch.cuda.empty_cache()
+   
+    print('training complete')
+    # if local_rank == 0:
+    accelerator.save_model(
+        model,
+        'accelerate-fsdp-pre-model',
+    )
+
+
+
     print('waiting for processes to finish')
+    torch.distributed.barrier()
     torch.distributed.destroy_process_group()
 
             

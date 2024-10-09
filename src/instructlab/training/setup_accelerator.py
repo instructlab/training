@@ -1,9 +1,11 @@
 # Standard
 from functools import partial
+from typing import Callable
 
 # Third Party
 from accelerate import Accelerator
-from torch.distributed.fsdp import (  # FullyShardedDataParallel as FSDP,
+from peft.utils.other import fsdp_auto_wrap_policy
+from torch.distributed.fsdp import (
     BackwardPrefetch,
     MixedPrecision,
     ShardingStrategy,
@@ -56,22 +58,29 @@ def get_fsdp_config(args, model):
     from accelerate.utils import FullyShardedDataParallelPlugin
     from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 
-    block_name = model._no_split_modules[0]
-
-    fsdp_plugin = FullyShardedDataParallelPlugin(
-        auto_wrap_policy=partial(
+    # LoRA & full fine tuning require different wrapping policies
+    wrap_policy: Callable = None
+    if args.lora_r > 0:
+        wrap_policy = fsdp_auto_wrap_policy(model)
+    else:
+        block_name = model._no_split_modules[0]
+        wrap_policy = partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls={
                 get_module_class_from_name(model, block_name),
             },
-        ),
+        )
+
+
+    fsdp_plugin = FullyShardedDataParallelPlugin(
+        auto_wrap_policy=wrap_policy,
         limit_all_gathers=True,
         mixed_precision_policy=MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.bfloat16,
             buffer_dtype=torch.bfloat16,
         ),
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        backward_prefetch=BackwardPrefetch.BACKWARD_POST,
         sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
     )
@@ -113,6 +122,7 @@ def setup_accelerator(args, model, grad_accum):
         )
     accelerator = Accelerator(
         **accel_args,
+        mixed_precision='bf16'
     )
     accelerator.even_batches = False
     return accelerator
