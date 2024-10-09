@@ -35,7 +35,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -630,21 +630,21 @@ def _copy_no_lora_dict(state_dict):
 
 
 def save_dict_accelerate(
-    accelerator,
+    accelerator: Accelerator,
     state_to_save,
     save_directory,
     max_shard_size="5GB",
     safe_serialization=True,
 ):
-    old_get_state = accelerator.get_state_dict
-    accelerator.get_state_dict = _copy_no_lora_dict
+    # old_get_state = accelerator.get_state_dict
+    # accelerator.get_state_dict = _copy_no_lora_dict
 
-    def skip_precheck_loops():
-        return []
+    # def skip_precheck_loops():
+    #     return []
 
     # The save model does a loop over modules and params in order to determine how to get state dict. Since we already have the state dict directly, we want to bypass those checks.
-    state_to_save.modules = skip_precheck_loops
-    state_to_save.parameters = skip_precheck_loops
+    # state_to_save.modules = skip_precheck_loops
+    # state_to_save.parameters = skip_precheck_loops
 
     accelerator.save_model(
         state_to_save,
@@ -653,15 +653,15 @@ def save_dict_accelerate(
         safe_serialization=safe_serialization,
     )
 
-    accelerator.get_state_dict = old_get_state
+    # accelerator.get_state_dict = old_get_state
 
 
 def save_hf_format_accelerate(
     args,
-    model,
-    tokenizer,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
     accelerator: Accelerator,
-    samples_seen,
+    samples_seen: int,
     convert_granite=True,
     is_lora=False,
 ):
@@ -688,11 +688,11 @@ def save_hf_format_accelerate(
 
     accelerator.get_state_dict = _get_state_dict_patched
 
-    if accelerator.is_main_process:
-        if is_lora:
-            model.module.merge_adapter()
-            model_state = model.module.state_dict()
+    # if is_lora:
+    #     model.module.merge_adapter()
+    #     model_state = model.module.state_dict()
 
+    if accelerator.is_main_process:
         output_dir.mkdir(parents=True, exist_ok=True)
         if not model.module.config.architectures and convert_granite:
             model.module.config.architectures = ["LlamaForCausalLM"]
@@ -702,15 +702,15 @@ def save_hf_format_accelerate(
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
-        if is_lora:
-            save_dict_accelerate(
-                accelerator,
-                model_state,
-                save_directory=output_dir,
-                max_shard_size="5GB",
-                safe_serialization=True,
-            )
-            model.module.unmerge_adapter()
+    if is_lora:
+        save_dict_accelerate(
+            accelerator,
+            model,
+            save_directory=output_dir,
+            max_shard_size="5GB",
+            safe_serialization=True,
+        )
+        model.module.unmerge_adapter()
 
     if not is_lora:
         accelerator.save_model(
