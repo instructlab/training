@@ -4,7 +4,6 @@
 from copy import deepcopy
 from pathlib import Path
 import argparse
-import json
 import math
 import os
 import re
@@ -43,6 +42,7 @@ from instructlab.training.utils import (
     add_noisy_embeddings,
     apply_gradient_checkpointing,
     check_flash_attn_enabled,
+    check_valid_train_args,
     convert_loss_to_reduce_sum,
     ensure_loadable_dolomite_checkpoint,
     get_projection_layer_names,
@@ -645,21 +645,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
-    # early validation logic here
-    if train_args.max_batch_len < train_args.max_seq_len:
-        raise ValueError(
-            f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
-        )
-
-    if os.path.exists(train_args.model_path):
-        if not os.path.isdir(train_args.model_path):
-            raise RuntimeError(
-                "Model path does not appear to be a dir, please validate or update the path"
-            )
-    else:
-        raise RuntimeError(
-            "Model Path cannot be found, please verify existense and permissions"
-        )
+    check_valid_train_args(train_args)
 
     # process the training data
     if not os.path.exists(train_args.data_output_dir):
@@ -716,19 +702,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             command.append(f"--mock_len={train_args.mock_len}")
 
     if train_args.use_dolomite:
-        with open(Path(train_args.model_path) / "config.json") as conf_json:
-            model_conf = json.load(conf_json)
-        if model_conf["model_type"] == "granite":
-            raise RuntimeError(
-                "Converting Granite models to Dolomite format is currently unsupported."
-            )
         command.append("--use_dolomite")
 
     if train_args.disable_flash_attn:
-        if train_args.use_dolomite:
-            raise RuntimeError(
-                "ERROR: Trying to use padding-free transformer without flash attention is not supported"
-            )
         command.append("--disable_flash_attn")
 
     if train_args.lora:
