@@ -355,7 +355,7 @@ def main(args: DataProcessArgs):
     )
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids", "len"])
     # use path to get the stem of the file
-    data_with_labels.to_json(Path(args.data_output_path) / f"data.jsonl")
+    data_with_labels.to_json(Path(args.data_output_path) / "data.jsonl")
 
 
 if __name__ == "__main__":
