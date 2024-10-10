@@ -1,33 +1,32 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-import math
 from copy import deepcopy
 from typing import Any, Tuple
+import math
 
 # Third Party
+# pylint: disable=no-name-in-module
+from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
+from transformers import AutoModelForCausalLM, get_scheduler
 import torch
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig, get_scheduler
 
 # First Party
 from instructlab.training.config import DistributedBackend
+from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.setup_optimizer import setup_optimizer
 from instructlab.training.utils import (
-    ensure_loadable_granite_checkpoint,
-    convert_loss_to_reduce_sum,
     add_noisy_embeddings,
+    apply_gradient_checkpointing,
+    convert_loss_to_reduce_sum,
+    ensure_loadable_granite_checkpoint,
     get_projection_layer_names,
     prepare_peft_model,
-    setup_accelerator,
-    apply_gradient_checkpointing,  
 )
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM 
+
 
 def setup_model(
-    args: Any,
-    tokenizer: Any,
-    train_loader: Any,
-    grad_accum: int
+    args: Any, tokenizer: Any, train_loader: Any, grad_accum: int
 ) -> Tuple[torch.nn.Module, Any, torch.optim.Optimizer, Any]:
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:

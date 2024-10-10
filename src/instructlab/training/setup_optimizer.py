@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
-# Third Party
-import torch
-from torch.optim import Optimizer  
-from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam  
+# Standard
 from typing import Any
 
+# Third Party
+from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+import torch
+
 # First Party
-from instructlab.training.config import DistributedBackend 
+from instructlab.training.config import DistributedBackend
+
 
 def setup_optimizer(args: Any, model: torch.nn.Module) -> torch.optim.Optimizer:
     if args.distributed_training_framework == DistributedBackend.FSDP.value:
