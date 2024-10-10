@@ -59,7 +59,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             )
     else:
         raise FileNotFoundError(
-            "Model Path cannot be found, please verify existense and permissions"
+            "Model Path cannot be found, please verify existence and permissions"
         )
 
     if train_args.use_dolomite:
