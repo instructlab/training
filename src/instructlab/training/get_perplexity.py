@@ -696,8 +696,6 @@ def main(args):
         args, tokenizer, train_loader, grad_accum, flash_enabled
     )
 
-    load_latest_full_state(args=args, accelerator=accelerator)
-
     # train(
     #     args,
     #     model,
