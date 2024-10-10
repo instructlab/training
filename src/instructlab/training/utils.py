@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, List, Optional
 import importlib
 import inspect
+import json
 import logging
 import os
 import random
@@ -39,6 +40,39 @@ from transformers import PreTrainedModel
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# First Party
+from instructlab.training.config import TrainingArgs
+
+
+def check_valid_train_args(train_args: TrainingArgs):
+    # early validation logic here
+    if train_args.max_batch_len < train_args.max_seq_len:
+        raise ValueError(
+            f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
+        )
+
+    if os.path.exists(train_args.model_path):
+        if not os.path.isdir(train_args.model_path):
+            raise FileNotFoundError(
+                "Model path does not appear to be a dir, please validate or update the path"
+            )
+    else:
+        raise FileNotFoundError(
+            "Model Path cannot be found, please verify existence and permissions"
+        )
+
+    if train_args.use_dolomite:
+        with open(Path(train_args.model_path) / "config.json") as conf_json:
+            model_conf = json.load(conf_json)
+        if model_conf["model_type"] == "granite":
+            raise RuntimeError(
+                "Converting Granite models to Dolomite format is currently unsupported."
+            )
+        if train_args.disable_flash_attn:
+            raise RuntimeError(
+                "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+            )
 
 
 def retrieve_chat_template(chat_tmpl_path):
