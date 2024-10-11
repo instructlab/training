@@ -426,6 +426,8 @@ def main(args):
 
     args.sampler = "distributed"
     args.samples_per_gpu = 100
+    grad_accum = 1
+    packing_max_batch_len  = None
 
     train_loader = setup_dataloader(
         dataset,
