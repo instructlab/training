@@ -315,201 +315,6 @@ def maybe_resume_training(args, model):
     # we will update the start step here
     return model
 
-
-def train(
-    args,
-    model,
-    optimizer,
-    lr_scheduler,
-    accelerator: Accelerator,
-    tokenizer,
-    train_loader,
-    grad_accum,
-    metric_logger,
-):
-    model.train()
-
-    global_step = 1
-    local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-
-    batch_size = args.effective_batch_size // grad_accum
-    samples_seen = 0
-
-    if hasattr(args, "samples_seen"):
-        print(f"\033[93mUpdating 'samples_seen' {args.samples_seen}\033[0m")
-        samples_seen = args.samples_seen
-
-    if args.save_samples > 0:
-        args.save_samples = (args.save_samples // batch_size) * batch_size
-        (
-            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-            if local_rank == 0
-            else None
-        )
-
-    if args.save_samples_ds is not None:
-        args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
-        (
-            print(
-                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
-            )
-            if local_rank == 0
-            else None
-        )
-
-    global_grad_norm = None
-    for epoch in range(args.current_epoch, args.num_epochs):
-        if args.sampler in ("multipack"):
-            train_loader.batch_sampler.set_epoch(epoch)
-        elif args.sampler in ("distributed"):
-            train_loader.sampler.set_epoch(epoch)
-        else:
-            raise NotADirectoryError
-
-        if local_rank == 0:
-            inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
-
-        # blast through the batches in the train loader up to the last step within the epoch.
-        for batch in train_loader:
-            if global_step <= args.last_step:
-                # in the case of resuming, last_step > 0
-                global_step += 1
-                if local_rank == 0:
-                    inner_pb.update(1)
-                continue
-            start = time.time()
-            num_loss_counted_tokens = float(
-                torch.tensor([batch.pop("num_loss_counted_tokens")])
-            )
-            micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
-            if not args.use_dolomite:
-                for k in batch:
-                    batch[k] = batch[k].to(local_rank)
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
-            log_perplexity = loss.detach().item()
-
-            num_loss_counted_tokens, micro_batch_size, log_perplexity = map(
-                float,
-                accelerator.reduce(
-                    torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_perplexity],
-                        dtype=torch.float32,
-                        device=accelerator.device,
-                    ),
-                    reduction="sum",
-                ),
-            )
-            samples_seen += int(micro_batch_size)
-
-            # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
-            )
-            accelerator.backward(loss)
-
-            if global_step % grad_accum == 0:
-                global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-            if local_rank == 0:
-                elapsed_time = time.time() - start
-                overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
-                global_grad_norm = (
-                    model.get_global_grad_norm()
-                    if hasattr(model, "get_global_grad_norm")
-                    else global_grad_norm
-                )
-                global_grad_norm = (
-                    float(global_grad_norm) if global_grad_norm is not None else None
-                )
-                # TODO - Bring back weight_norm gather
-                # weight_norm = float(
-                #     model.optimizer.single_partition_of_fp32_groups[0].norm()
-                # )
-
-                # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_sync(
-                    {
-                        "epoch": epoch,
-                        "step": global_step,
-                        "rank": torch.distributed.get_rank(),
-                        "overall_throughput": overall_throughput,
-                        "lr": current_lr,
-                        "cuda_mem_allocated": cuda_mem_allocated,
-                        "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "batch_size": int(micro_batch_size),
-                        "total_loss": float(log_perplexity / num_loss_counted_tokens),
-                        "samples_seen": samples_seen,
-                        "gradnorm": global_grad_norm,
-                        # "weight_norm": weight_norm,
-                    }
-                )
-
-            if args.save_samples > 0 and (
-                global_step * batch_size % args.save_samples == 0
-            ):
-                save_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=tokenizer,
-                    samples_seen=samples_seen,
-                    is_lora=bool(args.lora_r),
-                    hf_format=True,
-                )
-
-            # if (
-            #     args.save_samples_ds is not None
-            #     and global_step * batch_size % args.save_samples_ds == 0
-            # ):
-            #     save_model_ds_native(
-            #         args,
-            #         model,
-            #         tokenizer,
-            #         global_step * args.samples_per_gpu * world_size,
-            #     )
-            global_step += 1
-            if local_rank == 0:
-                inner_pb.update(1)
-            torch.cuda.empty_cache()
-        if args.checkpoint_at_epoch:
-            save_checkpoint(
-                args=args,
-                accelerator=accelerator,
-                model=model,
-                tokenizer=tokenizer,
-                samples_seen=samples_seen,
-                is_lora=bool(args.lora_r),
-                full_state=args.accelerate_full_state_at_epoch,
-                hf_format=True,
-                epoch=epoch,
-            )
-
-    if args.save_last:
-        save_hf_format_accelerate(
-            args,
-            model,
-            tokenizer,
-            accelerator,
-            samples_seen,
-            is_lora=bool(args.lora_r),
-        )
-
-
 def get_perplexity(args, model, tokenizer, eval_loader, accelerator, metric_logger):
     model.eval()
 
@@ -555,31 +360,31 @@ def get_perplexity(args, model, tokenizer, eval_loader, accelerator, metric_logg
             if local_rank == 0:
                 pb.update(1)
             
-            metric_logger.log_sync(
-                    {
-                        "log_perplexity": log_perplexity,
-                        "num_loss_counted_tokens": num_loss_counted_tokens,
-                        "total_log_perplexity": total_log_perplexity,
-                        "total_num_tokens": total_num_tokens,
-                        "num_samples": num_samples,
-                        "total_samples": total_samples,
-                    }
-                )
+                metric_logger.log_sync(
+                        {
+                            "log_perplexity": log_perplexity,
+                            "num_loss_counted_tokens": num_loss_counted_tokens,
+                            "total_log_perplexity": total_log_perplexity,
+                            "total_num_tokens": total_num_tokens,
+                            "num_samples": num_samples,
+                            "total_samples": total_samples,
+                        }
+                    )
 
         # Calculate final perplexity
         average_log_perp = total_log_perplexity/total_num_tokens
         avg_perplexity = math.exp(average_log_perp)
 
-
-        metric_logger.log_sync(
-                    {
-                        "average_log_perp": average_log_perp,
-                        "avg_perplexity": avg_perplexity,
-                        "total_log_perplexity": total_log_perplexity,
-                        "total_num_tokens": total_num_tokens,
-                        "avg_perplexity": avg_perplexity,
-                    }
-                )
+        if local_rank == 0:
+            metric_logger.log_sync(
+                        {
+                            "average_log_perp": average_log_perp,
+                            "avg_perplexity": avg_perplexity,
+                            "total_log_perplexity": total_log_perplexity,
+                            "total_num_tokens": total_num_tokens,
+                            "total_samples": total_samples,
+                        }
+                    )
 
     return avg_perplexity
 
@@ -619,30 +424,8 @@ def main(args):
         mock_len=args.mock_len,
     )
 
-    try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
-            dataset=dataset,
-            seed=args.seed,
-        )
-        args.sampler = "multipack"
-    except RuntimeError as e:
-        if os.environ["LOCAL_RANK"] == "0":
-            print(f"\033[38;5;120m{e}\033[0m")
-
-        # fallback to grad accum = 1
-        # NOTE: packing max batch len will not be used
-        packing_max_batch_len = None
-        grad_accum = 1
-        args.sampler = "distributed"
-
-    args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
-    )
+    args.sampler = "distributed"
+    args.samples_per_gpu = 100
 
     train_loader = setup_dataloader(
         dataset,
@@ -656,26 +439,6 @@ def main(args):
         sampler=args.sampler,
         seed=args.seed,
     )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        print(
-            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
-        )
-        args.sampler = "distributed"
-        train_loader = setup_dataloader(
-            dataset,
-            tokenizer.pad_token_id,
-            num_workers=8,
-            use_dolomite=args.use_dolomite,
-            flash_enabled=flash_enabled,
-            max_batch_len=args.max_batch_len,
-            packing_max_batch_len=packing_max_batch_len,
-            samples_per_gpu=args.samples_per_gpu,
-            sampler=args.sampler,
-            seed=args.seed,
-        )
 
     if args.local_rank == 0:
         metric_logger.log_sync(

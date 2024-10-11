@@ -137,6 +137,7 @@ def setup_dataloader(
         **sampler,
         num_workers=num_workers,
         collate_fn=collate_fn,
+        drop_last=False,
     )
 
     return dataloader
