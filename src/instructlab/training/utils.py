@@ -35,7 +35,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F

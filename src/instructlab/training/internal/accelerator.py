@@ -51,7 +51,7 @@ class __SuperAccelerator(Accelerator):
         # Make sure this only happens once per object lifecycle - we call accelerator.prepare
         # several times.
         num_times_found = 0
-        if self.distributed_type == DistributedType.FSDP and not self.cpu_model and self.is_main_process:
+        if self.distributed_type == DistributedType.FSDP and self.is_main_process and not self._cpu_model:
             for arg in args:
                 if isinstance(arg, nn.Module) and wraps(arg, PreTrainedModel) and wraps(arg, LoraModel):
                     self._is_lora = True
