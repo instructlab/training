@@ -18,7 +18,7 @@ from deepspeed.runtime.zero.utils import ZeRORuntimeException
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, get_scheduler
+from transformers import AutoModelForCausalLM, get_scheduler, LlamaForCausalLM, PreTrainedModel
 import torch
 import torch.distributed
 
@@ -237,6 +237,15 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     accelerator = setup_accelerator(args, model, grad_accum)
     if args.distributed_training_framework == DistributedBackend.FSDP.value:
         model = accelerator.prepare(model)
+        # print(model)
+        # print(f"model is instance of Pretrainemodel: {isinstance(model, PreTrainedModel)}")
+    
+    # if accelerator.is_main_process:
+    #     from IPython import embed; embed()
+        
+    torch.distributed.barrier()
+    
+        
     optimizer = setup_optimizer(args, model)
 
     lr_scheduler = get_scheduler(
@@ -525,9 +534,11 @@ def main(args):
     tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
     # device = torch.device("cuda", args.local_rank)
 
+    local_rank = int(os.environ['LOCAL_RANK'])
+
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    args.local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    args.local_rank = local_rank
     torch.distributed.init_process_group("nccl")
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
@@ -540,6 +551,8 @@ def main(args):
         mock_len=args.mock_len,
     )
 
+    # check this across all processes - in theory this shouldnt matter but doing it anyway cause its cool 😎
+    multipack_did_fail = torch.ByteTensor([False]).cuda()
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
             num_gpus=torch.distributed.get_world_size(),
@@ -551,7 +564,7 @@ def main(args):
             seed=args.seed,
         )
         args.sampler = "multipack"
-    except RuntimeError as e:
+    except (RuntimeError, ZeroDivisionError) as e:
         if os.environ["LOCAL_RANK"] == "0":
             print(f"\033[38;5;120m{e}\033[0m")
 
@@ -559,7 +572,14 @@ def main(args):
         # NOTE: packing max batch len will not be used
         packing_max_batch_len = None
         grad_accum = 1
-        args.sampler = "distributed"
+        multipack_did_fail[0] = 1
+    finally:
+        torch.distributed.all_reduce(multipack_did_fail, op=torch.distributed.ReduceOp.MAX)
+        if multipack_did_fail[0]:
+            print('multipack was found to fail on at least one process, falling back to naive sampling')
+            args.sampler = "distributed"
+
+    
 
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()

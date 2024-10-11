@@ -21,7 +21,7 @@ import warnings
 
 # Third Party
 # pylint: disable=no-name-in-module
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedType
 from instructlab.dolomite.hf_models import (
     GPTDolomiteConfig,
     export_to_huggingface,
@@ -39,6 +39,8 @@ from transformers import PreTrainedModel
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from instructlab.training.internal import __SuperAccelerator
 
 
 def retrieve_chat_template(chat_tmpl_path):
@@ -655,13 +657,29 @@ def save_dict_accelerate(
 
     accelerator.get_state_dict = old_get_state
 
+def save_hf_format_accelerate_lora(
+    args,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    accelerator: __SuperAccelerator,
+):
+    print('SAVING LORA')
+    if accelerator.is_main_process:
+        accelerator.save_lora_fsdp(
+            model,
+            save_directory=args.output_dir,
+            max_shard_size="5GB",
+            safe_serialization=True
+        )
+        tokenizer.save_pretrained(args.output_dir)
+    dist.barrier()
 
 def save_hf_format_accelerate(
     args,
-    model,
-    tokenizer,
-    accelerator: Accelerator,
-    samples_seen,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizer,
+    accelerator: __SuperAccelerator,
+    samples_seen: int,
     convert_granite=True,
     is_lora=False,
 ):
@@ -681,12 +699,13 @@ def save_hf_format_accelerate(
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
 
-    get_state_dict_unpatched = accelerator.get_state_dict
+    if is_lora and accelerator.distributed_type == DistributedType.FSDP:
+        save_hf_format_accelerate_lora(args, model, tokenizer, accelerator)
+        return
 
-    def _get_state_dict_patched(model, unwrap=False):
-        return get_state_dict_unpatched(model, unwrap=unwrap)
-
-    accelerator.get_state_dict = _get_state_dict_patched
+    if is_lora:
+        model.module.merge_adapter()
+        model_state = model.module.state_dict()
 
     if accelerator.is_main_process:
         if is_lora:
@@ -735,7 +754,6 @@ def save_hf_format_accelerate(
     log_rank_0(f"saving took {time.time() - start} seconds")
     dist.barrier()
 
-    accelerator.get_state_dict = get_state_dict_unpatched
 
 
 # this is native deepspeed saving with optimizer, scheduler
