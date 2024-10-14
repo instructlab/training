@@ -1,19 +1,30 @@
 # Standard
+from copy import deepcopy
 from functools import partial
+import os
+from typing import Callable, Tuple, Any, Union
 
 # Third Party
-from accelerate import Accelerator
-from torch.distributed.fsdp import (  # FullyShardedDataParallel as FSDP,
+from accelerate import Accelerator, DistributedType
+from peft.tuners.lora.model import LoraModel
+from peft.utils.other import fsdp_auto_wrap_policy
+from torch.distributed.fsdp import (
     BackwardPrefetch,
     MixedPrecision,
     ShardingStrategy,
 )
+from torch import nn
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 import torch
+from torch import distributed as dist
+from transformers import PreTrainedModel
 
 # First Party
 from instructlab.training.config import DeepSpeedOptions
 from instructlab.training.utils import get_module_class_from_name, patch_target_module
+from instructlab.training.internal import __SuperAccelerator
+
+
 
 
 def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
@@ -58,22 +69,30 @@ def get_fsdp_config(args, model):
 
     block_name = model._no_split_modules[0]
 
-    fsdp_plugin = FullyShardedDataParallelPlugin(
-        auto_wrap_policy=partial(
+    wrap_policy = None
+    if args.lora_r > 0:
+        from peft.utils.other import fsdp_auto_wrap_policy
+        wrap_policy = fsdp_auto_wrap_policy(model)
+    else:
+        wrap_policy = partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls={
                 get_module_class_from_name(model, block_name),
             },
-        ),
+        )
+
+    fsdp_plugin = FullyShardedDataParallelPlugin(
+        auto_wrap_policy=wrap_policy,
         limit_all_gathers=True,
         mixed_precision_policy=MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.bfloat16,
             buffer_dtype=torch.bfloat16,
         ),
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        backward_prefetch=BackwardPrefetch.BACKWARD_POST,
         sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
+        use_orig_params=False,
     )
     return fsdp_plugin
 
@@ -106,12 +125,13 @@ def setup_accelerator(args, model, grad_accum):
     elif args.distributed_training_framework == "fsdp":
         accel_args = {
             "fsdp_plugin": get_fsdp_config(args, model),
+            'mixed_precision': "bf16",
         }
     else:
         raise ValueError(
             f"Unknown sharding framework: {args.distributed_training_framework}"
         )
-    accelerator = Accelerator(
+    accelerator = __SuperAccelerator(
         **accel_args,
     )
     accelerator.even_batches = False
