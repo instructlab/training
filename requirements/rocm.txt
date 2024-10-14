@@ -1,0 +1,2 @@
+# Extra dependencies for AMD ROCm
+flash-attn>=2.6.2,<2.7.0

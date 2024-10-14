@@ -1,2 +1,3 @@
+# Extra dependencies for NVIDIA CUDA
 flash-attn>=2.4.0
 bitsandbytes>=0.43.1
