@@ -7,7 +7,9 @@ from accelerate import Accelerator, DistributedType
 from peft import LoraModel
 from torch import distributed as dist
 from torch import nn
+from torch.cuda import empty_cache
 from transformers import PreTrainedModel
+import torch
 
 def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     """Checks if a module or its children are an instance of one of the provided classes.
@@ -51,20 +53,22 @@ class __SuperAccelerator(Accelerator):
         # Make sure this only happens once per object lifecycle - we call accelerator.prepare
         # several times.
         num_times_found = 0
+        using_lora = torch.ByteTensor([False]).cuda()
         if self.distributed_type == DistributedType.FSDP and self.is_main_process and not self._cpu_model:
             for arg in args:
                 if isinstance(arg, nn.Module) and wraps(arg, PreTrainedModel) and wraps(arg, LoraModel):
-                    self._is_lora = True
+                    using_lora[0] = True
                     num_times_found += 1
-                    # from IPython import embed; embed()
                     # cpu model setter logic will handle validation - but this may be a stupid idea and
                     # we should instead handle it here
-                    # self.cpu_model = arg
-                
-
+                    self.cpu_model = arg
+                    break
+                    
         print(f'number of times we found a lora pretrained arg: {num_times_found}')
-        dist.breakpoint()
         dist.barrier()
+        dist.all_reduce(using_lora, op=dist.ReduceOp.MAX)
+        if using_lora[0]:
+            self._is_lora = True
         return super().prepare(*args, **kwargs)
 
     @property
@@ -92,3 +96,56 @@ class __SuperAccelerator(Accelerator):
             raise RuntimeError('Copying a model from the GPU to the CPU is not supported.')
 
         self._cpu_model = deepcopy(model)
+
+    def save_lora_fsdp(self, model: nn.Module, *args, **kwargs) -> None:
+        """Extension of the `accelerate.Accelerator.save_model` method.
+
+        This provides the ability to save a model in SafeTensors format when training a LoRA with FSDP.
+
+        Args:
+            model (nn.Module): The accelerator-wrapped model to save.
+        """
+        
+        
+        if self.distributed_type != DistributedType.FSDP:
+            raise RuntimeError('`__SuperAccelerator.save_fsdp_lora` was called when FSDP was not being used.')
+        if not self._is_lora:
+            raise RuntimeError('`__SuperAccelerator.save_fsdp_lora` was called but was not configured to use LoRA')
+
+        print('GETTING OLD MODEL STATE DICT')
+        model_state = self.get_state_dict(model, unwrap=True)
+        print('COPYING CPU MODEL')
+        if self.is_main_process:
+            tmp_model: LoraModel = deepcopy(self.cpu_model)
+            print('LOADING STATE DICT INTO TEMP MODEL')
+            tmp_model.load_state_dict(model_state)
+            print('MERGING & UNLOADING TEMP MODEL')
+            tmp_model.merge_and_unload(True)
+            print('GETTING STATE DICT FROM TEMP MODEL')
+            model_state = tmp_model.state_dict()
+
+            old_get_state_dict = self.get_state_dict
+            def _custom_get_state_dict(ref: Accelerator, *args, **kwargs):
+                """
+                Custom function to trick `accelerate.Accelerator` to get a state dict that will work
+                when training with LoRA & FSDP.
+                """
+                print('RETURNING TEMP MODEL STATE DICT INTO ACCELERATORS SAVE MODEL')
+                return model_state
+        
+            print('OVERWRITING get_state_dict WITH CUSTOM FN')
+            self.get_state_dict = _custom_get_state_dict
+            print('CALLING ACCELERATOR SAVE_MODEL')
+            self.save_model(model, *args, **kwargs)
+            print('RETURNING get_state_dict FUNCTION TO OLD')
+            self.get_state_dict = old_get_state_dict
+
+            print('DELETING TMP MODEL')
+            del tmp_model
+            empty_cache()
+        
+
+        
+        print('SAVED SUCCESSFULLY')
+        # from IPython import embed; embed()
+

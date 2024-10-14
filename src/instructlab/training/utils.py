@@ -662,16 +662,23 @@ def save_hf_format_accelerate_lora(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
     accelerator: __SuperAccelerator,
+    # config_file: Path
 ):
     print('SAVING LORA')
-    if accelerator.is_main_process:
-        accelerator.save_lora_fsdp(
-            model,
-            save_directory=args.output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True
-        )
-        tokenizer.save_pretrained(args.output_dir)
+    # if accelerator.is_main_process:
+    output_dir = Path(args.output_dir)
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+    accelerator.save_lora_fsdp(
+        model,
+        save_directory=args.output_dir,
+        max_shard_size="5GB",
+        safe_serialization=True
+    )
+    config_file_out = Path(f'{args.output_dir}/config.json')
+    
+    model.config.to_json_file(config_file_out)
+    tokenizer.save_pretrained(args.output_dir)
     dist.barrier()
 
 def save_hf_format_accelerate(
@@ -700,7 +707,7 @@ def save_hf_format_accelerate(
     output_config_file = output_dir / CONFIG_NAME
 
     if is_lora and accelerator.distributed_type == DistributedType.FSDP:
-        save_hf_format_accelerate_lora(args, model, tokenizer, accelerator)
+        save_hf_format_accelerate_lora(args, model, tokenizer, accelerator )
         return
 
     if is_lora:
