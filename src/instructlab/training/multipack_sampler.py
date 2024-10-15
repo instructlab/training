@@ -76,7 +76,7 @@ def find_max_pack_len_with_padding(
             padding=True,
         )
         batches = sampler.generate_batches()
-        return len(dataset) / len(batches)
+        return len(dataset) / len(batches if len(batches) > 0 else None
 
     samples_per_gpu = samples_per_minibatch / num_gpus
 
