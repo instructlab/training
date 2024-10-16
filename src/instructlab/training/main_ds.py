@@ -18,7 +18,7 @@ from deepspeed.runtime.zero.utils import ZeRORuntimeException
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, get_scheduler
+from transformers import AutoModelForCausalLM, get_scheduler, LlamaForCausalLM
 import torch
 import torch.distributed
 
@@ -177,7 +177,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum):
     if args.lora_r > 0:
         # if lora
         # Third Party
-        from peft import LoraConfig
+        from peft import LoraConfig, LoraModel
 
         # ensure we select only the modules that exist in the model
         proj_layers = get_projection_layer_names(model)
@@ -317,7 +317,7 @@ def maybe_resume_training(args, model):
 
 def train(
     args,
-    model,
+    model: LlamaForCausalLM,
     optimizer,
     lr_scheduler,
     accelerator: Accelerator,
@@ -461,6 +461,8 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
+                print('SAVING LORA MODEL')
+                # accelerator.save_model(model, 'training_library_model_save_lora')
                 save_checkpoint(
                     args=args,
                     accelerator=accelerator,
@@ -470,6 +472,7 @@ def train(
                     is_lora=bool(args.lora_r),
                     hf_format=True,
                 )
+                print('\033[92mSUCCESS\033[0m')
 
             # if (
             #     args.save_samples_ds is not None
