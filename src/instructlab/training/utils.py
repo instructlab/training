@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+from argparse import Namespace
 from collections import OrderedDict
 from contextlib import contextmanager
 from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 import importlib
 import inspect
 import logging
@@ -21,7 +22,7 @@ import warnings
 
 # Third Party
 # pylint: disable=no-name-in-module
-from accelerate import Accelerator
+from accelerate import Accelerator, DistributedType
 from instructlab.dolomite.hf_models import (
     GPTDolomiteConfig,
     export_to_huggingface,
@@ -29,19 +30,23 @@ from instructlab.dolomite.hf_models import (
 )
 from rich.logging import RichHandler
 from torch import distributed as dist
+from torch import nn
 from torch.distributed import get_rank, is_initialized
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from transformers import PreTrainedModel
+from torch.distributed.fsdp import FullStateDictConfig
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import StateDictType
+from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F
 
 # First Party
-from instructlab.training.config import TrainingArgs
+from instructlab.training.config import DistributedBackend, TrainingArgs
 
 
 def check_valid_train_args(train_args: TrainingArgs):
@@ -403,9 +408,133 @@ def patch_target_module(
     setattr(source, obj_name_to_patch, replace_with)
 
 
+def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
+    """Checks if a module or its children are an instance of one of the provided classes.
+
+    Args:
+        module (nn.Module): A PyTorch module.
+        wrapped_classes(Tuple): A tuple of potential classes the module could be.
+
+    Returns:
+        bool: True if the module or any of its children are instances of one of `wrapped_classes`, False otherwise.
+    """
+    if isinstance(module, wrapped_classes):
+        return True
+
+    for m in module.children():
+        if wraps(m, wrapped_classes):
+            return True
+
+    return False
+
+
+def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
+    # if lora
+    # Third Party
+    from peft import LoraConfig
+
+    # ensure we select only the modules that exist in the model
+    proj_layers = get_projection_layer_names(model)
+    if not args.lora_target_modules:
+        print(
+            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+        )
+        if not proj_layers:
+            raise RuntimeError("could not find any projection layers in the model")
+        args.__dict__["lora_target_modules"] = proj_layers
+    else:
+        # when the user specifies the module, we should verify that they align with what's in the model
+        lora_target_modules_set = set(args.lora_target_modules)
+        diff = lora_target_modules_set - set(proj_layers)
+        layers_to_target = lora_target_modules_set - diff
+        if len(diff) == len(args.lora_target_modules):
+            raise ValueError(
+                f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
+            )
+        if diff:
+            print(
+                f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
+            )
+        args.__dict__["lora_target_modules"] = list(layers_to_target)
+
+    return LoraConfig(
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        r=args.lora_r,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=args.lora_target_modules,
+    )
+
+
+def save_fsdp_lora_model(
+    args: Namespace,
+    model: FSDP,
+    tokenizer: PreTrainedTokenizer,
+    accelerator: Accelerator,
+    output_dir: Path,
+):
+    """Given a LoRA model wrapped by FSDP and Accelerate, save a full copy of the original
+    model with the trained LoRA adapters merged into the copy.
+
+    This function creates a full copy of the model being trained and stores it in CPU memory.
+    If encountering OOM errors on CPU, this is likely a culprit.
+
+    Args:
+        args (Namespace): Args received by the ArgumentParser.
+        model (FSDP): FSDP model as prepared by `accelerate.Accelerator`
+        accelerator (Accelerator): The given accelerator object.
+    """
+    # Third Party
+    from peft import LoraConfig, LoraModel
+
+    if accelerator.distributed_type != DistributedType.FSDP:
+        raise RuntimeError(
+            "`save_fsdp_lora_model` was called when FSDP was not being used."
+        )
+    if not wraps(model, FSDP):
+        raise RuntimeError(
+            "`save_fsdp_lora_model` was called but provided model is not an FSDP model."
+        )
+    if not wraps(model, LoraModel):
+        raise RuntimeError(
+            "`save_fsdp_lora_model` was called but provided model is not a LoRA model."
+        )
+
+    # okay now that validation is out of the way, we are free to implement saving
+    lora_conf: LoraConfig = args.lora_config
+    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
+        state = model.state_dict()
+
+    # When training a LoRA with FSDP and Accelerate, you cannot directly merge the adapters into
+    # the model wrapped by FSDP. To get around this limitation, we get a copy of the state dict
+    # create an identical model on CPU, load the state dict into the CPU model, merge the adapters
+    # and save the model to disk.
+    if accelerator.is_main_process:
+        # remove device_map from args list so we can load the model on CPU
+        old_device_map = args.base_model_args.pop("device_map", None)
+        model_copy = AutoModelForCausalLM.from_pretrained(
+            **args.base_model_args, device_map="cpu"
+        )
+        model_copy = LoraModel(model_copy, lora_conf, "default")
+        model_copy.load_state_dict(state)
+        model_copy.merge_and_unload(progressbar=True)
+        model_copy.save_pretrained(output_dir, safe_serialization=True)
+        model.config.to_json_file(f"{output_dir}/config.json")
+        tokenizer.save_pretrained(output_dir)
+        del model_copy
+        if old_device_map:
+            # return the previous device_map so it can be used later on if needed
+            args.base_model_args["device_map"] = old_device_map
+
+    dist.barrier()
+
+
 def prepare_peft_model(
-    model,
+    model: PreTrainedModel,
     peft_config,
+    distributed_backend: str,
     gradient_checkpointing=True,
     gradient_checkpointing_kwargs={"use_reentrant": True},
     mixed_precision="bf16",
@@ -413,6 +542,7 @@ def prepare_peft_model(
     # will guard this
     # Third Party
     from peft import (
+        LoraModel,
         PeftConfig,
         PeftModel,
         get_peft_model,
@@ -454,7 +584,11 @@ def prepare_peft_model(
                     make_inputs_require_grad
                 )
 
-        model = get_peft_model(model, peft_config)
+        if distributed_backend == DistributedBackend.FSDP.value:
+            # FSDP doesn't like `get_peft_model` as it leads to dtype mismatches
+            model = LoraModel(model, peft_config, "default")
+        else:
+            model = get_peft_model(model, peft_config)
         if mixed_precision == "bf16" and getattr(model, "is_loaded_in_4bit", False):
             peft_module_casting_to_bf16(model)
 
@@ -729,7 +863,7 @@ def _copy_no_lora_dict(state_dict):
 
 
 def save_dict_accelerate(
-    accelerator,
+    accelerator: Accelerator,
     state_to_save,
     save_directory,
     max_shard_size="5GB",
@@ -780,6 +914,18 @@ def save_hf_format_accelerate(
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
 
+    # XXX(osilkin): LoRA + FSDP requires a different saving path than the others
+    #               so we set this variable and use it to avoid those paths further down.
+    is_fsdp_lora = is_lora and accelerator.distributed_type == DistributedType.FSDP
+    if is_fsdp_lora:
+        save_fsdp_lora_model(
+            args=args,
+            model=model,
+            tokenizer=tokenizer,
+            accelerator=accelerator,
+            output_dir=output_dir,
+        )
+
     get_state_dict_unpatched = accelerator.get_state_dict
 
     def _get_state_dict_patched(model, unwrap=False):
@@ -787,7 +933,7 @@ def save_hf_format_accelerate(
 
     accelerator.get_state_dict = _get_state_dict_patched
 
-    if accelerator.is_main_process:
+    if not is_fsdp_lora and accelerator.is_main_process:
         if is_lora:
             model.module.merge_adapter()
             model_state = model.module.state_dict()

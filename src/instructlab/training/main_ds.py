@@ -45,8 +45,8 @@ from instructlab.training.utils import (
     check_flash_attn_enabled,
     check_valid_train_args,
     convert_loss_to_reduce_sum,
+    create_lora_config,
     ensure_loadable_dolomite_checkpoint,
-    get_projection_layer_names,
     load_latest_full_state,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
@@ -113,12 +113,15 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
             args.model_name_or_path, args.output_dir
         ) as path:
             base_model_args["pretrained_model_name_or_path"] = path
+            base_model_args["use_padding_free_transformer"] = True
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
-                use_padding_free_transformer=True,
             )
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+
+    # store the base model args so we can recall them later if saving a LoRA model
+    args.base_model_args = base_model_args
 
     if len(tokenizer) > model.config.vocab_size:
         print(
@@ -175,46 +178,14 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     # - with the exception of granite, which handles it
     #   in the later stanza
     if args.lora_r > 0:
-        # if lora
-        # Third Party
-        from peft import LoraConfig
-
-        # ensure we select only the modules that exist in the model
-        proj_layers = get_projection_layer_names(model)
-        if not args.lora_target_modules:
-            print(
-                f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
-            )
-            if not proj_layers:
-                raise RuntimeError("could not find any projection layers in the model")
-            args.__dict__["lora_target_modules"] = proj_layers
-        else:
-            # when the user specifies the module, we should verify that they align with what's in the model
-            lora_target_modules_set = set(args.lora_target_modules)
-            diff = lora_target_modules_set - set(proj_layers)
-            layers_to_target = lora_target_modules_set - diff
-            if len(diff) == len(args.lora_target_modules):
-                raise ValueError(
-                    f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
-                )
-            if diff:
-                print(
-                    f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
-                )
-            args.__dict__["lora_target_modules"] = list(layers_to_target)
-
-        peft_config = LoraConfig(
-            lora_alpha=args.lora_alpha,
-            lora_dropout=args.lora_dropout,
-            r=args.lora_r,
-            bias="none",
-            task_type="CAUSAL_LM",
-            target_modules=args.lora_target_modules,
-        )
+        lora_config = create_lora_config(model, args)
         model = prepare_peft_model(
-            model, peft_config, gradient_checkpointing=not args.use_dolomite
+            model,
+            lora_config,
+            args.distributed_training_framework,
+            gradient_checkpointing=not args.use_dolomite,
         )
-
+        args.lora_config = lora_config
     elif not args.use_dolomite:
         model.gradient_checkpointing_enable()
 
