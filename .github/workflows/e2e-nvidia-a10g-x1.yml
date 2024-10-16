@@ -61,7 +61,7 @@ jobs:
           iam-role-name: instructlab-ci-runner
           aws-resource-tags: >
             [
-              {"Key": "Name", "Value": "instructlab-ci-github-small-runner"},
+              {"Key": "Name", "Value": "instructlab-ci-github-medium-runner"},
               {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
               {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
               {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
