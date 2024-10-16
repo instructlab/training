@@ -1,6 +1,7 @@
 # InstructLab Training Library
 
 ![Lint](https://github.com/instructlab/training/actions/workflows/lint.yml/badge.svg?branch=main)
+![`e2e-nvidia-a10g-x1.yaml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-a10g-x1.yml/badge.svg?branch=main)
 ![Build](https://github.com/instructlab/training/actions/workflows/pypi.yaml/badge.svg?branch=main)
 ![Release](https://img.shields.io/github/v/release/instructlab/training)
 ![License](https://img.shields.io/github/license/instructlab/training)
