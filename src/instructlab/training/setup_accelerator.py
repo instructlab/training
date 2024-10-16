@@ -3,12 +3,10 @@ from functools import partial
 
 # Third Party
 from accelerate import Accelerator
-from torch.distributed.fsdp import (  # FullyShardedDataParallel as FSDP,
-    BackwardPrefetch,
-    MixedPrecision,
-    ShardingStrategy,
-)
+from peft.utils.other import fsdp_auto_wrap_policy
+from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
+from transformers import PreTrainedModel
 import torch
 
 # First Party
@@ -51,34 +49,43 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
     return ds_plugin
 
 
-def get_fsdp_config(args, model):
+def get_fsdp_config(args, model: PreTrainedModel):
     # Third Party
     from accelerate.utils import FullyShardedDataParallelPlugin
     from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 
     block_name = model._no_split_modules[0]
 
-    fsdp_plugin = FullyShardedDataParallelPlugin(
-        auto_wrap_policy=partial(
+    wrap_policy = None
+    if args.lora_r > 0:
+        wrap_policy = fsdp_auto_wrap_policy(model)
+    else:
+        wrap_policy = partial(
             transformer_auto_wrap_policy,
             transformer_layer_cls={
                 get_module_class_from_name(model, block_name),
             },
-        ),
+        )
+
+    fsdp_plugin = FullyShardedDataParallelPlugin(
+        auto_wrap_policy=wrap_policy,
         limit_all_gathers=True,
         mixed_precision_policy=MixedPrecision(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.bfloat16,
             buffer_dtype=torch.bfloat16,
         ),
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE,
+        backward_prefetch=BackwardPrefetch.BACKWARD_POST,
         sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
     )
+    if args.lora_r > 0:
+        fsdp_plugin.use_orig_params = False
+
     return fsdp_plugin
 
 
-def setup_accelerator(args, model, grad_accum):
+def setup_accelerator(args, model: PreTrainedModel, grad_accum):
     if args.distributed_training_framework == "deepspeed":
         # Third Party
         from deepspeed import DeepSpeedEngine
