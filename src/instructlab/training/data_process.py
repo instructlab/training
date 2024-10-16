@@ -199,7 +199,7 @@ def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
         input_ids = sample["input_ids"]
-        mask_id = get_sp_token(tokenizer, "<MASK>")[0]
+        mask_id = get_sp_token(tokenizer, "<|MASK|>")[0]
         label = [mask_id if tk == -100 else tk for tk in labels]
         text = tokenizer.decode(label)
         orig_text = tokenizer.decode(input_ids)
@@ -239,7 +239,7 @@ def main(args: DataProcessArgs):
 
     # Adding after tokenizer setup as these are temp tokens, not to be saved
     tokenizer.add_special_tokens(
-        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<MASK>"]}
+        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<|MASK|>"]}
     )
 
     try:
