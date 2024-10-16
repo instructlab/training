@@ -364,7 +364,7 @@ def main(args: DataProcessArgs):
             f"\033[93mWarning: {dropped_samples} samples were dropped because they contained token IDs greater than or equal to {max_id}.\033[0m"
         )
     # use path to get the stem of the file
-    data_with_labels.to_json(Path(args.data_output_path) / "data.jsonl")
+    final_valid_data.to_json(Path(args.data_output_path) / "data.jsonl")
 
 
 if __name__ == "__main__":
