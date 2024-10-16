@@ -354,6 +354,15 @@ def main(args: DataProcessArgs):
         num_proc=NUM_PROC,
     )
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids", "len"])
+    max_id = len(tokenizer) - 3
+    final_valid_data = data_with_labels.filter(
+        lambda x: all([tk < max_id for tk in x["labels"]]), num_proc=NUM_PROC
+    )
+    if len(final_valid_data) < len(data_with_labels):
+        dropped_samples = len(data_with_labels) - len(final_valid_data)
+        print(
+            f"\033[93mWarning: {dropped_samples} samples were dropped because they contained token IDs greater than or equal to {max_id}.\033[0m"
+        )
     # use path to get the stem of the file
     data_with_labels.to_json(Path(args.data_output_path) / "data.jsonl")
 
