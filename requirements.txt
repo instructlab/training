@@ -5,7 +5,7 @@ py-cpuinfo
 # we set this to be above 0a0 so that it doesn't
 # replace custom pytorch images with the 2.3.0
 torch>=2.3.0a0
-transformers>=4.41.2
+transformers>=4.45.2
 accelerate>=0.34.2
 datasets>=2.15.0
 numba
