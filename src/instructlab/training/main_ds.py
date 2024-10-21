@@ -13,14 +13,21 @@ import time
 # Third Party
 from accelerate import Accelerator
 try:
-    from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-    from deepspeed.runtime.zero.utils import ZeRORuntimeException
+    from deepspeed.ops.adam import DeepSpeedCPUAdam
 except ImportError:
     DeepSpeedCPUAdam = None
+    local_rank = int(os.getenv('LOCAL_RANK', None))
+    if __name__ == '__main__' and (not local_rank or local_rank == 0):
+        print("DeepSpeed CPU Optimizer is not available. Some features may be unavailable.")
+
+try:
+    from deepspeed.ops.adam import FusedAdam
+    from deepspeed.runtime.zero.utils import ZeRORuntimeException
+except ImportError:
     FusedAdam = None
     ZeRORuntimeException = None
-    local_rank = int(os.getenv('LOCAL_RANK', -1))
-    if __name__ == '__main__' and local_rank == 0:
+    local_rank = int(os.getenv('LOCAL_RANK', None))
+    if __name__ == '__main__' and (not local_rank or local_rank == 0):
         print("DeepSpeed is not available. Some features may be unavailable.")
 
 # pylint: disable=no-name-in-module
