@@ -1,4 +1,4 @@
- # SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 
 # Standard
 from copy import deepcopy
@@ -14,16 +14,14 @@ import time
 from accelerate import Accelerator
 try:
     from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+    from deepspeed.runtime.zero.utils import ZeRORuntimeException
 except ImportError:
     DeepSpeedCPUAdam = None
     FusedAdam = None
-    print("DeepSpeed Adam optimizers are not available. Some features may be unavailable.")
-
-try:
-    from deepspeed.runtime.zero.utils import ZeRORuntimeException
-except ImportError:
     ZeRORuntimeException = None
-    print("ZeRORuntimeException is not available. Some features may be unavailable.")
+    local_rank = int(os.getenv('LOCAL_RANK', -1))
+    if __name__ == '__main__' and local_rank == 0:
+        print("DeepSpeed is not available. Some features may be unavailable.")
 
 # pylint: disable=no-name-in-module
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
