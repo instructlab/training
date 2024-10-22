@@ -356,7 +356,7 @@ def main(args: DataProcessArgs):
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids", "len"])
     max_id = len(tokenizer) - 3
     final_valid_data = data_with_labels.filter(
-        lambda x: all([tk < max_id for tk in x["labels"]]), num_proc=NUM_PROC
+        lambda x: all(tk < max_id for tk in x["labels"]), num_proc=NUM_PROC
     )
     if len(final_valid_data) < len(data_with_labels):
         dropped_samples = len(data_with_labels) - len(final_valid_data)
