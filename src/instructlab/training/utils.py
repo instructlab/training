@@ -55,11 +55,11 @@ def check_valid_train_args(train_args: TrainingArgs):
     if os.path.exists(train_args.model_path):
         if not os.path.isdir(train_args.model_path):
             raise FileNotFoundError(
-                "Model path does not appear to be a dir, please validate or update the path"
+                "Model path does not appear to be a directory. Please make sure that you're passing a Hugging Face Transformers compatible directory checkpoint."
             )
     else:
         raise FileNotFoundError(
-            "Model Path cannot be found, please verify existence and permissions"
+            f"Provided path to model does not exist. Please make sure that you've passed a valid model and that it has appropriate permissions: {train_args.model_path}"
         )
 
     if train_args.use_dolomite:
