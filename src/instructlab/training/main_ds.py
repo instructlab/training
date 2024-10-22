@@ -12,6 +12,7 @@ import time
 
 # Third Party
 from accelerate import Accelerator
+
 try:
     from deepspeed.ops.adam import DeepSpeedCPUAdam
 except ImportError:
@@ -31,6 +32,7 @@ except ImportError:
         print("DeepSpeed is not available. Some features may be unavailable.")
 
 # pylint: disable=no-name-in-module
+from instructlab.training.confg import DistributedBackend
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
@@ -528,6 +530,12 @@ def main(args):
     # Third Party
     import yaml
 
+    if args.distributed_training_framework == 'deepspeed' and not FusedAdam:
+        raise ImportError("DeepSpeed was selected but we cannot import the `FusedAdam` optimizer")
+
+    if args.distributed_training_framework == 'deeppeed' and args.cpu_offload_optimizer and not DeepSpeedCPUAdam:
+        raise ImportError("DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags.") 
+
     metric_logger = AsyncStructuredLogger(
         args.output_dir
         + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
@@ -748,6 +756,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     )
 
     # deepspeed options
+    if train_args.distributed_backend == DistributedBackend.DeepSpeed:
+        if not FusedAdam:
+            raise ImportError("DeepSpeed was selected as the distributed backend, but FusedAdam could not be imported. Please double-check that DeepSpeed is installed correctly")
+
+        if train_args.deepspeed_options.cpu_offload_optimizer and not DeepSpeedCPUAdam:
+            raise ImportError("DeepSpeed CPU offloading was enabled, but DeepSpeedCPUAdam could not be imported. This is most likely because DeepSpeed was not built with CPU Adam. Please rebuild DeepSpeed to have CPU Adam, or disable CPU offloading.")
+
     if train_args.deepspeed_options.save_samples:
         command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
     if train_args.deepspeed_options.cpu_offload_optimizer:
