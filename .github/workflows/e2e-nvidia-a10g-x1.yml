@@ -141,7 +141,15 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           . venv/bin/activate
+<<<<<<< HEAD
+<<<<<<< HEAD:.github/workflows/e2e-nvidia-t4-x1.yml
+          ./scripts/basic-workflow-tests.sh -a
+=======
           ./scripts/e2e-ci.sh -m
+>>>>>>> c8439e0 (e2e: replace old small job with new medium job):.github/workflows/e2e-nvidia-a10g-x1.yml
+=======
+          ./scripts/e2e-ci.sh -m
+>>>>>>> c93dc4345538dbb451f7b2434bc23a4beaac1eb2
 
   stop-medium-ec2-runner:
     needs:
