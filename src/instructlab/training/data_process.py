@@ -354,10 +354,12 @@ def main(args: DataProcessArgs):
         num_proc=NUM_PROC,
     )
     data_with_labels = data_with_labels.select_columns(["labels", "input_ids", "len"])
+    # MASK and both pretrain tokens should not be in the final tokens, those are special tokens added only for data processing purposes.
     max_id = len(tokenizer) - 3
     final_valid_data = data_with_labels.filter(
         lambda x: all(tk < max_id for tk in x["labels"]), num_proc=NUM_PROC
     )
+    # Dropping samples that could break training due to oob ids
     if len(final_valid_data) < len(data_with_labels):
         dropped_samples = len(data_with_labels) - len(final_valid_data)
         print(
