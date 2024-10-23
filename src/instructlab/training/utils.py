@@ -23,8 +23,13 @@ import warnings
 # Third Party
 # pylint: disable=no-name-in-module
 from accelerate import Accelerator
-from instructlab.dolomite.hf_models import (
-    GPTDolomiteConfig,
+# from instructlab.dolomite.hf_models import (
+#     GPTDolomiteConfig,
+#     export_to_huggingface,
+#     import_from_huggingface,
+# )
+from dolomite_engine.hf_models import (
+    GPTDolomiteForCausalLM,
     export_to_huggingface,
     import_from_huggingface,
 )
@@ -834,7 +839,8 @@ def save_hf_format_accelerate(
         export_to_huggingface(
             pretrained_model_name_or_path=tmpdir.name,
             save_path=final_output_dir,
-            model_type="llama",
+            # model_type="llama",
+            model_type="granite",
         )
         tmpdir.cleanup()
 
