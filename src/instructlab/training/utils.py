@@ -808,7 +808,8 @@ def save_hf_format_accelerate(
         output_dir.mkdir(parents=True, exist_ok=True)
         if not model.module.config.architectures and convert_dolomite:
             # model.module.config.architectures = ["LlamaForCausalLM"]
-            model.module.config.architectures = ["GraniteForCausalLM"]
+            # model.module.config.architectures = ["GraniteForCausalLM"]
+            model.module.config.architectures = ["GPTDolomiteForCausalLM"]
             warnings.warn(
                 f"Adding architectures to ckpt: {model.module.config.architectures}",
             )
