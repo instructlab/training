@@ -16,7 +16,8 @@ from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.runtime.zero.utils import ZeRORuntimeException
 
 # pylint: disable=no-name-in-module
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
+# from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
+from dolomite_engine.hf_models import GPTDolomiteForCausalLM
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
 import torch
