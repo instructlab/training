@@ -29,7 +29,7 @@ from accelerate import Accelerator
 #     import_from_huggingface,
 # )
 from dolomite_engine.hf_models import (
-    GPTDolomiteForCausalLM,
+    GPTDolomiteConfig,
     export_to_huggingface,
     import_from_huggingface,
 )
