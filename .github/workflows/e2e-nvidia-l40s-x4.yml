@@ -107,6 +107,7 @@ jobs:
           gh --version
 
       - name: set default repo
+        working-directory: ./training
         run: |
           gh repo set-default ${{ github.server_url }}/${{ github.repository }}
         env:
@@ -114,6 +115,7 @@ jobs:
 
       - name: Add comment to PR
         if: steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
         run: |
           gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "${{ github.workflow }} workflow launched on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
         env:
@@ -121,6 +123,7 @@ jobs:
 
       - name: Fetch and checkout PR
         if: steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
         run: |
           gh pr checkout ${{ steps.check_pr.outputs.pr_or_branch }}
         env:
@@ -128,6 +131,7 @@ jobs:
 
       - name: Checkout branch
         if: steps.check_pr.outputs.is_pr == 'false'
+        working-directory: ./training
         run: |
           git checkout ${{ steps.check_pr.outputs.pr_or_branch }}
 
