@@ -84,7 +84,7 @@ jobs:
           sudo dnf install -y gcc gcc-c++ make git python3.11 python3.11-devel
 
       - name: Checkout instructlab/instructlab
-        uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: "instructlab/instructlab"
           path: "instructlab"
@@ -92,7 +92,7 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout instructlab/training
-        uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: "instructlab/training"
           path: "training"
