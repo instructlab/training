@@ -144,7 +144,6 @@ jobs:
           ./scripts/e2e-ci.sh -m
 
   stop-medium-ec2-runner:
-    name: Stop external EC2 runner
     needs:
       - start-medium-ec2-runner
       - e2e-medium-test
