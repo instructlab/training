@@ -5,7 +5,7 @@
 ![Release](https://img.shields.io/github/v/release/instructlab/training)
 ![License](https://img.shields.io/github/license/instructlab/training)
 
-![`e2e-nvidia-a10g-x1.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-a10g-x1.yml/badge.svg?branch=main)
+![`e2e-nvidia-l4-x1.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l4-x1.yml/badge.svg?branch=main)
 ![`e2e-nvidia-l40s-x4.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l40s-x4.yml/badge.svg?branch=main)
 
 - [Installing](#installing-the-library)
