@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, List, Optional
 import importlib
 import inspect
+import json
 import logging
 import os
 import random
@@ -39,6 +40,44 @@ from transformers import PreTrainedModel
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+# First Party
+from instructlab.training.config import TrainingArgs
+
+
+def check_valid_train_args(train_args: TrainingArgs):
+    # early validation logic here
+    if train_args.max_batch_len < train_args.max_seq_len:
+        raise ValueError(
+            f"the `max_batch_len` cannot be less than `max_seq_len`: {train_args.max_batch_len=} < {train_args.max_seq_len=}"
+        )
+
+    if os.path.exists(train_args.model_path):
+        if not os.path.isdir(train_args.model_path):
+            raise FileNotFoundError(
+                "Model path does not appear to be a directory. Please make sure that you're passing a Hugging Face Transformers compatible directory checkpoint."
+            )
+    else:
+        raise FileNotFoundError(
+            f"Provided path to model does not exist. Please make sure that you've passed a valid model and that it has appropriate permissions: {train_args.model_path}"
+        )
+
+    if train_args.use_dolomite:
+        with open(Path(train_args.model_path) / "config.json") as conf_json:
+            model_conf = json.load(conf_json)
+        if model_conf["model_type"] == "granite":
+            raise RuntimeError(
+                "Converting Granite models to Dolomite format is currently unsupported."
+            )
+        if train_args.disable_flash_attn:
+            raise RuntimeError(
+                "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+            )
+
+    if train_args.is_padding_free:
+        print(
+            "\033[33m WARNING: is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.\033[0m"
+        )
 
 
 def retrieve_chat_template(chat_tmpl_path):
@@ -111,9 +150,39 @@ class StreamablePopen(subprocess.Popen):
                     break
 
 
-def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
+def supports_flash_attention(device_id=0):
+    """Check if a GPU supports FlashAttention."""
+    major, minor = torch.cuda.get_device_capability(device_id)
+    # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
+    is_sm8x = major == 8 and minor >= 0
+    is_sm90 = major == 9 and minor == 0
+    dev_name = torch.cuda.get_device_properties(device_id).gcnArchName.split(":")[0]
+    is_compat_amd = dev_name in ("gfx90a", "gfx940", "gfx941", "gfx942")
+    return is_sm8x or is_sm90 or is_compat_amd
+
+
+def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
+    if not disable_flash_attn:
+        if supports_flash_attention():
+            flash_enabled = True
+        else:
+            raise RuntimeError(
+                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
+            )
+    elif use_dolomite:
+        raise RuntimeError(
+            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+        )
+    else:
+        flash_enabled = False
+    return flash_enabled
+
+
+def make_collate_fn(
+    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
+):
     rank = int(os.environ["RANK"])
-    if is_granite:
+    if use_dolomite:
 
         def pad_collate_fn(batch):
             lens = np.array([len(item["input_ids"]) for item in batch])
@@ -140,70 +209,108 @@ def make_collate_fn(pad_token_id, is_granite=False, max_batch_len=60000):
                 "input_ids": input_ids,
                 "labels": labels,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
+                "num_samples": len(batch),
             }
 
     else:
+        if flash_enabled:
 
-        def pad_collate_fn(batch):
-            lens = np.array([len(item["input_ids"]) for item in batch])
-            max_len = max(lens)
+            def pad_collate_fn(batch):
+                input_ids = []
+                labels = []
+                position_ids = []
+                total_len = 0
+                num_loss_counted_tokens = 0
 
-            input_ids = torch.stack(
-                [
-                    F.pad(
-                        item["input_ids"],
-                        (max_len - len(item["input_ids"]), 0),
-                        mode="constant",
-                        value=pad_token_id,
-                    )
-                    for item in batch
-                ]
-            )
-            labels = torch.stack(
-                [
-                    F.pad(
-                        item["labels"],
-                        (max_len - len(item["labels"]), 0),
-                        mode="constant",
-                        value=-100,
-                    )
-                    for item in batch
-                ]
-            )
-            num_loss_counted_tokens = (labels != -100).sum()
+                for num_samples, item in enumerate(batch):
+                    item_len = len(item["input_ids"])
+                    if total_len + item_len > max_batch_len:
+                        break
 
-            attention_mask = torch.stack(
-                [
-                    F.pad(
-                        item["attention_mask"],
-                        (max_len - len(item["attention_mask"]), 0),
-                        mode="constant",
-                        value=0,
-                    )
-                    for item in batch
-                ]
-            )
-            print(
-                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
+                    input_ids.extend(item["input_ids"].tolist())
+                    labels.extend(item["labels"].tolist())
+                    position_ids.extend(range(total_len, total_len + item_len))
 
-            return {
-                "input_ids": input_ids,
-                "labels": labels,
-                "num_loss_counted_tokens": num_loss_counted_tokens,
-                "attention_mask": attention_mask,
-            }
+                    total_len += item_len
+                    num_loss_counted_tokens += (item["labels"] != -100).sum().item()
+
+                print(
+                    f"\033[96m total length: {total_len} "
+                    f"num samples {len(batch)} - rank: {rank} "
+                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+                )
+
+                return {
+                    "input_ids": torch.tensor([input_ids], dtype=torch.long),
+                    "labels": torch.tensor([labels], dtype=torch.long),
+                    "position_ids": torch.tensor([position_ids], dtype=torch.long),
+                    "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "num_samples": num_samples + 1,  # pylint: disable=W0631
+                }
+
+        else:
+
+            def pad_collate_fn(batch):
+                lens = np.array([len(item["input_ids"]) for item in batch])
+                max_len = max(lens)
+
+                input_ids = torch.stack(
+                    [
+                        F.pad(
+                            item["input_ids"],
+                            (max_len - len(item["input_ids"]), 0),
+                            mode="constant",
+                            value=pad_token_id,
+                        )
+                        for item in batch
+                    ]
+                )
+                labels = torch.stack(
+                    [
+                        F.pad(
+                            item["labels"],
+                            (max_len - len(item["labels"]), 0),
+                            mode="constant",
+                            value=-100,
+                        )
+                        for item in batch
+                    ]
+                )
+                num_loss_counted_tokens = (labels != -100).sum()
+
+                attention_mask = torch.stack(
+                    [
+                        F.pad(
+                            item["attention_mask"],
+                            (max_len - len(item["attention_mask"]), 0),
+                            mode="constant",
+                            value=0,
+                        )
+                        for item in batch
+                    ]
+                )
+                print(
+                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
+                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
+                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+                )
+
+                return {
+                    "input_ids": input_ids,
+                    "labels": labels,
+                    "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "attention_mask": attention_mask,
+                    "num_samples": len(batch),
+                }
 
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, is_granite=False):
+def convert_loss_to_reduce_sum(model, use_dolomite=False):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
-    if is_granite:
+    if use_dolomite:
 
         def get_autoregressive_language_modeling_loss(
             lm_logits: torch.Tensor,
@@ -489,7 +596,7 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
 
 @contextmanager
-def ensure_loadable_granite_checkpoint(
+def ensure_loadable_dolomite_checkpoint(
     model_name_or_path: str,
     tmpdir: str,
 ):
@@ -662,7 +769,7 @@ def save_hf_format_accelerate(
     tokenizer,
     accelerator: Accelerator,
     samples_seen,
-    convert_granite=True,
+    convert_dolomite=True,
     is_lora=False,
 ):
     log_rank_0(
@@ -672,7 +779,7 @@ def save_hf_format_accelerate(
     start = time.time()
 
     final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if args.is_granite and convert_granite:
+    if args.use_dolomite and convert_dolomite:
         tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
         output_dir = Path(tmpdir.name)
     else:
@@ -694,7 +801,7 @@ def save_hf_format_accelerate(
             model_state = model.module.state_dict()
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        if not model.module.config.architectures and convert_granite:
+        if not model.module.config.architectures and convert_dolomite:
             model.module.config.architectures = ["LlamaForCausalLM"]
             warnings.warn(
                 f"Adding architectures to ckpt: {model.module.config.architectures}",
@@ -720,7 +827,7 @@ def save_hf_format_accelerate(
             safe_serialization=True,
         )
 
-    if args.is_granite and convert_granite and accelerator.is_main_process:
+    if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
         # export doesnt like the directory to exist
         if final_output_dir.exists():
             shutil.rmtree(final_output_dir)
