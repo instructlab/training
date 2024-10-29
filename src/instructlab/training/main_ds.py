@@ -529,7 +529,7 @@ def main(args):
     tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
     # device = torch.device("cuda", args.local_rank)
 
-    with open(Path(args.model_path) / "config.json") as conf_json:
+    with open(Path(args.model_name_or_path) / "config.json") as conf_json:
         model_conf = json.load(conf_json)
     args.model_type = model_conf["model_type"]
 
