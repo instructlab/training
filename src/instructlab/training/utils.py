@@ -10,7 +10,6 @@ from tempfile import TemporaryDirectory
 from typing import Any, List, Optional
 import importlib
 import inspect
-import json
 import logging
 import os
 import random
@@ -62,17 +61,10 @@ def check_valid_train_args(train_args: TrainingArgs):
             f"Provided path to model does not exist. Please make sure that you've passed a valid model and that it has appropriate permissions: {train_args.model_path}"
         )
 
-    if train_args.use_dolomite:
-        with open(Path(train_args.model_path) / "config.json") as conf_json:
-            model_conf = json.load(conf_json)
-        if model_conf["model_type"] == "granite":
-            raise RuntimeError(
-                "Converting Granite models to Dolomite format is currently unsupported."
-            )
-        if train_args.disable_flash_attn:
-            raise RuntimeError(
-                "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
-            )
+    if train_args.use_dolomite and train_args.disable_flash_attn:
+        raise RuntimeError(
+            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+        )
 
     if train_args.is_padding_free:
         print(
@@ -802,10 +794,21 @@ def save_hf_format_accelerate(
 
         output_dir.mkdir(parents=True, exist_ok=True)
         if not model.module.config.architectures and convert_dolomite:
-            model.module.config.architectures = ["LlamaForCausalLM"]
-            warnings.warn(
-                f"Adding architectures to ckpt: {model.module.config.architectures}",
-            )
+            arch_added = False
+            if args.model_type == "llama":
+                model.module.config.architectures = ["LlamaForCausalLM"]
+                arch_added = True
+            elif args.model_type == "granite":
+                model.module.config.architectures = ["GraniteForCausalLM"]
+                arch_added = True
+            if arch_added:
+                warnings.warn(
+                    f"Adding architectures to ckpt: {model.module.config.architectures}",
+                )
+            else:
+                warnings.warn(
+                    f"Converting from dolomite, but no architecture field added to config.json",
+                )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
@@ -834,7 +837,7 @@ def save_hf_format_accelerate(
         export_to_huggingface(
             pretrained_model_name_or_path=tmpdir.name,
             save_path=final_output_dir,
-            model_type="llama",
+            model_type=args.model_type,
         )
         tmpdir.cleanup()
 
