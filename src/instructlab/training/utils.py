@@ -221,7 +221,7 @@ def make_collate_fn(
 
                     input_ids.extend(item["input_ids"].tolist())
                     labels.extend(item["labels"].tolist())
-                    position_ids.extend(range(total_len, total_len + item_len))
+                    position_ids.extend(range(item_len))
 
                     total_len += item_len
                     num_loss_counted_tokens += (item["labels"] != -100).sum().item()
