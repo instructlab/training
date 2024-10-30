@@ -533,7 +533,7 @@ def main(args):
     if args.distributed_training_framework == 'deepspeed' and not FusedAdam:
         raise ImportError("DeepSpeed was selected but we cannot import the `FusedAdam` optimizer")
 
-    if args.distributed_training_framework == 'deeppeed' and args.cpu_offload_optimizer and not DeepSpeedCPUAdam:
+    if args.distributed_training_framework == 'deepspeed' and args.cpu_offload_optimizer and not DeepSpeedCPUAdam:
         raise ImportError("DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags.") 
     
     metric_logger = AsyncStructuredLogger(
