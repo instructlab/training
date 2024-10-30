@@ -229,14 +229,14 @@ def make_collate_fn(
 
                     input_ids.extend(item["input_ids"].tolist())
                     labels.extend(item["labels"].tolist())
-                    position_ids.extend(range(total_len, total_len + item_len))
+                    position_ids.extend(range(item_len))
 
                     total_len += item_len
                     num_loss_counted_tokens += (item["labels"] != -100).sum().item()
 
                 print(
                     f"\033[96m total length: {total_len} "
-                    f"num samples {len(batch)} - rank: {rank} "
+                    f"num samples {num_samples + 1} - rank: {rank} " # pylint: disable=W0631
                     f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
                 )
 
