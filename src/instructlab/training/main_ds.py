@@ -536,8 +536,8 @@ def main(args):
         raise ImportError("DeepSpeed was selected but we cannot import the `FusedAdam` optimizer")
 
     if args.distributed_training_framework == 'deepspeed' and args.cpu_offload_optimizer and not DeepSpeedCPUAdam:
-        raise ImportError("DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags.") 
-    
+        raise ImportError("DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags.")
+
     metric_logger = AsyncStructuredLogger(
         args.output_dir
         + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
@@ -760,7 +760,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
         if train_args.deepspeed_options.cpu_offload_optimizer and not DeepSpeedCPUAdam:
             raise ImportError("DeepSpeed CPU offloading was enabled, but DeepSpeedCPUAdam could not be imported. This is most likely because DeepSpeed was not built with CPU Adam. Please rebuild DeepSpeed to have CPU Adam, or disable CPU offloading.")
-        
+
     if train_args.deepspeed_options.save_samples:
         command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
     if train_args.deepspeed_options.cpu_offload_optimizer:
