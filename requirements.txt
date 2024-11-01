@@ -17,7 +17,7 @@ numba
 numpy>=1.23.5,<2.0.0 ; python_version == '3.10'
 numpy>=1.26.4,<2.0.0 ; python_version != '3.10'
 rich
-instructlab-dolomite>=0.1.1
+instructlab-dolomite>=0.2.0
 trl>=0.9.4
 peft
 pydantic>=2.7.0
