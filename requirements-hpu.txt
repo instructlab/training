@@ -1,0 +1,2 @@
+# required for optimum-habana's deps
+accelerate>=0.33.0

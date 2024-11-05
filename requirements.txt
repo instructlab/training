@@ -6,7 +6,7 @@ py-cpuinfo
 # replace custom pytorch images with the 2.3.0
 torch>=2.3.0a0
 transformers>=4.45.2
-accelerate>=0.34.2
+
 datasets>=2.15.0
 numba
 # Note: numpy ranges copied from instructlab/instructlab
@@ -22,6 +22,6 @@ trl>=0.9.4
 peft
 pydantic>=2.7.0
 
-# deepspeed needs to be at the bottom or it'll break during installation
+# deepspeed needs to be at the end or it'll break stuff.
 deepspeed>=0.14.3
 aiofiles>=23.2.1

@@ -1,2 +1,5 @@
 flash-attn>=2.4.0
 bitsandbytes>=0.43.1
+
+# required for FSDP updates
+accelerate>=0.34.2
