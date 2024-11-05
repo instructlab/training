@@ -229,7 +229,6 @@ def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
-    # TODO - UPDATE LOGGING TO INCLUDE START AND END OF ROLE POTENTIALLY
     (
         system_tk,
         user_tk,
@@ -342,8 +341,6 @@ def main(args: DataProcessArgs):
         },
         num_proc=NUM_PROC,
     )
-
-    # TODO: Maybe add detection of whether we are in a string (role-based) or sp token template, handle differently
 
     _prefill_unmask_message_content = partial(
         unmask_message_content,
