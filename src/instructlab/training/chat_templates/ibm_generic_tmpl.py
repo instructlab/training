@@ -25,6 +25,8 @@ CHAT_TEMPLATE = (
     "{% for message in messages %}"
     "{% if message['role'] == 'system' %}"
     "{{ '<|start_of_role|>system<|end_of_role|>' + message['content'] + '<|end_of_text|>\n' }}"
+    "{% elif message['role'] == 'pretraining' %}"
+    "{{ '<|pretrain|>' + message['content'] + '<|end_of_text|>' + '<|/pretrain|>'}}"
     "{% elif message['role'] == 'user' %}"
     "{{ '<|start_of_role|>user<|end_of_role|>' + message['content'] + '<|end_of_text|>\n' }}"
     "{% elif message['role'] == 'assistant' %}"
