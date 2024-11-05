@@ -4,6 +4,7 @@
 from copy import deepcopy
 from pathlib import Path
 import argparse
+import json
 import math
 import os
 import re
@@ -550,6 +551,10 @@ def main(args):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
     # device = torch.device("cuda", args.local_rank)
+
+    with open(Path(args.model_name_or_path) / "config.json") as conf_json:
+        model_conf = json.load(conf_json)
+    args.model_type = model_conf["model_type"]
 
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))

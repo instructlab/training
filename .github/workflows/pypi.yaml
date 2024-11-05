@@ -48,7 +48,7 @@ jobs:
                   fetch-depth: 0
 
             - name: "Build and Inspect"
-              uses: hynek/build-and-inspect-python-package@73aea398b9c8de9ea9e4464c6b13cb8b1f3d6294 # v2.9.0
+              uses: hynek/build-and-inspect-python-package@f01e4d047aadcc0c054c95ec9900da3ec3fc7a0f # v2.10.0
 
     # push to Test PyPI on
     # - a new GitHub release is published
@@ -77,7 +77,7 @@ jobs:
                   path: dist
 
             - name: "Upload to Test PyPI"
-              uses: pypa/gh-action-pypi-publish@f7600683efdcb7656dec5b29656edb7bc586e597 # v1.10.3
+              uses: pypa/gh-action-pypi-publish@fb13cb306901256ace3dab689990e13a5550ffaa # v1.11.0
               with:
                   repository-url: https://test.pypi.org/legacy/
 
@@ -129,4 +129,4 @@ jobs:
                   rm ./dist/*.sigstore.json
 
             - name: "Upload to PyPI"
-              uses: pypa/gh-action-pypi-publish@f7600683efdcb7656dec5b29656edb7bc586e597 # v1.10.3
+              uses: pypa/gh-action-pypi-publish@fb13cb306901256ace3dab689990e13a5550ffaa # v1.11.0
