@@ -191,6 +191,34 @@ function test_standard_loop_noflashattention_nogranite () {
     # --is_granite
 }
 
+
+##############################################################################
+# Validates the pathing logic for FSDP & LoRA.
+# A valid run should result in a model with all adapters merged
+# with the base model.
+##############################################################################
+function test_standard_loop_fsdp_lora() {
+    torchrun \
+    --standalone \
+    --nproc_per_node="${NUM_GPUS}" \
+    main_ds.py \
+    --model_name_or_path="${MODEL_NAME}" \
+    --is_granite \
+    --data_path="${COMPUTED_DATA_PATH}" \
+    --output_dir="${CHECKPOINTS_DIR}" \
+    --num_epochs=1 \
+    --effective_batch_size=128 \
+    --save_samples=0 \
+    --checkpoint_at_epoch \
+    --accelerate_full_state_at_epoch \
+    --distributed_training_framework="${DISTRIB_FRAMEWORK}" \
+    --max_batch_len="${MAX_BATCH_LEN}" \
+    --is_granite \
+    --lora_r=4 \
+    --lora_alpha=32 \
+    --lora_dropout=0.1
+}
+
 function main () {
 
     setup_tmpdir
