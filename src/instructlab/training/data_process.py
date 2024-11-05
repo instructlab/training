@@ -244,14 +244,20 @@ def main(args: DataProcessArgs):
         for sp in SPECIAL_TOKENS.__annotations__.keys()
     ]
     if start_role_tk and end_role_tk:
-        system_tk = start_role_tk.extend(
-            tokenizer.encode("system", add_special_tokens=False).extend(end_role_tk)
+        system_tk = (
+            start_role_tk
+            + tokenizer.encode("system", add_special_tokens=False)
+            + end_role_tk
         )
-        user_tk = start_role_tk.extend(
-            tokenizer.encode("user", add_special_tokens=False).extend(end_role_tk)
+        user_tk = (
+            start_role_tk
+            + tokenizer.encode("user", add_special_tokens=False)
+            + end_role_tk
         )
-        assistant_tk = start_role_tk.extend(
-            tokenizer.encode("assistant", add_special_tokens=False).extend(end_role_tk)
+        assistant_tk = (
+            start_role_tk
+            + tokenizer.encode("assistant", add_special_tokens=False)
+            + end_role_tk
         )
     log_rank_0(
         f"Special tokens: eos: {eos_tk}, pad: {pad_tk}, bos: {bos_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
