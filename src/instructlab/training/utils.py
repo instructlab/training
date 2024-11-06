@@ -761,7 +761,6 @@ def save_hf_format_accelerate(
     tokenizer,
     accelerator: Accelerator,
     samples_seen,
-    convert_dolomite=True,
     is_lora=False,
 ):
     log_rank_0(
@@ -769,6 +768,11 @@ def save_hf_format_accelerate(
         to_print=True,
     )
     start = time.time()
+
+    if args.model_type in ("gpt_megatron", "gpt_dolomite"):
+        convert_dolomite = False
+    else:
+        convert_dolomite = True
 
     final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
     if args.use_dolomite and convert_dolomite:
