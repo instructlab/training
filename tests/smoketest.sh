@@ -12,9 +12,9 @@ CHECKPOINTS_DIR="${TMP_DIR}/checkpoints"
 DATA_DIR="${TMP_DIR}/data"
 COMPUTED_DATA_PATH="${DATA_DIR}/data.jsonl"
 DEFAULT_DISTRIB_FRAMEWORK='fsdp'
-DISTRIB_FRAMEWORK="${1:-$DEFAULT_DISTRIB_FRAMEWORK}" # defaults to FSDP
+DISTRIB_FRAMEWORK="${1:-${DEFAULT_DISTRIB_FRAMEWORK}}" # defaults to FSDP
 DEFAULT_GPUS=8
-NUM_GPUS="${2:-$DEFAULT_GPUS}"
+NUM_GPUS="${2:-${DEFAULT_GPUS}}"
 
 # ############### User-modifiable parameters ############### 
 # Change these as needed
@@ -36,8 +36,8 @@ NUM_SAMPLES_TRAINED_ON=5000 # upper-bound on training dataset size.
 #   None
 #######################################
 function setup_tmpdir () {
-    mkdir "$CHECKPOINTS_DIR"
-    mkdir "$DATA_DIR"
+    mkdir "${CHECKPOINTS_DIR}"
+    mkdir "${DATA_DIR}"
 }
 
 #######################################
@@ -61,17 +61,17 @@ function prepare_data () {
     # go faster.
     
     python3 data_process.py \
-    --data_path="$SAMPLE_DATA_PATH" \
-    --data_output_path="$DATA_DIR" \
+    --data_path="${SAMPLE_DATA_PATH}" \
+    --data_output_path="${DATA_DIR}" \
     --max_seq_len=4096 \
-    --model_name_or_path="$MODEL_NAME"
+    --model_name_or_path="${MODEL_NAME}"
 
     # trim data so we only keep the first 'n' samples.
     # should be enough data for training to be meaningful but not enough
     # that training takes a large amount of time.
-    echo "$(head -"$NUM_SAMPLES_TRAINED_ON" "$COMPUTED_DATA_PATH")" > "$COMPUTED_DATA_PATH"
+    echo "$(head -"${NUM_SAMPLES_TRAINED_ON}" "${COMPUTED_DATA_PATH}")" > "${COMPUTED_DATA_PATH}"
 
-    echo "TRAINING ON $(wc -l "$COMPUTED_DATA_PATH") SAMPLES"
+    echo "TRAINING ON $(wc -l "${COMPUTED_DATA_PATH}") SAMPLES"
 }
 
 #######################################
@@ -86,9 +86,9 @@ function prepare_data () {
 #   writes location of checkpoints dir to standard out.
 #######################################
 function _cleanup_saved_checkpoints() {
-    echo "CLEARING CHECKPOINTS: $CHECKPOINTS_DIR"
-    rm -rf "$CHECKPOINTS_DIR"
-    mkdir "$CHECKPOINTS_DIR"
+    echo "CLEARING CHECKPOINTS: ${CHECKPOINTS_DIR}"
+    rm -rf "${CHECKPOINTS_DIR}"
+    mkdir "${CHECKPOINTS_DIR}"
 }
 
 #######################################
@@ -109,18 +109,18 @@ function _cleanup_saved_checkpoints() {
 function test_standard_loop () {
     torchrun \
     --standalone \
-    --nproc_per_node="$NUM_GPUS" \
+    --nproc_per_node="${NUM_GPUS}" \
     main_ds.py \
-    --model_name_or_path="$MODEL_NAME" \
-    --data_path="$COMPUTED_DATA_PATH" \
-    --output_dir="$CHECKPOINTS_DIR" \
+    --model_name_or_path="${MODEL_NAME}" \
+    --data_path="${COMPUTED_DATA_PATH}" \
+    --output_dir="${CHECKPOINTS_DIR}" \
     --num_epochs=1 \
     --effective_batch_size=128 \
     --save_samples=0 \
     --checkpoint_at_epoch \
     --accelerate_full_state_at_epoch \
-    --distributed_training_framework="$DISTRIB_FRAMEWORK" \
-    --max_batch_len="$MAX_BATCH_LEN" \
+    --distributed_training_framework="${DISTRIB_FRAMEWORK}" \
+    --max_batch_len="${MAX_BATCH_LEN}" \
     --is_granite
 }
 
@@ -142,18 +142,18 @@ function test_standard_loop () {
 function test_standard_loop_nongranite () {
     torchrun \
     --standalone \
-    --nproc_per_node="$NUM_GPUS" \
+    --nproc_per_node="${NUM_GPUS}" \
     main_ds.py \
-    --model_name_or_path="$MODEL_NAME" \
-    --data_path="$COMPUTED_DATA_PATH" \
-    --output_dir="$CHECKPOINTS_DIR" \
+    --model_name_or_path="${MODEL_NAME}" \
+    --data_path="${COMPUTED_DATA_PATH}" \
+    --output_dir="${CHECKPOINTS_DIR}" \
     --num_epochs=1 \
     --effective_batch_size=128 \
     --save_samples=0 \
     --checkpoint_at_epoch \
     --accelerate_full_state_at_epoch \
-    --distributed_training_framework="$DISTRIB_FRAMEWORK" \
-    --max_batch_len="$MAX_BATCH_LEN"
+    --distributed_training_framework="${DISTRIB_FRAMEWORK}" \
+    --max_batch_len="${MAX_BATCH_LEN}"
     # --is_granite \
 }
 
@@ -175,18 +175,18 @@ function test_standard_loop_nongranite () {
 function test_standard_loop_noflashattention_nogranite () {
     torchrun \
     --standalone \
-    --nproc_per_node="$NUM_GPUS" \
+    --nproc_per_node="${NUM_GPUS}" \
     main_ds.py \
-    --model_name_or_path="$MODEL_NAME" \
-    --data_path="$COMPUTED_DATA_PATH" \
-    --output_dir="$CHECKPOINTS_DIR" \
+    --model_name_or_path="${MODEL_NAME}" \
+    --data_path="${COMPUTED_DATA_PATH}" \
+    --output_dir="${CHECKPOINTS_DIR}" \
     --num_epochs=1 \
     --effective_batch_size=128 \
     --save_samples=0 \
     --checkpoint_at_epoch \
     --accelerate_full_state_at_epoch \
-    --distributed_training_framework="$DISTRIB_FRAMEWORK" \
-    --max_batch_len="$MAX_BATCH_LEN" \
+    --distributed_training_framework="${DISTRIB_FRAMEWORK}" \
+    --max_batch_len="${MAX_BATCH_LEN}" \
     --disable_flash_attn
     # --is_granite
 }
@@ -194,11 +194,11 @@ function test_standard_loop_noflashattention_nogranite () {
 function main () {
 
     setup_tmpdir
-    trap "rm -rf $TMP_DIR" EXIT
+    trap 'rm -rf ${TMP_DIR}' EXIT
 
     #NOTE (jkunstle): script is run as though it's
     # in the same source dir as main_ds and data_process.
-    cd "$CORRECT_WORKING_DIR"
+    cd "${CORRECT_WORKING_DIR}"
     echo "CURRENT WORKING DIRECTORY: $(pwd)"
 
     prepare_data
