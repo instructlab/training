@@ -6,6 +6,7 @@ from instructlab.training.tokenizer_utils import SpecialTokens, TokenInfo
 SPECIAL_TOKENS = SpecialTokens(
     start_role=TokenInfo("<|start_of_role|>", add_to_tokenizer=True),
     end_role=TokenInfo("<|end_of_role|>", add_to_tokenizer=True),
+    tool=TokenInfo("<|tool_call|>", add_to_tokenizer=True),
     eos=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),
     bos=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),
     pad=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),

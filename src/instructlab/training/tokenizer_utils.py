@@ -27,6 +27,7 @@ class SpecialTokens:
     bos: TokenInfo = field(default_factory=lambda: TokenInfo(""))
     start_role: TokenInfo = field(default_factory=lambda: TokenInfo(""))
     end_role: TokenInfo = field(default_factory=lambda: TokenInfo(""))
+    tool: TokenInfo = field(default_factory=lambda: TokenInfo(""))
 
     def get_tokens_to_add(self) -> List[str]:
         return [
