@@ -19,6 +19,7 @@ NUM_GPUS="${2:-${DEFAULT_GPUS}}"
 # ############### User-modifiable parameters ############### 
 # Change these as needed
 MAX_BATCH_LEN=60000
+MAX_SEQ_LEN=4096
 NUM_SAMPLES_TRAINED_ON=5000 # upper-bound on training dataset size.
 
 # ############### Test Functions ############### 
@@ -203,17 +204,14 @@ function test_standard_loop_fsdp_lora() {
     --nproc_per_node="${NUM_GPUS}" \
     main_ds.py \
     --model_name_or_path="${MODEL_NAME}" \
-    --is_granite \
     --data_path="${COMPUTED_DATA_PATH}" \
     --output_dir="${CHECKPOINTS_DIR}" \
     --num_epochs=1 \
     --effective_batch_size=128 \
     --save_samples=0 \
     --checkpoint_at_epoch \
-    --accelerate_full_state_at_epoch \
     --distributed_training_framework="${DISTRIB_FRAMEWORK}" \
     --max_batch_len="${MAX_BATCH_LEN}" \
-    --is_granite \
     --lora_r=4 \
     --lora_alpha=32 \
     --lora_dropout=0.1
@@ -235,6 +233,7 @@ function main () {
     test_standard_loop_nongranite
     _cleanup_saved_checkpoints
     test_standard_loop
+    test_standard_loop_fsdp_lora
 }
 
 main
