@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # First Party
-from instructlab.training.tokenizer_utils import SpecialTokens, TokenInfo
+from instructlab.training.chat_templates.utils import SpecialTokens, TokenInfo
 
 SPECIAL_TOKENS = SpecialTokens(
     start_role=TokenInfo("<|start_of_role|>", add_to_tokenizer=True),
