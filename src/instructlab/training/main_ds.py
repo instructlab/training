@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import time
+import typing
 
 # Third Party
 from accelerate import Accelerator
@@ -43,9 +44,10 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
 import torch
 import torch.distributed
+import yaml
 
 # First Party
-from instructlab.training import config
+from instructlab.training import config, data_process
 from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
@@ -59,7 +61,12 @@ from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
 from instructlab.training.setup_accelerator import setup_accelerator
-from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.token_dataset import (
+    MockDataset,
+    TokenDataset,
+    setup_dataloader,
+    setup_dataset,
+)
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
@@ -79,7 +86,12 @@ from instructlab.training.utils import (
     set_random_seed,
     setup_logger,
 )
-import instructlab.training.data_process as dp
+
+# GLOBAL VARIABLES FROM ENVIRONMENT
+# Will emit a key error if these aren't available.
+RANK = int(os.environ["RANK"])
+LOCAL_RANK = int(os.environ["LOCAL_RANK"])
+WORLD_SIZE = int(os.environ["WORLD_SIZE"])
 
 
 def setup_optimizer(args, model):
@@ -403,18 +415,22 @@ def train(
                 if local_rank == 0:
                     inner_pb.update(1)
                 continue
+
             start = time.time()
             num_loss_counted_tokens = float(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
+
             if not args.use_dolomite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
+
             output = model(
                 **batch,
                 use_cache=False,
             )
+
             loss = output.loss
             log_loss = loss.detach().item()
 
@@ -536,9 +552,33 @@ def train(
         )
 
 
-def main(args):
-    # Third Party
-    import yaml
+def configure_tokenizer(chat_template_path: str, model_name_or_path: str):
+    """
+    Loads tokenizer for input model. Replaces chat template and special tokens with
+    those from repo's chat template and special tokens.
+    """
+    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(chat_template_path)
+    tokenizer = setup_tokenizer(model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
+    return tokenizer
+
+
+def read_model_type_from_config(model_name_or_path: str) -> str:
+    """
+    Reads 'model_type' value from model configuration.
+    Config file named `config.json` by convention.
+    """
+    with open(os.path.join(model_name_or_path, "config.json")) as conf_json:
+        model_conf = json.load(conf_json)
+
+    return model_conf["model_type"]
+
+
+def setup_metric_logger(
+    args, log_output_dir: str, rank: int, local_rank: int
+) -> AsyncStructuredLogger:
+    """
+    Instantiates AsyncStructuredLogger, prints and logs args on rank=0 process.
+    """
 
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
@@ -555,101 +595,232 @@ def main(args):
         )
 
     metric_logger = AsyncStructuredLogger(
-        args.output_dir
-        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
+        file_name=os.path.join(
+            log_output_dir, f"training_params_and_metrics_global{rank}.jsonl"
+        )
     )
-    if os.environ["LOCAL_RANK"] == "0":
+
+    if local_rank == 0:
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
         metric_logger.log_sync({"script_params": vars(args)})
 
-    setup_logger(args.log_level)
-    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
-    # device = torch.device("cuda", args.local_rank)
+    return metric_logger
 
-    with open(Path(args.model_name_or_path) / "config.json") as conf_json:
-        model_conf = json.load(conf_json)
-    args.model_type = model_conf["model_type"]
 
-    #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    args.local_rank = int(os.environ["LOCAL_RANK"])
-    torch.distributed.init_process_group("nccl")
-    args.global_rank = torch.distributed.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
-    torch.distributed.all_reduce(tensor)
-    torch.distributed.barrier()
+def calculate_percard_packing_params(
+    local_rank: int,
+    world_size: int,
+    dataset: TokenDataset | MockDataset,
+    effective_batch_size: int,
+    max_batch_len: int,
+    is_padding: bool,
+    seed: int,
+) -> typing.Tuple[int, int, str]:
+    """
+    Given the effective_batch_size (number of samples per batch required) and
+    the max_batch_len (maximum number of tokens allowed in a batch), calculate
+    the number of gradient accumulation steps required to satisfy the effective_batch_size
+    given batches of size "packing_max_batch_len."
 
-    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
+    It may be the case that there are too few samples to correctly distribute the data
+    evenly across the available cards. If this is the case, gradient accumulation (and subsequent
+    optimizations that we can make) are ignored and we default to the `distributed data sampler`.
+    """
 
-    dataset = setup_dataset(
-        args.data_path,
-        mock=args.mock_data,
-        mock_len=args.mock_len,
-    )
+    # will try to make multipack work if possible.
+    sampler_type: str = "multipack"
 
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
+            num_gpus=world_size,
             avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
+            effective_batch_size=effective_batch_size,
+            max_batch_len_per_gpu=max_batch_len,
+            is_padding=is_padding,
             dataset=dataset,
-            seed=args.seed,
+            seed=seed,
         )
-        args.sampler = "multipack"
     except RuntimeError as e:
-        if os.environ["LOCAL_RANK"] == "0":
+        if local_rank == 0:
             print(f"\033[38;5;120m{e}\033[0m")
 
         # fallback to grad accum = 1
         # NOTE: packing max batch len will not be used
         packing_max_batch_len = None
         grad_accum = 1
-        args.sampler = "distributed"
+        sampler_type = "distributed"
 
-    args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
+    return packing_max_batch_len, grad_accum, sampler_type
+
+
+def setup_data_loader_with_fallback(
+    dataset: TokenDataset | MockDataset,
+    tokenizer,
+    sampler,
+    use_dolomite: bool,
+    flash_enabled: bool,
+    max_batch_len: int,
+    packing_max_batch_len: int,
+    samples_per_gpu: int,
+    seed,
+) -> typing.Tuple[DataLoader | MockDataset, str]:
+    """
+
+
+    this happens sometimes when we have more GPUs than data to process. In this case
+    we should either alert the user to switch samplers, or do it automatically and
+    warn them about it happening
+    """
+    data_loader = setup_dataloader(
+        dataset=dataset,
+        pad_token_id=tokenizer.pad_token_id,
+        num_workers=8,
+        use_dolomite=use_dolomite,
+        flash_enabled=flash_enabled,
+        max_batch_len=max_batch_len,
+        packing_max_batch_len=packing_max_batch_len,
+        samples_per_gpu=samples_per_gpu,
+        sampler=sampler,
+        seed=seed,
     )
 
-    train_loader = setup_dataloader(
-        dataset,
-        tokenizer.pad_token_id,
-        num_workers=8,
+    if len(data_loader) == 0:
+        print(
+            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        )
+        sampler = "distributed"
+        data_loader = setup_dataloader(
+            dataset=dataset,
+            pad_token_id=tokenizer.pad_token_id,
+            num_workers=8,
+            use_dolomite=use_dolomite,
+            flash_enabled=flash_enabled,
+            max_batch_len=max_batch_len,
+            packing_max_batch_len=packing_max_batch_len,
+            samples_per_gpu=samples_per_gpu,
+            sampler=sampler,
+            seed=seed,
+        )
+
+    return data_loader, sampler
+
+
+def calculate_samples_per_gpu(
+    world_size: int, effective_batch_size: int, grad_accum_steps: int
+) -> int:
+    """
+    Given the effective_batch_size (total batch size across all GPUs), the world_size (number of participating GPUs),
+    and grad_accum_steps (number of gradient-producing forward passes before a .backward() call), calculate
+    the number of samples per card, per batch of training.
+    """
+
+    samples_per_grad_accum_step = effective_batch_size // grad_accum_steps
+    samples_per_gpu_step = samples_per_grad_accum_step // world_size
+
+    return samples_per_gpu_step
+
+
+def init_distributed_training(local_rank: int, world_size: int, hpu: bool = False):
+    torch.cuda.set_device(LOCAL_RANK)
+    torch.distributed.init_process_group("nccl")
+
+    # check that communication works between all participating cards
+    tensor = torch.ByteTensor([False]).cuda()
+    torch.distributed.all_reduce(tensor)
+    torch.distributed.barrier()
+
+
+def check_hpu_compatible(
+    using_hpu: bool, using_flash_attention: bool, using_dolomite: bool
+) -> None:
+    """
+    Using flash-attention (and by consequence, Dolomite models) is not supported
+    if trying to train with Gaudi 2/3 cards.
+    """
+
+    if using_hpu and any([using_dolomite, using_flash_attention]):
+        raise RuntimeError(
+            "Attempting to train with Gaudi HPUs with unsupported Dolomite or Flash Attention."
+        )
+
+
+def main(args):
+    """
+    Distributed training setup and execution.
+    """
+
+    metric_logger = setup_metric_logger(
+        args, log_output_dir=args.output_dir, rank=RANK, local_rank=LOCAL_RANK
+    )
+    setup_logger(args.log_level)
+
+    args.model_type = read_model_type_from_config(
+        model_name_or_path=args.model_name_or_path
+    )
+    args.local_rank = LOCAL_RANK
+    args.global_rank = RANK
+
+    if args.hpu:
+        check_hpu_compatible(
+            using_hpu=args.hpu,
+            using_flash_attention=not args.disable_flash_attn,
+            using_dolomite=args.use_dolomite,
+        )
+
+    init_distributed_training(
+        local_rank=LOCAL_RANK, world_size=WORLD_SIZE, hpu=args.hpu
+    )
+
+    flash_enabled = check_flash_attn_enabled(
+        disable_flash_attn=args.disable_flash_attn, use_dolomite=args.use_dolomite
+    )
+
+    tokenizer = configure_tokenizer(
+        chat_template_path=args.chat_tmpl_path,
+        model_name_or_path=args.model_name_or_path,
+    )
+
+    dataset = setup_dataset(
+        data_path=args.data_path,
+        mock=args.mock_data,
+        mock_len=args.mock_len,
+    )
+
+    using_padding = not (args.use_dolomite or flash_enabled)
+    packing_max_batch_len, grad_accum, sampler_guess = calculate_percard_packing_params(
+        local_rank=LOCAL_RANK,
+        world_size=WORLD_SIZE,
+        dataset=dataset,
+        effective_batch_size=args.effective_batch_size,
+        max_batch_len=args.max_batch_len,
+        is_padding=using_padding,
+        seed=args.seed,
+    )
+    args.sampler = sampler_guess
+
+    args.samples_per_gpu = calculate_samples_per_gpu(
+        world_size=WORLD_SIZE,
+        effective_batch_size=args.effective_batch_size,
+        grad_accum_steps=grad_accum,
+    )
+
+    train_loader, confirmed_sampler = setup_data_loader_with_fallback(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        sampler=args.sampler,
         use_dolomite=args.use_dolomite,
         flash_enabled=flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
-        samples_per_gpu=args.samples_per_gpu,
-        sampler=args.sampler,
+        samples_per_gpu=args.sampler_per_gpu,
         seed=args.seed,
     )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        print(
-            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
-        )
-        args.sampler = "distributed"
-        train_loader = setup_dataloader(
-            dataset,
-            tokenizer.pad_token_id,
-            num_workers=8,
-            use_dolomite=args.use_dolomite,
-            flash_enabled=flash_enabled,
-            max_batch_len=args.max_batch_len,
-            packing_max_batch_len=packing_max_batch_len,
-            samples_per_gpu=args.samples_per_gpu,
-            sampler=args.sampler,
-            seed=args.seed,
-        )
+    args.sampler = confirmed_sampler
 
-    if args.local_rank == 0:
+    if LOCAL_RANK == 0:
         metric_logger.log_sync(
             {
-                "num_gpus": torch.distributed.get_world_size(),
+                "num_gpus": WORLD_SIZE,
                 "avg_sample_len": dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
@@ -662,23 +833,29 @@ def main(args):
             }
         )
 
-    model, lr_scheduler, optimizer, accelerator = setup_model(
-        args, tokenizer, train_loader, grad_accum, flash_enabled
-    )
+    if not args.hpu:
+        model, lr_scheduler, optimizer, accelerator = setup_model(
+            args, tokenizer, train_loader, grad_accum, flash_enabled
+        )
 
-    load_latest_full_state(args=args, accelerator=accelerator)
+        load_latest_full_state(args=args, accelerator=accelerator)
 
-    train(
-        args,
-        model,
-        optimizer,
-        lr_scheduler,
-        accelerator,
-        tokenizer,
-        train_loader,
-        grad_accum,
-        metric_logger,
-    )
+        train(
+            args,
+            model,
+            optimizer,
+            lr_scheduler,
+            accelerator,
+            tokenizer,
+            train_loader,
+            grad_accum,
+            metric_logger,
+        )
+
+    else:
+        raise NotImplementedError(
+            "Training on Intel Gaudi 2/3 cards is not supported yet."
+        )
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
@@ -692,7 +869,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     check_valid_train_args(train_args)
 
     if train_args.process_data:
-        dp.main(
+        data_process.main(
             DataProcessArgs(
                 # XXX(osilkin): make a decision here, either:
                 #   1. the CLI is fully responsible for managing where the data is written
@@ -809,6 +986,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     command.append(
         f"--fsdp_sharding_strategy={train_args.fsdp_options.sharding_strategy.value}"
     )
+
+    if train_args.hpu:
+        command.append("--hpu")
 
     print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
     process = None
@@ -985,6 +1165,13 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
+
+    parser.add_argument(
+        "--hpu",
+        action="store_true",
+        help="If set, uses specialized code path that implements training for Intel Gaudi 2/3 cards. Not compatible with Nvidia or AMD training.",
+    )
+
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)

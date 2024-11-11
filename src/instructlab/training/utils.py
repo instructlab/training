@@ -691,6 +691,7 @@ def apply_gradient_checkpointing(
 
 
 def setup_logger(level="DEBUG"):
+    """sets basic rank logging configuration"""
     logging.basicConfig(
         level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
     )
