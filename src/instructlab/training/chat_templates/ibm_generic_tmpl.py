@@ -1,30 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # First Party
-from instructlab.training.tokenizer_utils import SpecialTokens, TokenInfo
+from instructlab.training.chat_templates.utils import SpecialTokens, TokenInfo
 
 SPECIAL_TOKENS = SpecialTokens(
-    system=TokenInfo("<|system|>", add_to_tokenizer=True),
-    user=TokenInfo("<|user|>", add_to_tokenizer=True),
-    assistant=TokenInfo("<|assistant|>", add_to_tokenizer=True),
-    eos=TokenInfo("<|endoftext|>", add_to_tokenizer=True),
-    pad=TokenInfo("<|pad|>", add_to_tokenizer=True),
-    bos=TokenInfo("<|begginingoftext|>", add_to_tokenizer=True),
+    start_role=TokenInfo("<|start_of_role|>", add_to_tokenizer=True),
+    end_role=TokenInfo("<|end_of_role|>", add_to_tokenizer=True),
+    tool=TokenInfo("<|tool_call|>", add_to_tokenizer=True),
+    eos=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),
+    bos=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),
+    pad=TokenInfo("<|end_of_text|>", add_to_tokenizer=True),
 )
 
 CHAT_TEMPLATE = (
+    "{%- if tools %}"
+    "{{ '<|start_of_role|>available_tools<|end_of_role|>\n' }}"
+    "{% for tool in tools %}"
+    "{{ tool | tojson(indent=4) }}"
+    "{% if not loop.last %}"
+    "{{- '\n\n' }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{{ '<|end_of_text|>\n' }}"
+    "{% endif %}"
     "{% for message in messages %}"
-    "{% if message['role'] == 'pretraining' %}"
-    "{{'<|pretrain|>' + message['content'] + '<|endoftext|>' + '<|/pretrain|>' }}"
-    "{% elif message['role'] == 'system' %}"
-    "{{'<|system|>'+ '\n' + message['content'] + '\n'}}"
+    "{% if message['role'] == 'system' %}"
+    "{{ '<|start_of_role|>system<|end_of_role|>' + message['content'] + '<|end_of_text|>\n' }}"
+    "{% elif message['role'] == 'pretraining' %}"
+    "{{ '<|pretrain|>' + message['content'] + '<|end_of_text|>' + '<|/pretrain|>'}}"
     "{% elif message['role'] == 'user' %}"
-    "{{'<|user|>' + '\n' + message['content'] + '\n'}}"
+    "{{ '<|start_of_role|>user<|end_of_role|>' + message['content'] + '<|end_of_text|>\n' }}"
     "{% elif message['role'] == 'assistant' %}"
-    "{{'<|assistant|>' + '\n' + message['content'] + '<|endoftext|>' + ('' if loop.last else '\n')}}"
+    "{{ '<|start_of_role|>assistant<|end_of_role|>'  + message['content'] + '<|end_of_text|>\n' }}"
+    "{% elif message['role'] == 'assistant_tool_call' %}"
+    "{{ '<|start_of_role|>assistant<|end_of_role|><|tool_call|>' + message['content'] + '<|end_of_text|>\n' }}"
+    "{% elif message['role'] == 'tool_response' %}"
+    "{{ '<|start_of_role|>tool_response<|end_of_role|>' + message['content'] + '<|end_of_text|>\n' }}"
     "{% endif %}"
     "{% if loop.last and add_generation_prompt %}"
-    "{{ '<|assistant|>' + '\n' }}"
+    "{{ '<|start_of_role|>assistant<|end_of_role|>' }}"
     "{% endif %}"
     "{% endfor %}"
 )

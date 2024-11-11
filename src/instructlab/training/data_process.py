@@ -28,7 +28,11 @@ def check_valid_sample(
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
-    if not eos_tk[0] in (whole_sentence_tk[-1], whole_sentence_tk[-2]):
+    if not eos_tk[0] in (
+        whole_sentence_tk[-1],
+        whole_sentence_tk[-2],
+        whole_sentence_tk[-3],
+    ):
         return False
 
     # NOTE - below checks are no longer strictly required, but we may want to revisit to make sure there's nothing we need to bring back in validity checking
@@ -61,6 +65,7 @@ def unmask_message_content(
     system_tokens,
     pretrain_token,
     pretrain_end_token,
+    tool_resp_tokens=None,
 ):
     """
     Create labels for tokens in a sequence with special handling for pretraining tokens and role-specific sequences.
@@ -130,6 +135,10 @@ def unmask_message_content(
             default=None,
         )
 
+    special_sequences = [user_tokens, assist_tokens, system_tokens]
+    if tool_resp_tokens:
+        special_sequences.append(tool_resp_tokens)
+
     in_pretraining = False
     unmasking = False
     i = 0
@@ -143,7 +152,7 @@ def unmask_message_content(
             i += 1
             continue
 
-        match = find_longest_match(i, [user_tokens, assist_tokens, system_tokens])
+        match = find_longest_match(i, special_sequences)
         if match:
             unmasking = match == assist_tokens
             i += len(match)
@@ -167,8 +176,6 @@ def unmask_message_content(
     ]
 
     # Assertions
-    special_sequences = [user_tokens, assist_tokens, system_tokens]
-
     # 1. No special sequence of tokens should be unmasked
     for i in range(len(final_sentence_tk)):
         for seq in special_sequences:
@@ -229,10 +236,43 @@ def main(args: DataProcessArgs):
     CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
     tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
 
-    system_tk, user_tk, assistant_tk, eos_tk, pad_tk, bos_tk = [
+    (
+        system_tk,
+        user_tk,
+        assistant_tk,
+        eos_tk,
+        pad_tk,
+        bos_tk,
+        start_role_tk,
+        end_role_tk,
+        _,
+    ) = [
         get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token)
         for sp in SPECIAL_TOKENS.__annotations__.keys()
     ]
+    if start_role_tk and end_role_tk:
+        system_tk = (
+            start_role_tk
+            + tokenizer.encode("system", add_special_tokens=False)
+            + end_role_tk
+        )
+        user_tk = (
+            start_role_tk
+            + tokenizer.encode("user", add_special_tokens=False)
+            + end_role_tk
+        )
+        assistant_tk = (
+            start_role_tk
+            + tokenizer.encode("assistant", add_special_tokens=False)
+            + end_role_tk
+        )
+        tool_resp_tk = (
+            start_role_tk
+            + tokenizer.encode("tool_response", add_special_tokens=False)
+            + end_role_tk
+        )
+    else:
+        tool_resp_tk = None
     log_rank_0(
         f"Special tokens: eos: {eos_tk}, pad: {pad_tk}, bos: {bos_tk}, system: {system_tk}, user: {user_tk}, assistant: {assistant_tk}"
     )
@@ -324,6 +364,7 @@ def main(args: DataProcessArgs):
         system_tokens=system_tk,
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>")[0],
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>")[0],
+        tool_resp_tokens=tool_resp_tk,
     )
     print("\033[92munmasking the appropriate message content...\033[0m")
     data_with_labels = data_with_input_ids.map(
