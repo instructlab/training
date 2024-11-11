@@ -203,3 +203,6 @@ class TrainingArgs(BaseModel):
 
     # This field defines whether or not data processing will occur inside of `run_training()`
     process_data: Optional[bool] = True
+
+    # switch to use Intel Gaudi 2/3 training code if True.
+    hpu: bool = False
