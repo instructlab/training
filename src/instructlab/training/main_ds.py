@@ -13,10 +13,30 @@ import time
 
 # Third Party
 from accelerate import Accelerator
-from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
-from deepspeed.runtime.zero.utils import ZeRORuntimeException
 
-# pylint: disable=no-name-in-module
+try:
+    # Third Party
+    from deepspeed.ops.adam import DeepSpeedCPUAdam
+except ImportError:
+    DeepSpeedCPUAdam = None
+    local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    if __name__ == "__main__" and (not local_rank or local_rank == 0):
+        print(
+            "DeepSpeed CPU Optimizer is not available. Some features may be unavailable."
+        )
+
+try:
+    # Third Party
+    from deepspeed.ops.adam import FusedAdam
+    from deepspeed.runtime.zero.utils import ZeRORuntimeException
+except ImportError:
+    FusedAdam = None
+    ZeRORuntimeException = None
+    local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    if __name__ == "__main__" and (not local_rank or local_rank == 0):
+        print("DeepSpeed is not available. Some features may be unavailable.")
+
+# Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -27,6 +47,8 @@ import torch.distributed
 # First Party
 from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
+
+# pylint: disable=no-name-in-module
 from instructlab.training.config import (
     DataProcessArgs,
     DistributedBackend,
@@ -518,6 +540,20 @@ def main(args):
     # Third Party
     import yaml
 
+    if args.distributed_training_framework == "deepspeed" and not FusedAdam:
+        raise ImportError(
+            "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
+        )
+
+    if (
+        args.distributed_training_framework == "deepspeed"
+        and args.cpu_offload_optimizer
+        and not DeepSpeedCPUAdam
+    ):
+        raise ImportError(
+            "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
+        )
+
     metric_logger = AsyncStructuredLogger(
         args.output_dir
         + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
@@ -739,6 +775,16 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     )
 
     # deepspeed options
+    if train_args.distributed_backend == DistributedBackend.DeepSpeed:
+        if not FusedAdam:
+            raise ImportError(
+                "DeepSpeed was selected as the distributed backend, but FusedAdam could not be imported. Please double-check that DeepSpeed is installed correctly"
+            )
+
+        if train_args.deepspeed_options.cpu_offload_optimizer and not DeepSpeedCPUAdam:
+            raise ImportError(
+                "DeepSpeed CPU offloading was enabled, but DeepSpeedCPUAdam could not be imported. This is most likely because DeepSpeed was not built with CPU Adam. Please rebuild DeepSpeed to have CPU Adam, or disable CPU offloading."
+            )
     if train_args.deepspeed_options.save_samples:
         command.append(f"--save_samples_ds={train_args.deepspeed_options.save_samples}")
     if train_args.deepspeed_options.cpu_offload_optimizer:
