@@ -121,7 +121,36 @@ allow you to customize aspects of the ZeRO stage 2 optimizer.
 
 For more information about DeepSpeed, see [deepspeed.ai](https://www.deepspeed.ai/)
 
-#### `FSDPOptions`
+#### DeepSpeed with CPU Offloading
+
+To use DeepSpeed with CPU offloading, you'll usually encounter an issue indicating that the optimizer needed to use the Adam optimizer on CPU doesn't exist. To resolve this, please follow the following steps:
+
+**Rebuild DeepSpeed with CPUAdam**:
+
+You'll need to rebuild DeepSpeed in order for the optimizer to be present:
+
+```bash
+# uninstall deepspeed & reinstall with the flags for installing CPUAdam
+pip uninstall deepspeed
+DS_BUILD_CPU_ADAM=1 DS_BUILD_UTILS=1 pip install deepspeed --no-deps
+```
+
+**Ensure `-lcurand` is linked correctly**:
+
+A problem that we commonly encounter is that the `-lcurand` linker will not be present when
+DeepSpeed recompiles. To resolve this, you will need to find the location of the `libcurand.so` file in your machine:
+
+```bash
+find / -name 'libcurand*.so*' 2>/dev/null
+```
+
+If libcurand.so is not present in the `/usr/lib64` directory, you'll need to add a symlink. Ex:
+
+```bash
+sudo ln -s /usr/local/cuda/lib64/libcurand.so.10 /usr/lib64/libcurand.so
+```
+
+### `FSDPOptions`
 
 Like DeepSpeed, we only expose a number of parameters for you to modify with FSDP.
 They are listed below:
