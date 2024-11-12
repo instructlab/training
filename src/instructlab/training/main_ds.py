@@ -775,7 +775,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     )
 
     # deepspeed options
-    if train_args.distributed_backend == DistributedBackend.DeepSpeed:
+    if train_args.distributed_backend == DistributedBackend.DEEPSPEED:
         if not FusedAdam:
             raise ImportError(
                 "DeepSpeed was selected as the distributed backend, but FusedAdam could not be imported. Please double-check that DeepSpeed is installed correctly"
