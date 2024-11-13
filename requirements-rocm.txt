@@ -1,1 +1,3 @@
 flash-attn>=2.6.2,<2.7.0
+# required for FSDP updates
+accelerate>=0.34.2
