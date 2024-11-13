@@ -19,6 +19,12 @@ jobs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
       ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
@@ -54,6 +60,11 @@ jobs:
       pull-requests: write
 
     steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
       - name: Install Packages
         run: |
           cat /etc/os-release
@@ -170,7 +181,23 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           . venv/bin/activate
-          ./scripts/e2e-ci.sh -l
+
+          # set preserve to true so we can retain the logs
+          ./scripts/e2e-ci.sh -lp
+
+          # we know that the file will be named something like f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl" in python
+          # and we know that it will be written into a directory created by `mktemp -d`. 
+          # Given this information, we can use the following command to find the file:
+          log_file=$(find /tmp -name "training_params_and_metrics_global0.jsonl")
+          mv "${log_file}" training-log.jsonl
+
+      - name: Upload training logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-log.jsonl
+          path: ./instructlab/training-log.jsonl
+          retention-days: 1
+          overwrite: true
 
       - name: Add comment to PR if the workflow failed
         if: failure() && steps.check_pr.outputs.is_pr == 'true'
@@ -221,6 +248,12 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
@@ -235,3 +268,37 @@ jobs:
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           label: ${{ needs.start-large-ec2-runner.outputs.label }}
           ec2-instance-id: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-id }}
+
+      - name: Download loss data
+        id: download-logs
+        uses: actions/download-artifact@v4
+        with:
+          name: training-log.jsonl
+          path: downloaded-data
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+      
+      - name: Try to upload to s3
+        id: upload-s3
+        continue-on-error: true
+        run: |
+          output_file='./test.md' 
+          python scripts/create-loss-graph.py  \
+            --log-file "${{ steps.download-logs.outputs.download-path }}/training-log.jsonl" \
+            --output-file "${output_file}" \
+            --aws-region "${{ vars.AWS_REGION }}" \
+            --bucket-name "${{ vars.AWS_S3_LOSS_GRAPHS_BUCKET_NAME }}" \
+            --base-branch "${{ github.event.pull_request.base.ref }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --origin-repository "${{ github.repository }}"
+
+      - name: Check S3 upload status
+        if: steps.upload-s3.outcome == 'failure'
+        run: |
+          echo "::warning::Failed to upload loss graph to S3. This won't block the workflow, but you may want to investigate."
+          echo "Loss graph upload failed" >> "${GITHUB_STEP_SUMMARY}"
+  
+          cat "${output_file}" >> "${GITHUB_STEP_SUMMARY}"
