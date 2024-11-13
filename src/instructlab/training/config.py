@@ -156,6 +156,9 @@ class TrainingArgs(BaseModel):
         os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
     )
 
+    # this field determines if ibm_legacy_tmpl should be used instead
+    use_legacy_tmpl: bool = False
+
     # this field specifies the filepath to the training dataset before processing
     data_path: str
     ckpt_output_dir: str

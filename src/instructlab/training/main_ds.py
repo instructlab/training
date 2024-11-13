@@ -691,6 +691,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     check_valid_train_args(train_args)
 
+    # switch out generic tmpl for legacy tmpl if requested
+    if train_args.use_legacy_tmpl:
+        train_args.chat_tmpl_path = os.path.join(
+            os.path.dirname(__file__), "chat_templates/ibm_legacy_tmpl.py"
+        )
+
     if train_args.process_data:
         dp.main(
             DataProcessArgs(
