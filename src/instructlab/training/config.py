@@ -195,7 +195,7 @@ class TrainingArgs(BaseModel):
             cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
         )
     )
-    distributed_backend: DistributedBackend = DistributedBackend.DEEPSPEED
+    distributed_backend: DistributedBackend = DistributedBackend.FSDP
 
     disable_flash_attn: Optional[bool] = False
 

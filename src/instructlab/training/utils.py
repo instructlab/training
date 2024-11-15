@@ -653,16 +653,21 @@ def prepare_universal_checkpoint_from_latest(output_dir):
 
     start = time.time()
     if torch.distributed.get_rank() == 0:
-        # Third Party
-        from deepspeed.checkpoint import DeepSpeedCheckpoint
-        from deepspeed.checkpoint.ds_to_universal import (
-            PARAM_SHAPES,
-            UNIVERSAL_CHECKPOINT_INFO,
-            _check_for_required_state,
-            _extract_zero_shard_files,
-            _merge_tp_slice_files,
-            _save_optimizer_state,
-        )
+        try:
+            # Third Party
+            from deepspeed.checkpoint import DeepSpeedCheckpoint
+            from deepspeed.checkpoint.ds_to_universal import (
+                PARAM_SHAPES,
+                UNIVERSAL_CHECKPOINT_INFO,
+                _check_for_required_state,
+                _extract_zero_shard_files,
+                _merge_tp_slice_files,
+                _save_optimizer_state,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSpeed-specific checkpoints cannot be saved without DeepSpeed>=0.14.3 installed"
+            ) from exc
 
         # read the latest file to get the step folder
         latest_file = output_dir / "latest"
