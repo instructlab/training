@@ -96,8 +96,13 @@ def get_fsdp_config(args, model: PreTrainedModel):
 
 def setup_accelerator(args, model: PreTrainedModel, grad_accum):
     if args.distributed_training_framework == "deepspeed":
-        # Third Party
-        from deepspeed import DeepSpeedEngine
+        try:
+            # Third Party
+            from deepspeed import DeepSpeedEngine
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSpeed selected as distributed framework, but not installed"
+            ) from exc
 
         # patch deepspeed to work with quantized models.
         if args.lora_quant_bits is not None:

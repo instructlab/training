@@ -21,7 +21,4 @@ instructlab-dolomite>=0.2.0
 trl>=0.9.4
 peft
 pydantic>=2.7.0
-
-# deepspeed needs to be at the end or it'll break stuff.
-deepspeed>=0.14.3
 aiofiles>=23.2.1
