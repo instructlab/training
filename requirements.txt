@@ -5,8 +5,8 @@ py-cpuinfo
 # we set this to be above 0a0 so that it doesn't
 # replace custom pytorch images with the 2.3.0
 torch>=2.3.0a0
-transformers>=4.41.2
-accelerate>=0.34.2
+transformers>=4.45.2
+
 datasets>=2.15.0
 numba
 # Note: numpy ranges copied from instructlab/instructlab
@@ -17,11 +17,8 @@ numba
 numpy>=1.23.5,<2.0.0 ; python_version == '3.10'
 numpy>=1.26.4,<2.0.0 ; python_version != '3.10'
 rich
-instructlab-dolomite>=0.1.1
+instructlab-dolomite>=0.2.0
 trl>=0.9.4
 peft
 pydantic>=2.7.0
-
-# deepspeed needs to be at the bottom or it'll break during installation
-deepspeed>=0.14.3
 aiofiles>=23.2.1

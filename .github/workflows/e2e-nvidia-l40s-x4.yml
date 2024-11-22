@@ -1,0 +1,304 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: E2E (NVIDIA L40S x4)
+
+on:
+  schedule:
+    - cron: '0 16 * * *' # Runs at 4PM UTC every day
+  workflow_dispatch:
+    inputs:
+      pr_or_branch:
+        description: 'pull request number or branch name'
+        required: true
+        default: 'main'
+
+jobs:
+  start-large-ec2-runner:
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
+    steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@1827d6ca7544d7044ddbd2e9360564651b463da2 # v2.3.7
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          ec2-image-id: ${{ vars.AWS_EC2_AMI }}
+          ec2-instance-type: g6e.12xlarge
+          subnet-id: subnet-024298cefa3bedd61
+          security-group-id: sg-06300447c4a5fbef3
+          iam-role-name: instructlab-ci-runner
+          aws-resource-tags: >
+            [
+              {"Key": "Name", "Value": "instructlab-ci-github-large-runner"},
+              {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
+              {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
+              {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
+            ]
+
+  e2e-large-test:
+    needs:
+      - start-large-ec2-runner
+    runs-on: ${{ needs.start-large-ec2-runner.outputs.label }}
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
+      - name: Install Packages
+        run: |
+          cat /etc/os-release
+          sudo dnf install -y gcc gcc-c++ make git python3.11 python3.11-devel
+
+      - name: Checkout instructlab/instructlab
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: "instructlab/instructlab"
+          path: "instructlab"
+          # https://github.com/actions/checkout/issues/249
+          fetch-depth: 0
+  
+      - name: Checkout instructlab/training
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: "instructlab/training"
+          path: "training"
+          # https://github.com/actions/checkout/issues/249
+          fetch-depth: 0
+
+      - name: Determine if pr_or_branch is a PR number
+        id: check_pr
+        run: |
+          PR_OR_BRANCH=${{ github.event.inputs.pr_or_branch || 'main' }} # Default to 'main' if not set
+          if [[ "$PR_OR_BRANCH" =~ ^[0-9]+$ ]]; then
+            echo "is_pr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_pr=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "pr_or_branch=$PR_OR_BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Check if gh cli is installed
+        id: gh_cli
+        run: |
+          if command -v gh &> /dev/null ; then
+            echo "gh_cli_installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "gh_cli_installed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install gh CLI
+        if: steps.gh_cli.outputs.gh_cli_installed == 'false'
+        run: |
+          sudo dnf install 'dnf-command(config-manager)' -y
+          sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          sudo dnf install gh --repo gh-cli -y
+
+      - name: test gh CLI
+        run: |
+          gh --version
+
+      - name: set default repo
+        working-directory: ./training
+        run: |
+          gh repo set-default ${{ github.server_url }}/${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add comment to PR
+        if: steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
+        run: |
+          gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "${{ github.workflow }} workflow launched on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch and checkout PR
+        if: steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
+        run: |
+          gh pr checkout ${{ steps.check_pr.outputs.pr_or_branch }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout branch
+        if: steps.check_pr.outputs.is_pr == 'false'
+        working-directory: ./training
+        run: |
+          git checkout ${{ steps.check_pr.outputs.pr_or_branch }}
+
+      - name: Install ilab
+        working-directory: ./instructlab
+        run: |
+          export CUDA_HOME="/usr/local/cuda"
+          export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
+          export PATH="$PATH:$CUDA_HOME/bin"
+          python3.11 -m venv --upgrade-deps venv
+          . venv/bin/activate
+          nvidia-smi
+          python3.11 -m pip cache remove llama_cpp_python
+
+          CMAKE_ARGS="-DLLAMA_CUDA=on" python3.11 -m pip install .
+
+          # https://github.com/instructlab/instructlab/issues/1821
+          # install with Torch and build dependencies installed
+          python3.11 -m pip install packaging wheel setuptools-scm
+          python3.11 -m pip install .[cuda] -r requirements-vllm-cuda.txt
+
+      - name: Update instructlab-training library
+        working-directory: ./training
+        run: |
+          . ../instructlab/venv/bin/activate
+          pip install .
+          pip install .[cuda]
+
+      - name: Check disk
+        run: |
+          df -h
+
+      - name: Run e2e test
+        working-directory: ./instructlab
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          . venv/bin/activate
+
+          # set preserve to true so we can retain the logs
+          ./scripts/e2e-ci.sh -lp
+
+          # we know that the file will be named something like f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl" in python
+          # and we know that it will be written into a directory created by `mktemp -d`. 
+          # Given this information, we can use the following command to find the file:
+          log_file=$(find /tmp -name "training_params_and_metrics_global0.jsonl")
+          mv "${log_file}" training-log.jsonl
+
+      - name: Upload training logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-log.jsonl
+          path: ./instructlab/training-log.jsonl
+          retention-days: 1
+          overwrite: true
+
+      - name: Add comment to PR if the workflow failed
+        if: failure() && steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
+        run: |
+          gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "e2e workflow failed on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), please investigate."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add comment to PR if the workflow succeeded
+        if: success() && steps.check_pr.outputs.is_pr == 'true'
+        working-directory: ./training
+        run: |
+          gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "e2e workflow succeeded on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), congrats!"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post job results to Slack if the workflow failed
+        if: failure() && steps.check_pr.outputs.is_pr == 'false'
+        id: slack-report-failure
+        uses: slackapi/slack-github-action@37ebaef184d7626c5f204ab8d3baff4262dd30f0 # v1.27.0
+        with:
+          # Slack channel id, channel name, or user id to post message.
+          # See also: https://api.slack.com/methods/chat.postMessage#channels
+          # You can pass in multiple channels to post to by providing a comma-delimited list of channel IDs.
+          channel-id: 'e2e-ci-results'
+          slack-message: "*e2e-nvidia-l40s-x4* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *with failures* :meow_sad-rain: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SON_OF_JEEVES_TOKEN }}
+
+      - name: Post job results to Slack if the workflow succeeded
+        if: success() && steps.check_pr.outputs.is_pr == 'false'
+        id: slack-report-success
+        uses: slackapi/slack-github-action@37ebaef184d7626c5f204ab8d3baff4262dd30f0 # v1.27.0
+        with:
+          # Slack channel id, channel name, or user id to post message.
+          # See also: https://api.slack.com/methods/chat.postMessage#channels
+          # You can pass in multiple channels to post to by providing a comma-delimited list of channel IDs.
+          channel-id: 'e2e-ci-results'
+          slack-message: "*e2e-nvidia-l40s-x4* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *successfully* :meow_party: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SON_OF_JEEVES_TOKEN }}
+
+  stop-large-ec2-runner:
+    needs:
+      - start-large-ec2-runner
+      - e2e-large-test
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@91182cccc01eb5e619899d80e4e971d6181294a7
+        with:
+          egress-policy: audit
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@1827d6ca7544d7044ddbd2e9360564651b463da2 # v2.3.7
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start-large-ec2-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-id }}
+
+      - name: Download loss data
+        id: download-logs
+        uses: actions/download-artifact@v4
+        with:
+          name: training-log.jsonl
+          path: downloaded-data
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+      
+      - name: Try to upload to s3
+        id: upload-s3
+        continue-on-error: true
+        run: |
+          output_file='./test.md' 
+          python scripts/create-loss-graph.py  \
+            --log-file "${{ steps.download-logs.outputs.download-path }}/training-log.jsonl" \
+            --output-file "${output_file}" \
+            --aws-region "${{ vars.AWS_REGION }}" \
+            --bucket-name "${{ vars.AWS_S3_LOSS_GRAPHS_BUCKET_NAME }}" \
+            --base-branch "${{ github.event.pull_request.base.ref }}" \
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --origin-repository "${{ github.repository }}"
+
+      - name: Check S3 upload status
+        if: steps.upload-s3.outcome == 'failure'
+        run: |
+          echo "::warning::Failed to upload loss graph to S3. This won't block the workflow, but you may want to investigate."
+          echo "Loss graph upload failed" >> "${GITHUB_STEP_SUMMARY}"
+  
+          cat "${output_file}" >> "${GITHUB_STEP_SUMMARY}"

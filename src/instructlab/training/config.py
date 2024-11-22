@@ -156,6 +156,9 @@ class TrainingArgs(BaseModel):
         os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
     )
 
+    # this field determines if ibm_legacy_tmpl should be used instead
+    use_legacy_tmpl: bool = False
+
     # this field specifies the filepath to the training dataset before processing
     data_path: str
     ckpt_output_dir: str
@@ -171,8 +174,9 @@ class TrainingArgs(BaseModel):
     save_samples: int
     learning_rate: float
     warmup_steps: int
-    is_padding_free: bool
     random_seed: int = 42
+    use_dolomite: bool = False
+    is_padding_free: bool = False  # TODO: deprecate
     checkpoint_at_epoch: bool = True
     accelerate_full_state_at_epoch: bool = True
 
@@ -191,7 +195,7 @@ class TrainingArgs(BaseModel):
             cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
         )
     )
-    distributed_backend: DistributedBackend = DistributedBackend.DEEPSPEED
+    distributed_backend: DistributedBackend = DistributedBackend.FSDP
 
     disable_flash_attn: Optional[bool] = False
 
