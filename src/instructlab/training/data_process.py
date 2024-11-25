@@ -355,7 +355,10 @@ def main(args: DataProcessArgs):
     print("\033[92mCategorizing training data type...\033[0m")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
-            "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>")[0] in x["input_ids"]
+            "is_pretrain": (
+                get_sp_token(tokenizer, "<|pretrain|>")[0] in x["input_ids"]
+            )
+            or x["unmask"]
         },
         num_proc=NUM_PROC,
     )
