@@ -14,11 +14,13 @@ from pydantic import BaseModel
 class Arguments(BaseModel):
     log_file: str | None = None
     output_file: str
+    phase: str | None = None
+    title: str | None = None
     aws_region: str
     bucket_name: str
     base_branch: str
-    pr_number: str
     head_sha: str
+    pr_number: str | None
     origin_repository: str
 
 
@@ -76,21 +78,32 @@ def write_to_s3(
         ["aws", "s3", "cp", str(file), s3_path], capture_output=True, check=True
     )
     if results.returncode != 0:
-        raise RuntimeError(f"failed to upload to s3: {results.stderr.decode('utf-8')}")
+        raise RuntimeError(f"Failed to upload to s3: {results.stderr.decode('utf-8')}")
     else:
         print(results.stdout.decode("utf-8"))
 
 
-def get_destination_path(base_ref: str, pr_number: str, head_sha: str):
-    return f"pulls/{base_ref}/{pr_number}/{head_sha}/loss-graph.png"
+def get_destination_path(base_ref: str, head_sha: str, phase: str | None):
+    if phase is None:
+        image_file_name = "loss-graph.png"
+    else:
+        image_file_name = f"loss-graph-{phase}.png"
+    return f"loss_graphs/{base_ref}/{head_sha}/{image_file_name}"
 
 
 def write_md_file(
-    output_file: Path, url: str, pr_number: str, head_sha: str, origin_repository: str
+    output_file: Path, url: str, head_sha: str, origin_repository: str, title: str, pr_number: str | None
 ):
     commit_url = f"https://github.com/{origin_repository}/commit/{head_sha}"
+
+    if pr_number:
+        pr_url = f"https://github.com/{origin_repository}/pull/{pr_number}"
+        pr_str = f" ([PR {pr_number}]({pr_url}))"
+    else:
+        pr_str = ""
+
     md_template = f"""
-# Loss Graph for PR {args.pr_number} ([{args.head_sha[:7]}]({commit_url}))
+# {title} ([{head_sha[:7]}]({commit_url})){pr_str}
 
 ![Loss Graph]({url})
 """
@@ -107,9 +120,16 @@ def main(args: Arguments):
     loss_data = read_loss_data(log_file=log_file)
     output_image = Path("/tmp/loss-graph.png")
     output_file = Path(args.output_file)
+    title = args.title
+    if not title:
+        if args.phase is None:
+            phase_str = ""
+        else:
+            phase_str = f" for Phase {args.phase}"
+        title = f"Training Loss Graph{phase_str}"
     render_image(loss_data=loss_data, outfile=output_image)
     destination_path = get_destination_path(
-        base_ref=args.base_branch, pr_number=args.pr_number, head_sha=args.head_sha
+        base_ref=args.base_branch, head_sha=args.head_sha, phase=args.phase
     )
     write_to_s3(
         file=output_image, bucket_name=args.bucket_name, destination=destination_path
@@ -122,9 +142,10 @@ def main(args: Arguments):
     write_md_file(
         output_file=output_file,
         url=s3_url,
-        pr_number=args.pr_number,
         head_sha=args.head_sha,
         origin_repository=args.origin_repository,
+        title=title,
+        pr_number=args.pr_number
     )
     print(f"Loss graph uploaded to '{s3_url}'")
     print(f"Markdown file written to '{output_file}'")
@@ -146,6 +167,16 @@ if __name__ == "__main__":
         help="The output file where the resulting markdown will be written.",
     )
     parser.add_argument(
+        "--phase",
+        type=str,
+        help="Phase of the loss graph to use for storage and within the title (if not specified)",
+    )
+    parser.add_argument(
+        "--title",
+        type=str,
+        help="Title of the loss graph to use in the markdown output",
+    )
+    parser.add_argument(
         "--aws-region",
         type=str,
         required=True,
@@ -160,10 +191,10 @@ if __name__ == "__main__":
         required=True,
         help="The base branch being merged to.",
     )
-    parser.add_argument("--pr-number", type=str, required=True, help="The PR number")
     parser.add_argument(
         "--head-sha", type=str, required=True, help="The head SHA of the PR"
     )
+    parser.add_argument("--pr-number", type=str, help="The PR number if applicable")
     parser.add_argument(
         "--origin-repository",
         type=str,
@@ -176,11 +207,13 @@ if __name__ == "__main__":
     arguments = Arguments(
         log_file=args.log_file,
         output_file=args.output_file,
+        phase=args.phase,
+        title=args.title,
         aws_region=args.aws_region,
         bucket_name=args.bucket_name,
         base_branch=args.base_branch,
-        pr_number=args.pr_number,
         head_sha=args.head_sha,
+        pr_number=args.pr_number,
         origin_repository=args.origin_repository,
     )
     main(arguments)
