@@ -2,6 +2,7 @@
 
 # Standard
 from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
 import argparse
 import json
@@ -475,6 +476,7 @@ def train(
                 output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
                 accelerator.save_model(model,
                                        str(output_dir),
+                                       max_shard_size="20GB",
                 )
                 if accelerator.is_main_process:
                     model.module.config.to_json_file(str(output_dir / "config.json"))
@@ -556,7 +558,7 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    torch.distributed.init_process_group("nccl")
+    torch.distributed.init_process_group("nccl", timeout=timedelta(minutes=180))
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
