@@ -144,7 +144,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     else:
         from contextlib import nullcontext
         from accelerate import init_empty_weights
-        context = nullcontext if os.environ["RANK"] != "0" else init_empty_weights
+        context = nullcontext if os.environ["RANK"] == "0" else init_empty_weights
         with context():
             model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
