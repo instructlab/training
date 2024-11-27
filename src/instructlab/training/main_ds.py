@@ -43,6 +43,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, get_scheduler
 import torch
 import torch.distributed
+torch.set_float32_matmul_precision('high')
 
 # First Party
 from instructlab.training import config
@@ -141,7 +142,11 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
                 **base_model_args,
             )
     else:
-        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        from contextlib import nullcontext
+        from accelerate import init_empty_weights
+        context = nullcontext if os.environ["RANK"] != "0" else init_empty_weights
+        with context():
+            model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
@@ -209,25 +214,24 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
             gradient_checkpointing=not args.use_dolomite,
         )
         args.lora_config = lora_config
-    elif not args.use_dolomite:
-        model.gradient_checkpointing_enable()
 
     # granite gradient checkpointing is handled uniformly
     # for both lora and full here
-    if args.use_dolomite:
-        block_name = model._no_split_modules[0]
-        apply_gradient_checkpointing(
-            model,
-            block_name=block_name,
-            use_reentrant=True,  # this should be the HF default mode
-        )
+    block_name = model._no_split_modules[0]
+    apply_gradient_checkpointing(
+        model,
+        block_name=block_name,
+        use_reentrant=True,  # this should be the HF default mode
+    )
 
-        if args.lora_r > 0:
+    if args.lora_r > 0:
 
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
+        def make_inputs_require_grad(module, input, output):
+            output.requires_grad_(True)
 
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+        model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    
+    torch.compile(model)
 
     accelerator = setup_accelerator(args, model, grad_accum)
     if args.distributed_training_framework == DistributedBackend.FSDP.value:
@@ -468,6 +472,13 @@ def train(
                     is_lora=bool(args.lora_r),
                     hf_format=True,
                 )
+                output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+                accelerator.save_model(model,
+                                       str(output_dir),
+                )
+                if accelerator.is_main_process:
+                    model.module.config.to_json_file(str(output_dir / "config.json"))
+                    tokenizer.save_pretrained(output_dir)
 
             # if (
             #     args.save_samples_ds is not None
@@ -483,28 +494,28 @@ def train(
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
-        if args.checkpoint_at_epoch:
-            save_checkpoint(
-                args=args,
-                accelerator=accelerator,
-                model=model,
-                tokenizer=tokenizer,
-                samples_seen=samples_seen,
-                is_lora=bool(args.lora_r),
-                full_state=args.accelerate_full_state_at_epoch,
-                hf_format=True,
-                epoch=epoch,
-            )
+        # if args.checkpoint_at_epoch:
+        #     save_checkpoint(
+        #         args=args,
+        #         accelerator=accelerator,
+        #         model=model,
+        #         tokenizer=tokenizer,
+        #         samples_seen=samples_seen,
+        #         is_lora=bool(args.lora_r),
+        #         full_state=args.accelerate_full_state_at_epoch,
+        #         hf_format=True,
+        #         epoch=epoch,
+        #     )
 
-    if args.save_last:
-        save_hf_format_accelerate(
-            args,
-            model,
-            tokenizer,
-            accelerator,
-            samples_seen,
-            is_lora=bool(args.lora_r),
-        )
+    # if args.save_last:
+    #     save_hf_format_accelerate(
+    #         args,
+    #         model,
+    #         tokenizer,
+    #         accelerator,
+    #         samples_seen,
+    #         is_lora=bool(args.lora_r),
+    #     )
 
 
 def main(args):
