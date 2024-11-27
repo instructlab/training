@@ -707,6 +707,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
+        f"--keep_last_checkpoint_only={train_args.keep_last_checkpoint_only}",
     ]
 
     if train_args.checkpoint_at_epoch:
@@ -786,6 +787,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     command.append(
         f"--fsdp_sharding_strategy={train_args.fsdp_options.sharding_strategy.value}"
     )
+
+    if train_args.keep_last_checkpoint_only:
+        command.append("--keep_last_checkpoint_only")
 
     print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
     process = None
@@ -962,6 +966,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
+    parser.add_argument(
+        "--keep_last_checkpoint_only",
+        action="store_true",
+        help=(
+            "Keep only the last checkpoint directory - overwrite the previous ones. Useful for saving disk space."
+            "The last checkpoint will be saved as 'last_epoch'."
+        ),
+    )
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)

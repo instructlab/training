@@ -105,6 +105,7 @@ for training jobs. There are a number of options you can specify, such as settin
 | fsdp_options | The settings for controlling FSDP when it's selected as the distributed backend. |
 | distributed_backend | Specifies which distributed training backend to use. Supported options are "fsdp" and "deepspeed". |
 | disable_flash_attn | Disables flash attention when set to true. This allows for training on older devices. |
+| keep_last_checkpoint_only | Determines whether we should only keep the last checkpoint directory - the previous checkpoint directory is always overwritten. The checkpoint directory is called `last_epoch`. |
 
 ### `DeepSpeedOptions`
 
