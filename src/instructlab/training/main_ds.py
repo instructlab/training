@@ -463,15 +463,15 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                save_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=tokenizer,
-                    samples_seen=samples_seen,
-                    is_lora=bool(args.lora_r),
-                    hf_format=True,
-                )
+                # save_checkpoint(
+                #     args=args,
+                #     accelerator=accelerator,
+                #     model=model,
+                #     tokenizer=tokenizer,
+                #     samples_seen=samples_seen,
+                #     is_lora=bool(args.lora_r),
+                #     hf_format=True,
+                # )
                 output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
                 accelerator.save_model(model,
                                        str(output_dir),
