@@ -141,7 +141,7 @@ jobs:
           pip install -v .
           pip install -v .[cuda]
 
-      - name: Check disk
+      - name: Check disk before tests
         run: |
           df -h
 
@@ -161,6 +161,10 @@ jobs:
           # Given this information, we can use the following command to find the file:
           # log_file=$(find /tmp -name "training_params_and_metrics_global0.jsonl")
           # mv "${log_file}" training-log.jsonl
+
+      - name: Check disk after tests
+        run: |
+          df -h
 
       # - name: Upload training logs
       #   uses: actions/upload-artifact@v4
