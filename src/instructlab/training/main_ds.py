@@ -145,7 +145,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     else:
         from contextlib import nullcontext
         from accelerate import init_empty_weights
-        context = nullcontext if os.environ["RANK"] == "0" else init_empty_weights
+        context = nullcontext if (os.environ["RANK"] == "0" or not args.cpu_efficient_loading) else init_empty_weights
         with context():
             model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
@@ -975,8 +975,14 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
+    parser.add_argument("--cpu_efficient_loading", action="store_true", help="Only rank 0 loads actual weights while others load empty weights")
     args = parser.parse_args()
     set_random_seed(args.seed)
+
+    # Assert FSDP is being used
+    if args.distributed_training_framework != DistributedBackend.FSDP.value:
+        raise AssertionError("This script requires FSDP to be used as the distributed training framework")
+
     main(args)
 
 """

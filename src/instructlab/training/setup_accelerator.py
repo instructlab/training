@@ -86,8 +86,8 @@ def get_fsdp_config(args, model: PreTrainedModel):
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
         sync_module_states=True,
         param_init_fn=lambda module: module.to_empty(device=torch.device("cuda"), recurse=False)
-            if torch.distributed.get_rank()!=0 else None,
-        cpu_ram_efficient_loading=True,
+            if (torch.distributed.get_rank()!=0 and args.cpu_efficient_loading) else None,
+        cpu_ram_efficient_loading=args.cpu_efficient_loading,
         use_orig_params=True,
         state_dict_type="sharded_state_dict",
     )
