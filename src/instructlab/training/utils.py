@@ -925,8 +925,11 @@ def save_hf_format_accelerate(
     samples_seen,
     is_lora=False,
 ):
+    # Build the subdirectory name
+    subdir = "last_epoch" if args.keep_last_epoch_only else f"samples_{samples_seen}"
+
     log_rank_0(
-        f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
+        f"\033[93mSaving model in huggingface format at: {subdir}\033[0m",
         to_print=True,
     )
     start = time.time()
@@ -936,7 +939,9 @@ def save_hf_format_accelerate(
     else:
         convert_dolomite = True
 
-    final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
+    # Build the final output directory path
+    final_output_dir = Path(args.output_dir) / "hf_format" / subdir
+
     if args.use_dolomite and convert_dolomite:
         tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
         output_dir = Path(tmpdir.name)
