@@ -154,7 +154,9 @@ def unmask_message_content(
 
         match = find_longest_match(i, special_sequences)
         if match:
-            unmasking = match == assist_tokens
+            unmasking = (match == assist_tokens) or (
+                example["unmask"] and match != system_tokens
+            )
             i += len(match)
             continue
 
@@ -298,7 +300,8 @@ def main(args: DataProcessArgs):
     print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
     data_with_input_ids = data.map(
         lambda x: {
-            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True)
+            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True),
+            "unmask": bool(x["unmask"]) if "unmask" in x else False,
         },
         num_proc=NUM_PROC,
     )
@@ -352,7 +355,10 @@ def main(args: DataProcessArgs):
     print("\033[92mCategorizing training data type...\033[0m")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
-            "is_pretrain": get_sp_token(tokenizer, "<|pretrain|>")[0] in x["input_ids"]
+            "is_pretrain": (
+                get_sp_token(tokenizer, "<|pretrain|>")[0] in x["input_ids"]
+            )
+            or x["unmask"]
         },
         num_proc=NUM_PROC,
     )
