@@ -395,9 +395,13 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
             logits = output.logits if return_dict else output[0]
             loss = None
             if labels is not None:
-                # Shift so that tokens < n predict n
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
+                if hasattr(model, "variational") and model.variational:
+                    shift_logits = logits[..., :, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+                else:
+                    # Shift so that tokens < n predict n
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
                 # Flatten the tokens
                 shift_logits = shift_logits.view(-1, model.config.vocab_size)
                 shift_labels = shift_labels.view(-1)
