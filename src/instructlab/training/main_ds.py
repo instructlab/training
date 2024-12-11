@@ -393,12 +393,14 @@ def train(
             )
             loss = output.loss
             log_loss = loss.detach().item()
+            aux_loss = output.aux_loss
+            log_aux_loss = aux_loss.detach().item()
 
-            num_loss_counted_tokens, micro_batch_size, log_loss = map(
+            num_loss_counted_tokens, micro_batch_size, log_loss, log_aux_loss = map(
                 float,
                 accelerator.reduce(
                     torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_loss],
+                        [num_loss_counted_tokens, micro_batch_size, log_loss, log_aux_loss],
                         dtype=torch.float32,
                         device=accelerator.device,
                     ),
@@ -454,6 +456,7 @@ def train(
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "batch_size": int(micro_batch_size),
                         "total_loss": float(log_loss / num_loss_counted_tokens),
+                        "total_aux_loss": float(log_aux_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(train_loader.dataset),
