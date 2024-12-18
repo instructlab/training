@@ -9,7 +9,7 @@ SPECIAL_TOKENS = SpecialTokens(
     assistant=TokenInfo("<|assistant|>", add_to_tokenizer=True),
     eos=TokenInfo("<|endoftext|>", add_to_tokenizer=True),
     pad=TokenInfo("<|pad|>", add_to_tokenizer=True),
-    bos=TokenInfo("<|begginingoftext|>", add_to_tokenizer=True),
+    bos=TokenInfo("<|beginingoftext|>", add_to_tokenizer=True),
 )
 
 CHAT_TEMPLATE = (
