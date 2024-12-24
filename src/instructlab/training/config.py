@@ -30,8 +30,8 @@ class DeepSpeedOffloadStrategy(Enum):
 
 # public API
 class DistributedBackend(Enum):
-    FSDP: str = "fsdp"
-    DEEPSPEED: str = "deepspeed"
+    FSDP = "fsdp"
+    DEEPSPEED = "deepspeed"
 
 
 # public API
@@ -121,6 +121,7 @@ class DeepSpeedOptions(BaseModel):
     save_samples: int | None = None
 
 
+# public API
 class DistillationConfig(BaseModel):
     """
     Config to use when performing knowledge distillation during training.
@@ -192,7 +193,7 @@ class TrainingArgs(BaseModel):
     weight_decay: float = Field(0.0, ge=0.0)
 
     # settings for knowledge distillation
-    distillation_options: Optional[DistillationConfig] = None
+    distillation_options: DistillationConfig | None = None
     use_distillation: bool = False
 
     mock_data: Optional[bool] = False

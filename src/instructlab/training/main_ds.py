@@ -483,7 +483,10 @@ def train(
             else:
                 loss = output.loss
 
-            assert loss is not None, "loss cannot be equal to None!"
+            if loss is None:
+                raise ValueError(
+                    "received a value of `None` for loss after calculations, this should not happen"
+                )
             log_loss = loss.detach().item()
 
             num_loss_counted_tokens, micro_batch_size, log_loss = map(
@@ -1086,7 +1089,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--weight_decay",
         type=float,
-        default=1e-3,
+        default=0,
         help="Weight decay rate for optimizers that support it.",
     )
     parser.add_argument(
