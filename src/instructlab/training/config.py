@@ -121,6 +121,16 @@ class DeepSpeedOptions(BaseModel):
     save_samples: int | None = None
 
 
+class DistillationConfig(BaseModel):
+    """
+    Config to use when performing knowledge distillation during training.
+    """
+
+    temperature: float = Field(1.0, gt=0.0)
+    alpha: float = Field(1.0, le=1.0, ge=0.0)
+    teacher_path: str
+
+
 # public API
 class ShardingStrategies(Enum):
     FULL_SHARD = "FULL_SHARD"
@@ -179,6 +189,11 @@ class TrainingArgs(BaseModel):
     is_padding_free: bool = False  # TODO: deprecate
     checkpoint_at_epoch: bool = True
     accelerate_full_state_at_epoch: bool = True
+    weight_decay: float = Field(0.0, ge=0.0)
+
+    # settings for knowledge distillation
+    distillation_options: Optional[DistillationConfig] = None
+    use_distillation: bool = False
 
     mock_data: Optional[bool] = False
     mock_data_len: int = 0
