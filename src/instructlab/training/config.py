@@ -30,8 +30,8 @@ class DeepSpeedOffloadStrategy(Enum):
 
 # public API
 class DistributedBackend(Enum):
-    FSDP: str = "fsdp"
-    DEEPSPEED: str = "deepspeed"
+    FSDP = "fsdp"
+    DEEPSPEED = "deepspeed"
 
 
 # public API
