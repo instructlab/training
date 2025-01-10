@@ -14,6 +14,7 @@ def setup_tokenizer(
 
     if not SPECIAL_TOKENS.pad.token:
         SPECIAL_TOKENS.pad = SPECIAL_TOKENS.eos
+
     tokenizer.add_special_tokens(
         {
             "bos_token": SPECIAL_TOKENS.bos.token,
@@ -21,9 +22,11 @@ def setup_tokenizer(
             "pad_token": SPECIAL_TOKENS.pad.token,
         }
     )
+
     tokenizer.add_special_tokens(
         {"additional_special_tokens": SPECIAL_TOKENS.get_tokens_to_add()}
     )
+
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
     ):
