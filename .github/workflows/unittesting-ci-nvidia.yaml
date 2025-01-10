@@ -19,7 +19,7 @@ on:
 
 env:
   pytest_mark: "fast"
-  ec2_runner_variant: "m8g.xlarge" # 4 Graviton CPU, 16GB RAM
+  ec2_runner_variant: "m7i.xlarge" # 4 Xeon CPU, 16GB RAM
 
 jobs:
   start-ec2-runner:
