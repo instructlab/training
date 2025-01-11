@@ -13,3 +13,4 @@ ipython
 ipykernel
 jupyter
 
+huggingface_hub
