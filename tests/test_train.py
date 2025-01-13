@@ -36,6 +36,12 @@ DEFAULT_TORCHRUN_ARGS = {
 REFERENCE_TEST_MODEL = "instructlab/granite-7b-lab"
 RUNNER_CPUS_EXPECTED = 4
 
+# matrix of training environments we'd like to test
+DIST_TRAIN_FRAMEWORKS = ["fsdp", "deepspeed"]
+USE_DOLOMITE = [True, False]
+CPU_OFFLOADING = [True, False]
+USE_LORA = [True, False]
+
 
 @pytest.fixture(scope="module")
 def my_tmp_path():
@@ -56,8 +62,9 @@ def checkpoint_dir(my_tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 @pytest.fixture(scope="module")
-def prepared_data_dir(my_tmp_path: pathlib.Path) -> pathlib.Path:
-    return my_tmp_path / "prepped_data"
+def prepared_data_file(my_tmp_path: pathlib.Path) -> pathlib.Path:
+    data_file_loc = my_tmp_path / "prepped_data" / "data.jsonl"
+    return data_file_loc
 
 
 @pytest.fixture(scope="module")
@@ -84,11 +91,9 @@ def cached_7b_model(cached_model_dir: pathlib.Path) -> pathlib.Path:
 # need to write tests for this as well.
 @pytest.fixture(scope="module")
 def cached_training_data(
-    prepared_data_dir: pathlib.Path, cached_7b_model: pathlib.Path
+    prepared_data_file: pathlib.Path, cached_7b_model: pathlib.Path
 ) -> pathlib.Path:
     """Renders test data in model template, tokenizes, and saves to fs"""
-
-    prepped_data_file = prepared_data_dir / "data.jsonl"
 
     current_file_path = pathlib.Path(__file__).resolve()
     data_in_repo = (
@@ -104,7 +109,7 @@ def cached_training_data(
     )
 
     data_process_args = DataProcessArgs(
-        data_output_path=str(prepped_data_file),
+        data_output_path=str(prepared_data_file),
         data_path=str(data_in_repo),
         max_seq_len=MINIMAL_TRAINING_ARGS["max_seq_len"],
         model_path=REFERENCE_TEST_MODEL,
@@ -114,7 +119,7 @@ def cached_training_data(
 
     data_process.main(data_process_args)
 
-    return prepped_data_file
+    return prepared_data_file
 
 
 @pytest.mark.slow
@@ -139,3 +144,14 @@ def test_basic_training_run(
     torch_args = TorchrunArgs(**DEFAULT_TORCHRUN_ARGS)
 
     run_training(torch_args=torch_args, train_args=train_args)
+
+
+@pytest.mark.skip
+@pytest.mark.slow
+@pytest.mark.parameterize("cpu_offload", CPU_OFFLOADING)
+@pytest.mark.parameterize("use_lora", USE_LORA)
+@pytest.mark.parameterize("use_dolomite", USE_DOLOMITE)
+@pytest.mark.parameterize("dist_train_framework", DIST_TRAIN_FRAMEWORKS)
+def test_training_runs(
+    dist_train_framework: str, use_dolomite: bool, use_lora: bool, cpu_offload: bool
+) -> None: ...
