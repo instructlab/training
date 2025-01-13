@@ -26,7 +26,7 @@ MINIMAL_TRAINING_ARGS = {
 }
 
 DEFAULT_TORCHRUN_ARGS = {
-    "nproc_per_node": 4,  # TODO: this is runner-specific. Should parameterize from environment.
+    "nproc_per_node": 4,  # TODO: this is runner-specific. Should parametrize from environment.
     "nnodes": 1,
     "node_rank": 0,
     "rdzv_id": 123,
@@ -127,7 +127,7 @@ def test_basic_training_run(
     cached_7b_model: pathlib.Path,
     cached_training_data: pathlib.Path,
     checkpoint_dir: pathlib.Path,
-    prepared_data_dir: pathlib.Path,
+    prepared_data_file: pathlib.Path,
 ) -> None:
     """
     Test that runs training with as many features
@@ -137,7 +137,7 @@ def test_basic_training_run(
     train_args = TrainingArgs(
         model_path=str(cached_7b_model),
         data_path=str(cached_training_data),
-        ckpt_output_dir=str(prepared_data_dir),
+        ckpt_output_dir=str(prepared_data_file),
         **MINIMAL_TRAINING_ARGS,
     )
 
@@ -148,10 +148,10 @@ def test_basic_training_run(
 
 @pytest.mark.skip
 @pytest.mark.slow
-@pytest.mark.parameterize("cpu_offload", CPU_OFFLOADING)
-@pytest.mark.parameterize("use_lora", USE_LORA)
-@pytest.mark.parameterize("use_dolomite", USE_DOLOMITE)
-@pytest.mark.parameterize("dist_train_framework", DIST_TRAIN_FRAMEWORKS)
+@pytest.mark.parametrize("cpu_offload", CPU_OFFLOADING)
+@pytest.mark.parametrize("use_lora", USE_LORA)
+@pytest.mark.parametrize("use_dolomite", USE_DOLOMITE)
+@pytest.mark.parametrize("dist_train_framework", DIST_TRAIN_FRAMEWORKS)
 def test_training_runs(
     dist_train_framework: str, use_dolomite: bool, use_lora: bool, cpu_offload: bool
 ) -> None: ...
