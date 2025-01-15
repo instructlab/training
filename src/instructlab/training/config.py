@@ -206,3 +206,8 @@ class TrainingArgs(BaseModel):
 
     # This field defines whether or not data processing will occur inside of `run_training()`
     process_data: Optional[bool] = True
+
+    # This field specifies whether only the last checkpoint should be retained. When set to true, it
+    # will overwrite the previous checkpoint directory, keeping only one directory called
+    # "last_epoch". This works alongside the '--checkpoint_at_epoch' flag.
+    keep_last_checkpoint_only: Optional[bool] = False
