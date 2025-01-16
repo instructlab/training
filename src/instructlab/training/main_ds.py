@@ -707,8 +707,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
         f"--chat-tmpl-path={train_args.chat_tmpl_path}",
-        f"--keep_last_checkpoint_only={train_args.keep_last_checkpoint_only}",
     ]
+
+    if train_args.keep_last_checkpoint_only:
+        command.append(f"--keep_last_checkpoint_only")
 
     if train_args.checkpoint_at_epoch:
         command.append("--checkpoint_at_epoch")
