@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e
         with:
           egress-policy: audit
 
@@ -65,7 +65,7 @@ jobs:
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e
         with:
           egress-policy: audit
       - name: Install Packages
@@ -296,7 +296,7 @@ jobs:
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e
         with:
           egress-policy: audit
 
@@ -323,7 +323,7 @@ jobs:
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e
         with:
           egress-policy: audit
 
