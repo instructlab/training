@@ -8,6 +8,13 @@
 ![`e2e-nvidia-l4-x1.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l4-x1.yml/badge.svg?branch=main)
 ![`e2e-nvidia-l40s-x4.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l40s-x4.yml/badge.svg?branch=main)
 
+## About
+
+The InstructLab Training library is an optimized model instruction-tuning library, designed for messages-format data. This library can be used for efficiently fine-tuning Causal Language Models, working for both base models and previously-aligned models with existing chat templates. This library was used to achieve the results found in [Unveiling the Secret Recipe: A Guide For Supervised Fine-Tuning Small LLMs](https://arxiv.org/abs/2412.13337). 
+
+To simplify the process of fine-tuning models with the [LAB
+method](https://arxiv.org/abs/2403.01081), this library also provides a simple pythonic training interface.
+
 - [Installing](#installing-the-library)
   - [Additional Nvidia packages](#additional-nvidia-packages)
 - [Using the library](#using-the-library)
@@ -19,8 +26,6 @@
 - [Learning about `TorchrunArgs` arguments](#learning-about-torchrunargs-arguments)
 - [Example training run with arguments](#example-training-run-with-arguments)
 
-To simplify the process of fine-tuning models with the [LAB
-method](https://arxiv.org/abs/2403.01081), this library provides a simple training interface.
 
 ## Installing the library
 
