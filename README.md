@@ -8,12 +8,23 @@
 ![`e2e-nvidia-l4-x1.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l4-x1.yml/badge.svg?branch=main)
 ![`e2e-nvidia-l40s-x4.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l40s-x4.yml/badge.svg?branch=main)
 
-## About
 
-The InstructLab Training library is an optimized model instruction-tuning library, designed for messages-format data. This library can be used for efficiently fine-tuning Causal Language Models, working for both base models and previously-aligned models with existing chat templates. This library was used to achieve the results found in [Unveiling the Secret Recipe: A Guide For Supervised Fine-Tuning Small LLMs](https://arxiv.org/abs/2412.13337). 
+### Branch Update Goals
+
+With upcoming conference and public eyes on the library, there are a few updates we would like to accomplish before people start reading and interacting with the code. To make sure that everything is organized, easily understandable, and widely compatible, there are a few changes we want to make in this branch:
+- Re-enable pulling/using models directly from HF
+- Update chat template / data processing logic to be compatible with all Causal LMs on HF
+- Decouple and re-organize files/structure so that code is grouped more logically
+- Update the torchrun cli entrypoint so that arg names are intuitive and match pythonic interface
+
+### About the Library
+
+The InstructLab Training library is an optimized model instruction-tuning library, designed for messages-format data. This library can be used for efficiently fine-tuning Causal Language Models, working for both base models and previously-aligned models with existing chat templates. This library was used to achieve the results found in [Unveiling the Secret Recipe: A Guide For Supervised Fine-Tuning Small LLMs](https://arxiv.org/abs/2412.13337).
 
 To simplify the process of fine-tuning models with the [LAB
 method](https://arxiv.org/abs/2403.01081), this library also provides a simple pythonic training interface.
+
+### Usage and Guidance Sections
 
 - [Installing](#installing-the-library)
   - [Additional Nvidia packages](#additional-nvidia-packages)
