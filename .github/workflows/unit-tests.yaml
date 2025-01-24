@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: "Run 'fast' marked unit tests via Tox::pytest"
+name: "Run unit tests via Tox::pytest"
 # This tests should run only those tests that are marked as 'fast.'
 # The opposite are those that would require the mark 'slow,' which would
 # include longer-running integration and smoke tests.
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       label: ${{ steps.start-ec2-runner.outputs.label }}
-      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id}}
 
     steps:
       - name: "Harden runner"
@@ -48,13 +48,13 @@ jobs:
           mode: start
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           ec2-image-id: ${{ vars.AWS_EC2_AMI }}
-          ec2-instance-type: ${{ vars.AWS_REGION }}
+          ec2-instance-type: ${{ env.ec2_runner_variant }}
           subnet-id: subnet-024298cefa3bedd61
           security-group-id: sg-06300447c4a5fbef3
           iam-role-name: instructlab-ci-runner
           aws-resource-tags: >
             [
-            {"Key": "Name", "Value": "instructlab-ci-github-large-runner"},
+            {"Key": "Name", "Value": "instructlab-ci-github-unittest-runner"},
             {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
             {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
             {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
@@ -83,13 +83,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: "Verify environment variables are setup correctly"
-        run: |
-          export CUDA_HOME="/usr/local/cuda"
-          export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
-          export PATH="$PATH:$CUDA_HOME/bin"
-          nvidia-smi
-
       # installs in $GITHUB_WORKSPACE/venv.
       # only has to install Tox because Tox will do the other virtual environment management.
       - name: "Setup Python virtual environment"
@@ -104,6 +97,7 @@ jobs:
 
       - name: "Run unit tests with Tox and Pytest"
         run: |
+          source venv/bin/activate
           tox -e py3-unit -- -m ${{env.pytest_mark}}
 
       - name: "Show disk utilization AFTER tests"
@@ -115,11 +109,13 @@ jobs:
       - start-ec2-runner
       - run-unit-tests
     runs-on: ubuntu-latest
+    if: ${{ always() }}
     steps:
       - name: "Harden runner"
         uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
         with:
           egress-policy: audit
+
       - name: "Configure AWS credentials"
         uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
         with:
@@ -128,10 +124,9 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: "Stop EC2 runner"
-        id: start-ec2-runner
         uses: machulav/ec2-github-runner@1827d6ca7544d7044ddbd2e9360564651b463da2 # v2.3.7
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           label: ${{ needs.start-ec2-runner.outputs.label }}
-          ec2-instance-type: ${{ env.ec2_runner_variant }}
+          ec2-instance-id: ${{ needs.start-ec2-runner.outputs.ec2-instance-id }}
