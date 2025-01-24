@@ -10,12 +10,33 @@ name: "Run unit tests via Tox::pytest"
 # to verify integration correctness.
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize]
+  # run against every merge commit to 'main' and release branches
   push:
     branches:
-      - "main"
-      - "release-**"
+      - main
+      - release-*
+  # only run on PRs that touch certain regex paths
+  pull_request_target:
+    branches:
+      - main
+      - release-*
+    paths:
+      # note this should match the merging criteria in 'mergify.yml'
+      - "**.py"
+      - "pyproject.toml"
+      - "requirements**.txt"
+      - ".github/workflows/unit-tests.yaml" # This workflow
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 env:
   pytest_mark: "fast"
@@ -64,9 +85,10 @@ jobs:
     needs:
       - start-ec2-runner
     runs-on: ${{needs.start-ec2-runner.outputs.label}}
-    # This job MUST HAVE NO PERMISSIONS and no access to any secrets
-    # because it'll run incoming user code without discretion.
-    permissions: {} # this syntax disables permissions for all available options.
+    # It is important that this job has no write permissions and has
+    # no access to any secrets. This part is where we are running
+    # untrusted code from PRs.
+    permissions: {}
     steps:
       - name: "Harden runner"
         uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
