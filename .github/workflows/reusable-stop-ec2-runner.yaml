@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+name: "[Reusable] Stop EC2 self-hosted runner."
+
+on:
+  workflow_call:
+    inputs:
+      aws_region:
+        description: "AWS datacenter identification; e.g. `us-west-2`"
+        type: string
+        required: true
+      aws_ec2_runner_instance_id:
+        description: "AWS EC2 ID for instance that's running"
+        type: string
+        required: true
+      aws_ec2_runner_label:
+        description: "AWS EC2 instance label for instance that's running"
+        type: string
+        required: true
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      GITHUB_PERSONAL_ACCESS_TOKEN:
+        required: true
+
+jobs:
+  stop-ec2-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Harden runner"
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
+        with:
+          egress-policy: audit
+
+      - name: "Configure AWS credentials"
+        uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID}}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY}}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: "Stop EC2 runner"
+        uses: machulav/ec2-github-runner@28fbe1c4d7d9ba74134ca5ebc559d5b0a989a856 # v2.3.8
+        with:
+          mode: stop
+          github-token: ${{ secrets.GITHUB_PERSONAL_ACCESS_TOKEN}}
+          label: ${{ inputs.aws_ec2_runner_label }}
+          ec2-instance-id: ${{ inputs.aws_ec2_runner_instance_id }}

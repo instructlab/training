@@ -38,53 +38,19 @@ defaults:
   run:
     shell: bash
 
-env:
-  pytest_mark: "fast"
-  ec2_runner_variant: "m7i.xlarge" # 4 Xeon CPU, 16GB RAM
-
 jobs:
   start-ec2-runner:
-    runs-on: ubuntu-latest
-    outputs:
-      label: ${{ steps.start-ec2-runner.outputs.label }}
-      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id}}
-
-    steps:
-      - name: "Harden runner"
-        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
-        with:
-          egress-policy: audit
-
-      - name: "Configure AWS credentials"
-        uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: "Start EC2 runner"
-        id: start-ec2-runner
-        uses: machulav/ec2-github-runner@28fbe1c4d7d9ba74134ca5ebc559d5b0a989a856 # v2.3.8
-        with:
-          mode: start
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ${{ vars.AWS_EC2_AMI }}
-          ec2-instance-type: ${{ env.ec2_runner_variant }}
-          subnet-id: subnet-024298cefa3bedd61
-          security-group-id: sg-06300447c4a5fbef3
-          iam-role-name: instructlab-ci-runner
-          aws-resource-tags: >
-            [
-            {"Key": "Name", "Value": "instructlab-ci-github-unittest-runner"},
-            {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
-            {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
-            {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
-            ]
+    uses: ./.github/workflows/reusable-start-ec2-runner.yaml
+    with:
+      aws_region: ${{vars.AWS_REGION}}
+      aws_ami: ${{vars.AWS_EC2_AMI}}
+      aws_ec2_runner_variant: ${{vars.UNITTEST_EC2_INSTANCE_TYPE}}
+    secrets: inherit
 
   run-unit-tests:
     needs:
       - start-ec2-runner
-    runs-on: ${{needs.start-ec2-runner.outputs.label}}
+    runs-on: ${{needs.start-ec2-runner.outputs.runner_label}}
     # It is important that this job has no write permissions and has
     # no access to any secrets. This part is where we are running
     # untrusted code from PRs.
@@ -120,7 +86,7 @@ jobs:
       - name: "Run unit tests with Tox and Pytest"
         run: |
           source venv/bin/activate
-          tox -e py3-unit -- -m ${{env.pytest_mark}}
+          tox -e py3-unit
 
       - name: "Show disk utilization AFTER tests"
         run: |
@@ -130,25 +96,10 @@ jobs:
     needs:
       - start-ec2-runner
       - run-unit-tests
-    runs-on: ubuntu-latest
     if: ${{ always() }}
-    steps:
-      - name: "Harden runner"
-        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
-        with:
-          egress-policy: audit
-
-      - name: "Configure AWS credentials"
-        uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: "Stop EC2 runner"
-        uses: machulav/ec2-github-runner@28fbe1c4d7d9ba74134ca5ebc559d5b0a989a856 # v2.3.8
-        with:
-          mode: stop
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          label: ${{ needs.start-ec2-runner.outputs.label }}
-          ec2-instance-id: ${{ needs.start-ec2-runner.outputs.ec2-instance-id }}
+    uses: ./.github/workflows/reusable-stop-ec2-runner.yaml
+    with:
+      aws_region: ${{vars.AWS_REGION}}
+      aws_ec2_runner_label: ${{needs.start-ec2-runner.outputs.runner_label}}
+      aws_ec2_runner_instance_id: ${{needs.start-ec2-runner.outputs.runner_instance_id}}
+    secrets: inherit
