@@ -111,7 +111,6 @@ def cached_test_model(cached_model_dir: pathlib.Path) -> pathlib.Path:
     """
 
     huggingface_hub.snapshot_download(
-        token=os.getenv("HF_TOKEN", None),
         repo_id=REFERENCE_TEST_MODEL,
         local_dir=cached_model_dir,
     )
