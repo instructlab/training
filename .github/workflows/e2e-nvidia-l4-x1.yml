@@ -15,10 +15,11 @@ on:
       - release-*
     paths:
       # note this should match the merging criteria in 'mergify.yml'
-      - '**.py'
-      - 'pyproject.toml'
-      - 'requirements**.txt'
-      - '.github/workflows/e2e-nvidia-l4-x1.yml' # This workflow
+      - "**.py"
+      - "pyproject.toml"
+      - "requirements**.txt"
+      - ".github/workflows/e2e-nvidia-l4-x1.yml" # This workflow
+      - "!tests/**" # we don't need to run e2e if we're just changing the tests.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -72,7 +73,7 @@ jobs:
               {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
               {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
             ]
-  
+
   e2e-medium-test:
     needs:
       - start-medium-ec2-runner
@@ -153,7 +154,7 @@ jobs:
           . venv/bin/activate
           # set preserve to true so we can retain the logs
           ./scripts/e2e-ci.sh -mp
-          
+
           # HACK(osilkin): The above test runs the medium workflow test which does not actually test the training library.
           #                Therefore we must disable the upload of the training logs, as they will not exist in the same location.
           # we know that the file will be named something like f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl" in python
@@ -200,7 +201,7 @@ jobs:
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
           label: ${{ needs.start-medium-ec2-runner.outputs.label }}
           ec2-instance-id: ${{ needs.start-medium-ec2-runner.outputs.ec2-instance-id }}
-      
+
       # - name: Download loss data
       #   id: download-logs
       #   uses: actions/download-artifact@v4
@@ -211,12 +212,12 @@ jobs:
       # - name: Install dependencies
       #   run: |
       #     pip install -r requirements-dev.txt
-      
+
       # - name: Try to upload to s3
       #   id: upload-s3
       #   continue-on-error: true
       #   run: |
-      #     output_file='./test.md' 
+      #     output_file='./test.md'
       #     python scripts/create-loss-graph.py  \
       #       --log-file "${{ steps.download-logs.outputs.download-path }}/training-log.jsonl" \
       #       --output-file "${output_file}" \

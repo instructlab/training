@@ -1,4 +1,5 @@
 # Standard
+from typing import Generator
 import os
 import pathlib
 import shutil
@@ -48,15 +49,16 @@ DEFAULT_TORCHRUN_ARGS = {
 REFERENCE_TEST_MODEL = "instructlab/granite-7b-lab"
 RUNNER_CPUS_EXPECTED = 4
 
-# matrix of training environments we'd like to test
-DIST_BACKEND_FRAMEWORKS = ["fsdp", "deepspeed"]
-USE_DOLOMITE = [True, False]
-CPU_OFFLOADING = [True, False]
-USE_LORA = [True, False]
-
 
 @pytest.fixture(scope="module")
-def custom_tmp_path():
+def custom_tmp_dir() -> Generator[pathlib.Path, None, None]:
+    """A custom fixture for a temporary directory.
+    By default, `tmp_dir` builtin fixture is function-scoped
+    but we can reuse the same cached storage between many tests.
+
+    Yields:
+        Generator[pathlib.Path, None, None]: path to root directory of temp storage.
+    """
     temp_dir = tempfile.mkdtemp()
 
     temp_path = pathlib.Path(temp_dir)
@@ -67,11 +69,15 @@ def custom_tmp_path():
 
 
 @pytest.fixture(scope="function")
-def checkpoint_dir(custom_tmp_path: pathlib.Path) -> pathlib.Path:
+def checkpoint_dir(
+    custom_tmp_dir: pathlib.Path,
+) -> Generator[pathlib.Path, None, None]:
     """
-    Creates a 'checkpoints' directory for each test and deletes it afterward.
+    Creates a 'checkpoints' directory.
+    This directory must be function-scoped because each test
+    will create its own checkpoints.
     """
-    ckpt_dir = custom_tmp_path / "checkpoints"
+    ckpt_dir = custom_tmp_dir / "checkpoints"
     ckpt_dir.mkdir()
 
     yield ckpt_dir
@@ -80,16 +86,32 @@ def checkpoint_dir(custom_tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 @pytest.fixture(scope="module")
-def prepared_data_dir(custom_tmp_path: pathlib.Path) -> pathlib.Path:
-    data_file_dir = custom_tmp_path / "prepared_data"
+def prepared_data_dir(custom_tmp_dir: pathlib.Path) -> pathlib.Path:
+    """Sets up module-scoped temporary dir for storage of preprocessed data.
+
+    Args:
+        custom_tmp_dir (pathlib.Path): root dir of temporary storage
+
+    Returns:
+        pathlib.Path: path to directory where preprocessed data can be cached
+    """
+    data_file_dir = custom_tmp_dir / "prepared_data"
     data_file_dir.mkdir()
 
     return data_file_dir
 
 
 @pytest.fixture(scope="module")
-def cached_model_dir(custom_tmp_path: pathlib.Path) -> pathlib.Path:
-    model_dir = custom_tmp_path / "model"
+def cached_model_dir(custom_tmp_dir: pathlib.Path) -> pathlib.Path:
+    """Sets up module-scoped temporary dir for storage of model checkpoint
+
+    Args:
+        custom_tmp_dir (pathlib.Path): root dir of temporary storage
+
+    Returns:
+        pathlib.Path: path to directory where model checkpoint can be cached
+    """
+    model_dir = custom_tmp_dir / "model"
     model_dir.mkdir()
     return model_dir
 
@@ -111,7 +133,6 @@ def cached_test_model(cached_model_dir: pathlib.Path) -> pathlib.Path:
     """
 
     huggingface_hub.snapshot_download(
-        token=os.getenv("HF_TOKEN", None),
         repo_id=REFERENCE_TEST_MODEL,
         local_dir=cached_model_dir,
     )
@@ -120,21 +141,40 @@ def cached_test_model(cached_model_dir: pathlib.Path) -> pathlib.Path:
 
 
 def this_file_path() -> pathlib.Path:
+    """returns the fully qualified path to this file."""
     return pathlib.Path(__file__).resolve()
 
 
-def data_in_repo_path() -> pathlib.Path:
+def repo_root_dir() -> pathlib.Path:
+    """returns the fully qualified path to the root of the repo."""
     current_file_path = this_file_path()
-    data_in_repo_path = (
-        current_file_path.parents[2] / "sample-data" / "train_all_pruned_SDG.jsonl"
-    )
+    return current_file_path.parents[2]
+
+
+def data_in_repo_path() -> pathlib.Path:
+    """The data that we'll use in these tests is stored in the repo as an artifact.
+    This returns a path to the `data.jsonl` file based on this file's location
+    in the repo.
+
+    Returns:
+        pathlib.Path: Path to a `.jsonl` file for tests
+    """
+    repo_root = repo_root_dir()
+    data_in_repo_path = repo_root / "sample-data" / "train_all_pruned_SDG.jsonl"
     return data_in_repo_path
 
 
 def chat_template_in_repo_path() -> pathlib.Path:
-    current_file_path = this_file_path()
+    """The chat template that we'll use in these tests is stored in the repo as an artifact.
+    This returns a path to the `chattemplate.py` file based on this file's location
+    in the repo.
+
+    Returns:
+        pathlib.Path: Path to a `chat_template.py" file for tests
+    """
+    repo_root = repo_root_dir()
     chat_template_path = (
-        current_file_path.parents[2]
+        repo_root
         / "src"
         / "instructlab"
         / "training"
@@ -169,42 +209,18 @@ def cached_training_data(
     return prepared_data_dir / "data.jsonl"
 
 
-@pytest.mark.skip
 @pytest.mark.slow
-def test_basic_training_run(
-    cached_test_model: pathlib.Path,
-    cached_training_data: pathlib.Path,
-    checkpoint_dir: pathlib.Path,
-    prepared_data_dir: pathlib.Path,
-) -> None:
-    """
-    Used for isolated test development. Skipped when not in use.
-    """
-
-    train_args = TrainingArgs(
-        model_path=str(cached_test_model),
-        data_path=str(cached_training_data),
-        data_output_dir=str(prepared_data_dir),
-        ckpt_output_dir=str(checkpoint_dir),
-        **MINIMAL_TRAINING_ARGS,
-    )
-
-    torch_args = TorchrunArgs(**DEFAULT_TORCHRUN_ARGS)
-
-    run_training(torch_args=torch_args, train_args=train_args)
-    assert True
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize("dist_backend", DIST_BACKEND_FRAMEWORKS)
-@pytest.mark.parametrize("cpu_offload", CPU_OFFLOADING)
+@pytest.mark.parametrize(
+    "dist_backend", [DistributedBackend.FSDP, DistributedBackend.DEEPSPEED]
+)
+@pytest.mark.parametrize("cpu_offload", [True, False])
 def test_training_feature_matrix(
     cached_test_model: pathlib.Path,
     cached_training_data: pathlib.Path,
     checkpoint_dir: pathlib.Path,
     prepared_data_dir: pathlib.Path,
     cpu_offload: bool,
-    dist_backend: str,
+    dist_backend: DistributedBackend,
 ) -> None:
     train_args = TrainingArgs(
         model_path=str(cached_test_model),
@@ -214,8 +230,9 @@ def test_training_feature_matrix(
         **MINIMAL_TRAINING_ARGS,
     )
 
-    train_args.distributed_backend = DistributedBackend(dist_backend)
-    if DistributedBackend.FSDP.value == dist_backend:
+    train_args.distributed_backend = dist_backend
+
+    if dist_backend == DistributedBackend.FSDP:
         train_args.fsdp_options.cpu_offload_params = cpu_offload
     else:
         pytest.xfail("DeepSpeed not currently functional. OOMs during backprop.")
