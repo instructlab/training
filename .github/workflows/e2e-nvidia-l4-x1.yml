@@ -151,6 +151,7 @@ jobs:
         working-directory: ./instructlab
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           . venv/bin/activate
           # set preserve to true so we can retain the logs
