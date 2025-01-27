@@ -40,7 +40,7 @@ except ImportError:
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, get_scheduler,  AutoConfig
+from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler
 import torch
 import torch.distributed
 
