@@ -104,6 +104,12 @@ def save_full_state(args, accelerator, global_step):
     shutil.rmtree(checkpoint_dir, ignore_errors=True)
     
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    def _get_state_dict_patched(model, unwrap=False):
+        return get_state_dict_unpatched(model, unwrap=unwrap)
+
+    get_state_dict_unpatched = accelerator.get_state_dict
+    accelerator.get_state_dict = _get_state_dict_patched
     
     # Save accelerator state
     accelerator.save_state(checkpoint_dir)
@@ -114,6 +120,8 @@ def save_full_state(args, accelerator, global_step):
             "global_step": global_step,
         }
         torch.save(training_state, os.path.join(checkpoint_dir, "training_state.pt"))
+    
+    accelerator.get_state_dict = get_state_dict_unpatched
 
 def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
 
