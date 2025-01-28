@@ -199,29 +199,90 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
 
 
 def make_collate_fn(
-    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
+    pad_token_id, 
+    flash_enabled=True, 
+    max_batch_len=60000
 ):
     rank = int(os.environ["RANK"])
-    if use_dolomite:
+    if flash_enabled:
+
+        def pad_collate_fn(batch):
+            input_ids = []
+            labels = []
+            position_ids = []
+            total_len = 0
+            num_loss_counted_tokens = 0
+
+            for num_samples, item in enumerate(batch):
+                item_len = len(item["input_ids"])
+                if total_len + item_len > max_batch_len:
+                    break
+
+                input_ids.extend(item["input_ids"].tolist())
+                labels.extend(item["labels"].tolist())
+                position_ids.extend(range(item_len))
+
+                total_len += item_len
+                num_loss_counted_tokens += (item["labels"] != -100).sum().item()
+
+            print(
+                f"\033[96m total length: {total_len} "
+                f"num samples {len(batch)} - rank: {rank} "
+                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+            )
+
+            return {
+                "input_ids": torch.tensor([input_ids], dtype=torch.long),
+                "labels": torch.tensor([labels], dtype=torch.long),
+                "position_ids": torch.tensor([position_ids], dtype=torch.long),
+                "num_loss_counted_tokens": num_loss_counted_tokens,
+                "num_samples": num_samples + 1,  # pylint: disable=W0631
+            }
+
+    else:
 
         def pad_collate_fn(batch):
             lens = np.array([len(item["input_ids"]) for item in batch])
+            max_len = max(lens)
 
-            cumsum_lens = np.cumsum(lens)
-            valid_up_to = int((cumsum_lens < max_batch_len).sum())
-            total_len = cumsum_lens[valid_up_to - 1]
-
-            batch = batch[:valid_up_to]
-            input_ids = [x["input_ids"].tolist() for x in batch]
-            labels = [x["labels"].tolist() for x in batch]
-            num_loss_counted_tokens = sum(
-                [(x["labels"] != -100).sum().item() for x in batch]
+            input_ids = torch.stack(
+                [
+                    F.pad(
+                        item["input_ids"],
+                        (max_len - len(item["input_ids"]), 0),
+                        mode="constant",
+                        value=pad_token_id,
+                    )
+                    for item in batch
+                ]
             )
+            labels = torch.stack(
+                [
+                    F.pad(
+                        item["labels"],
+                        (max_len - len(item["labels"]), 0),
+                        mode="constant",
+                        value=-100,
+                    )
+                    for item in batch
+                ]
+            )
+            num_loss_counted_tokens = (labels != -100).sum()
 
+            attention_mask = torch.stack(
+                [
+                    F.pad(
+                        item["attention_mask"],
+                        (max_len - len(item["attention_mask"]), 0),
+                        mode="constant",
+                        value=0,
+                    )
+                    for item in batch
+                ]
+            )
             print(
-                f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
-                f"num samples {len(batch)} - rank: {rank} "
-                f"max len: {lens.max()} min len: {lens.min()} avg len: {lens.mean()} "
+                f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
+                f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
                 f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
             )
 
@@ -229,99 +290,9 @@ def make_collate_fn(
                 "input_ids": input_ids,
                 "labels": labels,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
+                "attention_mask": attention_mask,
                 "num_samples": len(batch),
             }
-
-    else:
-        if flash_enabled:
-
-            def pad_collate_fn(batch):
-                input_ids = []
-                labels = []
-                position_ids = []
-                total_len = 0
-                num_loss_counted_tokens = 0
-
-                for num_samples, item in enumerate(batch):
-                    item_len = len(item["input_ids"])
-                    if total_len + item_len > max_batch_len:
-                        break
-
-                    input_ids.extend(item["input_ids"].tolist())
-                    labels.extend(item["labels"].tolist())
-                    position_ids.extend(range(item_len))
-
-                    total_len += item_len
-                    num_loss_counted_tokens += (item["labels"] != -100).sum().item()
-
-                print(
-                    f"\033[96m total length: {total_len} "
-                    f"num samples {len(batch)} - rank: {rank} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
-                return {
-                    "input_ids": torch.tensor([input_ids], dtype=torch.long),
-                    "labels": torch.tensor([labels], dtype=torch.long),
-                    "position_ids": torch.tensor([position_ids], dtype=torch.long),
-                    "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "num_samples": num_samples + 1,  # pylint: disable=W0631
-                }
-
-        else:
-
-            def pad_collate_fn(batch):
-                lens = np.array([len(item["input_ids"]) for item in batch])
-                max_len = max(lens)
-
-                input_ids = torch.stack(
-                    [
-                        F.pad(
-                            item["input_ids"],
-                            (max_len - len(item["input_ids"]), 0),
-                            mode="constant",
-                            value=pad_token_id,
-                        )
-                        for item in batch
-                    ]
-                )
-                labels = torch.stack(
-                    [
-                        F.pad(
-                            item["labels"],
-                            (max_len - len(item["labels"]), 0),
-                            mode="constant",
-                            value=-100,
-                        )
-                        for item in batch
-                    ]
-                )
-                num_loss_counted_tokens = (labels != -100).sum()
-
-                attention_mask = torch.stack(
-                    [
-                        F.pad(
-                            item["attention_mask"],
-                            (max_len - len(item["attention_mask"]), 0),
-                            mode="constant",
-                            value=0,
-                        )
-                        for item in batch
-                    ]
-                )
-                print(
-                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
-                return {
-                    "input_ids": input_ids,
-                    "labels": labels,
-                    "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "attention_mask": attention_mask,
-                    "num_samples": len(batch),
-                }
 
     return pad_collate_fn
 
@@ -923,7 +894,6 @@ def save_hf_format_accelerate(
     tokenizer,
     accelerator: Accelerator,
     samples_seen,
-    is_lora=False,
 ):
     log_rank_0(
         f"\033[93mSaving model in huggingface format at samples_seen: {samples_seen}\033[0m",
@@ -931,32 +901,10 @@ def save_hf_format_accelerate(
     )
     start = time.time()
 
-    if args.model_type in ("gpt_megatron", "gpt_dolomite"):
-        convert_dolomite = False
-    else:
-        convert_dolomite = True
-
-    final_output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
-    if args.use_dolomite and convert_dolomite:
-        tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
-        output_dir = Path(tmpdir.name)
-    else:
-        output_dir = final_output_dir
+    output_dir = Path(args.output_dir) / "hf_format" / f"samples_{samples_seen}"
 
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
-
-    # XXX(osilkin): LoRA + FSDP requires a different saving path than the others
-    #               so we set this variable and use it to avoid those paths further down.
-    is_fsdp_lora = is_lora and accelerator.distributed_type == DistributedType.FSDP
-    if is_fsdp_lora:
-        save_fsdp_lora_model(
-            args=args,
-            model=model,
-            tokenizer=tokenizer,
-            accelerator=accelerator,
-            output_dir=output_dir,
-        )
 
     get_state_dict_unpatched = accelerator.get_state_dict
 
@@ -965,61 +913,20 @@ def save_hf_format_accelerate(
 
     accelerator.get_state_dict = _get_state_dict_patched
 
-    if not is_fsdp_lora and accelerator.is_main_process:
-        if is_lora:
-            model.module.merge_adapter()
-            model_state = model.module.state_dict()
+    if accelerator.is_main_process:
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        if not model.module.config.architectures and convert_dolomite:
-            arch_added = False
-            if args.model_type == "llama":
-                model.module.config.architectures = ["LlamaForCausalLM"]
-                arch_added = True
-            elif args.model_type == "granite":
-                model.module.config.architectures = ["GraniteForCausalLM"]
-                arch_added = True
-            if arch_added:
-                warnings.warn(
-                    f"Adding architectures to ckpt: {model.module.config.architectures}",
-                )
-            else:
-                warnings.warn(
-                    f"Converting from dolomite, but no architecture field added to config.json",
-                )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
 
-        if is_lora:
-            save_dict_accelerate(
-                accelerator,
-                model_state,
-                save_directory=output_dir,
-                max_shard_size="5GB",
-                safe_serialization=True,
-            )
-            model.module.unmerge_adapter()
+    accelerator.save_model(
+        model,
+        save_directory=output_dir,
+        max_shard_size="5GB",
+        safe_serialization=True,
+    )
 
-    if not is_lora:
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
-
-    if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
-        # export doesnt like the directory to exist
-        if final_output_dir.exists():
-            shutil.rmtree(final_output_dir)
-        export_to_huggingface(
-            pretrained_model_name_or_path=tmpdir.name,
-            save_path=final_output_dir,
-            model_type=args.model_type,
-        )
-        tmpdir.cleanup()
-
-    log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
+    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
     dist.barrier()
 
