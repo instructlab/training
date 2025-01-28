@@ -6,6 +6,7 @@ import torch
 import math
 from copy import deepcopy
 import argparse
+import shutil
 
 # Third Party
 from tqdm import tqdm
@@ -79,6 +80,41 @@ def align_model_and_tokenizer(model, tokenizer):
 
     return model
 
+def load_full_state_if_exists(args, accelerator):
+    """Attempt to load the last checkpoint if it exists"""
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
+    resume_step = None
+    
+    if os.path.exists(checkpoint_dir) and not args.disable_resume:
+        log_rank_0("Found existing checkpoint. Loading...", to_print=True)
+        accelerator.load_state(checkpoint_dir)
+        # Load training state
+        training_state = torch.load(os.path.join(checkpoint_dir, "training_state.pt"))
+        resume_step = training_state["global_step"]
+        log_rank_0(f"Resuming from global step {resume_step}", to_print=True)
+    elif not args.disable_resume:
+        log_rank_0("No checkpoint found. Starting from scratch.", to_print=True)
+    
+    return resume_step
+
+def save_full_state(args, accelerator, global_step):
+    """Save full training state, removing the previous checkpoint"""
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
+    
+    shutil.rmtree(checkpoint_dir, ignore_errors=True)
+    
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Save accelerator state
+    accelerator.save_state(checkpoint_dir)
+    
+    # Save training state
+    if accelerator.is_local_main_process:
+        training_state = {
+            "global_step": global_step,
+        }
+        torch.save(training_state, os.path.join(checkpoint_dir, "training_state.pt"))
+
 def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
 
     base_model_args = {
@@ -116,16 +152,13 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     model = convert_loss_to_reduce_sum(model, use_dolomite=False)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
-    # handling of gradient checkpointing
-    # it is handled differently for lora and full
-    # - with the exception of granite, which handles it
-    #   in the later stanza
+
     block_name = model._no_split_modules[0]
     log_rank_0(f"\033[38;5;214mGradient checkpointing will be done at the {block_name} level\033[0m", to_print=True)
     apply_gradient_checkpointing(
         model,
         block_name=block_name,
-        use_reentrant=True,  # this should be the HF default mode
+        use_reentrant=True,
     )
 
     torch.compile(model)
@@ -140,6 +173,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
         num_warmup_steps=args.num_warmup_steps,
         num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
+    
+    accelerator.register_for_checkpointing(lr_scheduler)
+    
     model, optimizer, _, lr_scheduler = accelerator.prepare(
         model,
         optimizer,
@@ -170,6 +206,7 @@ def train(
     train_loader: DataLoader,
     grad_accum,
     metric_logger,
+    resume_step=None,
 ):
     model.train()
 
@@ -198,6 +235,13 @@ def train(
 
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
+            # Skip until we reach the saved step
+            if resume_step is not None and global_step <= resume_step:
+                global_step += 1
+                if local_rank == 0:
+                    inner_pb.update(1)
+                continue
+
             start = time.time()
             num_loss_counted_tokens = float(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
@@ -282,6 +326,9 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
+                save_full_state(args, accelerator, global_step)
+                
+                # Also save HF format if needed
                 save_hf_format_accelerate(
                     args=args,
                     accelerator=accelerator,
@@ -295,6 +342,8 @@ def train(
                 inner_pb.update(1)
             torch.cuda.empty_cache()
 
+    # Save final checkpoint
+    save_full_state(args, accelerator, global_step)
 
 def main(args):
 
@@ -367,6 +416,9 @@ def main(args):
     model, lr_scheduler, optimizer, accelerator = setup_model(
         args, tokenizer, train_loader, grad_accum, flash_enabled
     )
+    
+    # Load checkpoint if it exists
+    resume_step = load_full_state_if_exists(args, accelerator)
 
     train(
         args,
@@ -378,6 +430,7 @@ def main(args):
         train_loader,
         grad_accum,
         metric_logger,
+        resume_step,
     )
 
     torch.distributed.barrier()
