@@ -495,7 +495,7 @@ def parse_args():
         "--fsdp_sharding_strategy",
         type=str,
         default="FULL_SHARD",
-        choices=["NO_SHARD", "SHARD_GRAD_OP", "SHARD_FULL"],
+        choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD", "HYBRID_SHARD"],
         help="Sharding strategy for Fully Sharded Data Parallel."
     )
     parser.add_argument(
