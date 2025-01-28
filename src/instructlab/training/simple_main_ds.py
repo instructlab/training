@@ -87,11 +87,15 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     if flash_enabled:
         base_model_args["attn_implementation"] = "flash_attention_2"
 
-    from contextlib import nullcontext
-    from accelerate import init_empty_weights
-    context = nullcontext if (os.environ["RANK"] == "0") else init_empty_weights
-    with context():
-        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+    # this fails when the embedding layer has not been resized
+    # only necessary for models that can not be fit into cpu memory by all processes at the same time
+    # this is NOT the case for Llama-3.1-8B
+
+    # from contextlib import nullcontext
+    # from accelerate import init_empty_weights
+    # context = nullcontext if (os.environ["RANK"] == "0") else init_empty_weights
+    # with context():
+    model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
@@ -123,7 +127,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     )
 
     torch.compile(model)
-    accelerator = setup_accelerator(args, model, grad_accum)
+    accelerator = setup_accelerator(args, model)
     #assuming fsdp is used
     model = accelerator.prepare(model)
     optimizer = setup_optimizer(args, model)
@@ -456,6 +460,12 @@ def parse_args():
 
     # Scheduler and Optimization
     parser.add_argument(
+        "--learning_rate",
+        type=float,
+        required=True,
+        help="Learning rate for training."
+    )
+    parser.add_argument(
         "--lr_scheduler",
         type=str,
         default="linear",
@@ -502,17 +512,18 @@ if __name__ == "__main__":
 '''
 torchrun --nnodes=1 --nproc_per_node=8 --rdzv_id=101 \
 --rdzv_endpoint="localhost:29500" simple_main_ds.py \
---model_name_or_path=/new_data/models/granite7b/ibm_models_version/ \
+--model_name_or_path=meta-llama/Llama-3.1-8B \
 --data_path="/dev/shm/data.jsonl" \
---output_dir="/new_data/experiments/ap-granite-4t" \
+--output_dir="/home/ubuntu/experiments/ap-llama-3.1-rhel3.0_28-01-25" \
 --effective_batch_size=3840 \
---max_batch_len=60000 \
+--max_batch_len=120000 \
 --num_epochs=10 \
+--lr_scheduler="constant_with_warmup" \
 --learning_rate=6e-06 \
 --num_warmup_steps=25 \
---save_samples=200000 \
+--save_samples=8000 \
 --log_level="INFO" \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
 --seed=42 \
---chat_tmpl_path="chat_templates/ibm_generic_tmpl.py"
+--chat_tmpl_path="chat_templates/ibm_generic_tmpl.py" | tee /home/ubuntu/experiments/ap-llama-3.1-rhel3.0_28-01-25/train_rank_0.log
 '''
