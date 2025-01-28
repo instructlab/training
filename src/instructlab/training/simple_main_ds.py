@@ -27,6 +27,7 @@ from instructlab.training.utils import (
     add_noisy_embeddings,
     apply_gradient_checkpointing,
     convert_loss_to_reduce_sum,
+    log_rank_0,
     retrieve_chat_template,
     save_checkpoint,
     save_hf_format_accelerate,
@@ -120,6 +121,7 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
     # - with the exception of granite, which handles it
     #   in the later stanza
     block_name = model._no_split_modules[0]
+    log_rank_0(f"\033[38;5;214mGradient checkpointing will be done at the {block_name} level\033[0m", to_print=True)
     apply_gradient_checkpointing(
         model,
         block_name=block_name,
