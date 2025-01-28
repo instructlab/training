@@ -80,29 +80,11 @@ def align_model_and_tokenizer(model, tokenizer):
 
     return model
 
-def load_full_state_if_exists(args, accelerator):
-    """Attempt to load the last checkpoint if it exists"""
-    checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
-    resume_step = None
-    
-    if os.path.exists(checkpoint_dir) and not args.disable_resume:
-        log_rank_0("Found existing checkpoint. Loading...", to_print=True)
-        accelerator.load_state(checkpoint_dir)
-        # Load training state
-        training_state = torch.load(os.path.join(checkpoint_dir, "training_state.pt"))
-        resume_step = training_state["global_step"]
-        log_rank_0(f"Resuming from global step {resume_step}", to_print=True)
-    elif not args.disable_resume:
-        log_rank_0("No checkpoint found. Starting from scratch.", to_print=True)
-    
-    return resume_step
-
-def save_full_state(args, accelerator, global_step):
+def save_full_state(args, accelerator, global_step, samples_seen):
     """Save full training state, removing the previous checkpoint"""
     checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
     
     shutil.rmtree(checkpoint_dir, ignore_errors=True)
-    
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     def _get_state_dict_patched(model, unwrap=False):
@@ -118,10 +100,33 @@ def save_full_state(args, accelerator, global_step):
     if accelerator.is_local_main_process:
         training_state = {
             "global_step": global_step,
+            "samples_seen": samples_seen,
         }
         torch.save(training_state, os.path.join(checkpoint_dir, "training_state.pt"))
-    
     accelerator.get_state_dict = get_state_dict_unpatched
+
+def load_full_state_if_exists(args, accelerator):
+    """Attempt to load the last checkpoint if it exists"""
+    checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
+    resume_dict = {
+        "global_step": 1,
+        "samples_seen": 0,
+    }
+    
+    if os.path.exists(checkpoint_dir) and not args.disable_resume:
+        try:
+            log_rank_0("Found existing checkpoint. Loading...", to_print=True)
+            accelerator.load_state(checkpoint_dir)
+            # Load training state
+            training_state = torch.load(os.path.join(checkpoint_dir, "training_state.pt"))
+            resume_dict.update(training_state)
+            log_rank_0(f"Resuming from global step {resume_dict['global_step']}, samples seen {resume_dict['samples_seen']}", to_print=True)
+        except Exception as e:
+            log_rank_0(f"Error loading checkpoint: {str(e)}. Starting from scratch.", to_print=True)
+    elif not args.disable_resume:
+        log_rank_0("No checkpoint found. Starting from scratch.", to_print=True)
+    
+    return resume_dict
 
 def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
 
@@ -214,7 +219,7 @@ def train(
     train_loader: DataLoader,
     grad_accum,
     metric_logger,
-    resume_step=None,
+    resume_dict,
 ):
     model.train()
 
@@ -234,17 +239,17 @@ def train(
             if local_rank == 0
             else None
         )
+    samples_seen = resume_dict["samples_seen"]
 
     for epoch in range(args.num_epochs):
         train_loader.batch_sampler.set_epoch(epoch)
-
+        
         if local_rank == 0:
             inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
 
-        # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
             # Skip until we reach the saved step
-            if resume_step is not None and global_step <= resume_step:
+            if global_step < resume_dict["global_step"]:
                 global_step += 1
                 if local_rank == 0:
                     inner_pb.update(1)
@@ -334,7 +339,6 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                save_full_state(args, accelerator, global_step)
                 
                 # Also save HF format if needed
                 save_hf_format_accelerate(
@@ -350,8 +354,7 @@ def train(
                 inner_pb.update(1)
             torch.cuda.empty_cache()
 
-    # Save final checkpoint
-    save_full_state(args, accelerator, global_step)
+        save_full_state(args, accelerator, global_step, samples_seen)
 
 def main(args):
 
@@ -426,7 +429,7 @@ def main(args):
     )
     
     # Load checkpoint if it exists
-    resume_step = load_full_state_if_exists(args, accelerator)
+    resume_dict = load_full_state_if_exists(args, accelerator)
 
     train(
         args,
@@ -438,7 +441,7 @@ def main(args):
         train_loader,
         grad_accum,
         metric_logger,
-        resume_step,
+        resume_dict,
     )
 
     torch.distributed.barrier()
