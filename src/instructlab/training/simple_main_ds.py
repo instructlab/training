@@ -81,11 +81,12 @@ def align_model_and_tokenizer(model, tokenizer):
     return model
 
 def save_full_state(args, accelerator, global_step, samples_seen):
-    """Save full training state, removing the previous checkpoint"""
+    """Save full training state, safely replacing the previous checkpoint"""
     checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
+    temp_checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "temp_checkpoint")
     
-    shutil.rmtree(checkpoint_dir, ignore_errors=True)
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    # Create temp directory for new checkpoint
+    os.makedirs(temp_checkpoint_dir, exist_ok=True)
 
     def _get_state_dict_patched(model, unwrap=False):
         return get_state_dict_unpatched(model, unwrap=unwrap)
@@ -93,17 +94,21 @@ def save_full_state(args, accelerator, global_step, samples_seen):
     get_state_dict_unpatched = accelerator.get_state_dict
     accelerator.get_state_dict = _get_state_dict_patched
     
-    # Save accelerator state
-    accelerator.save_state(checkpoint_dir)
+    accelerator.save_state(temp_checkpoint_dir)
     
-    # Save training state
     if accelerator.is_local_main_process:
         training_state = {
             "global_step": global_step,
             "samples_seen": samples_seen,
         }
-        torch.save(training_state, os.path.join(checkpoint_dir, "training_state.pt"))
+        torch.save(training_state, os.path.join(temp_checkpoint_dir, "training_state.pt"))
+    
     accelerator.get_state_dict = get_state_dict_unpatched
+
+    torch.distributed.barrier()
+    if accelerator.is_local_main_process:
+        shutil.rmtree(checkpoint_dir, ignore_errors=True)
+        os.rename(temp_checkpoint_dir, checkpoint_dir)
 
 def load_full_state_if_exists(args, accelerator):
     """Attempt to load the last checkpoint if it exists"""
@@ -339,15 +344,14 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                
-                # Also save HF format if needed
-                save_hf_format_accelerate(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=tokenizer,
-                    samples_seen=samples_seen,
-                )
+                # save_hf_format_accelerate(
+                #     args=args,
+                #     accelerator=accelerator,
+                #     model=model,
+                #     tokenizer=tokenizer,
+                #     samples_seen=samples_seen,
+                # )
+                save_full_state(args, accelerator, global_step, samples_seen)
 
             global_step += 1
             if local_rank == 0:
