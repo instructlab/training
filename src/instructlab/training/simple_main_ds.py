@@ -559,6 +559,12 @@ def parse_args():
         help="Enable CPU offloading for FSDP parameters."
     )
 
+    parser.add_argument(
+        "--disable_resume",
+        action="store_true",
+        help="Disable automatic resuming from last checkpoint"
+    )
+
     args = parser.parse_args()
     return args
 
