@@ -805,6 +805,7 @@ def apply_gradient_checkpointing(
             if isinstance(submodule, block_class):
                 block_idx += 1
                 if (block_idx - 1) % checkpoint_every == 0:
+                    log_rank_0(f"\033[38;5;214mGradient checkpointing applied to {str(submodule)} with index {block_idx}\033[0m", to_print=True)
                     return True
             return False
 
