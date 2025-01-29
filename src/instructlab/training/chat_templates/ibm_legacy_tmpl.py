@@ -10,6 +10,10 @@ SPECIAL_TOKENS = SpecialTokens(
     eos=TokenInfo("<|endoftext|>", add_to_tokenizer=True),
     pad=TokenInfo("<|pad|>", add_to_tokenizer=True),
     bos=TokenInfo("<|begginingoftext|>", add_to_tokenizer=True),
+    start_thought=TokenInfo("<|begin_of_thought|>", add_to_tokenizer=True),
+    end_thought=TokenInfo("<|end_of_thought|>", add_to_tokenizer=True),
+    start_solution=TokenInfo("<|begin_of_solution|>", add_to_tokenizer=True),
+    end_solution=TokenInfo("<|end_of_solution|>", add_to_tokenizer=True),
 )
 
 CHAT_TEMPLATE = (

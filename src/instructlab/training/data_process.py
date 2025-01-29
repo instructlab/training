@@ -248,6 +248,10 @@ def main(args: DataProcessArgs):
         start_role_tk,
         end_role_tk,
         _,
+        _,
+        _,
+        _,
+        _,
     ) = [
         get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token)
         for sp in SPECIAL_TOKENS.__annotations__.keys()
