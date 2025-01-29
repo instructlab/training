@@ -344,14 +344,14 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
-                # save_hf_format_accelerate(
-                #     args=args,
-                #     accelerator=accelerator,
-                #     model=model,
-                #     tokenizer=tokenizer,
-                #     samples_seen=samples_seen,
-                # )
-                save_full_state(args, accelerator, global_step, samples_seen)
+                save_hf_format_accelerate(
+                    args=args,
+                    accelerator=accelerator,
+                    model=model,
+                    tokenizer=tokenizer,
+                    samples_seen=samples_seen,
+                )
+                # save_full_state(args, accelerator, global_step, samples_seen)
 
             global_step += 1
             if local_rank == 0:
