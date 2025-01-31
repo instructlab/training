@@ -356,14 +356,14 @@ def train(
                     tokenizer=tokenizer,
                     samples_seen=samples_seen,
                 )
-                # save_full_state(args, accelerator, global_step, samples_seen)
+                save_full_state(args, accelerator, global_step, samples_seen)
 
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
 
-        save_full_state(args, accelerator, global_step, samples_seen)
+        # save_full_state(args, accelerator, global_step, samples_seen)
 
 def main(args):
 
