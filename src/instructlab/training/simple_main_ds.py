@@ -356,7 +356,7 @@ def train(
                     tokenizer=tokenizer,
                     samples_seen=samples_seen,
                 )
-                save_full_state(args, accelerator, global_step, samples_seen)
+                # save_full_state(args, accelerator, global_step, samples_seen)
 
             global_step += 1
             if local_rank == 0:
@@ -607,4 +607,33 @@ torchrun --nnodes=1 --nproc_per_node=8 --rdzv_id=101 \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
 --seed=42 \
 --chat_tmpl_path="chat_templates/ibm_generic_tmpl.py" | tee /home/ubuntu/experiments/ap-llama-3.1-rhel3.0_28-01-25/train_rank_0.log
+
+mamba activate lab
+cd ~/training/src/instructlab/training/
+git checkout ap/simple_trainer_28-01-25
+git pull
+mkdir -p $DIR
+set -x DIR /new_data/experiments_rh/granite-r1-bespoke-v6/
+torchrun --nnodes=6 --node_rank=$RANK --nproc_per_node=8 --rdzv_id=101 \
+--rdzv_endpoint="10.7.0.16:29500" simple_main_ds.py \
+--model_name_or_path=/dev/shm/bmo-p07-chosen/ \
+--data_path="/dev/shm/data.jsonl" \
+--output_dir="$DIR" \
+--effective_batch_size=3840 \
+--max_batch_len=60000 \
+--num_epochs=10 \
+--lr_scheduler="constant_with_warmup" \
+--learning_rate=6e-06 \
+--num_warmup_steps=25 \
+--save_samples=8000 \
+--log_level="INFO" \
+--fsdp_sharding_strategy="SHARD_GRAD_OP" \
+--seed=42 \
+--chat_tmpl_path="chat_templates/ibm_legacy_tmpl.py" | tee $DIR/train_rank_$RANK.log
+
+curl -s \
+        --form-string 'token=aww4o6nz8yb5fmeacueqm3p621oyia' \
+        --form-string 'user=uvumi2o5biqfgbm7mp8mjg841ssuf2' \
+        --form-string "6 nodes failed!!!!!!!!" \
+        https://api.pushover.net/1/messages.json
 '''
