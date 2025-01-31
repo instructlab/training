@@ -101,7 +101,7 @@ def save_full_state(args, accelerator, global_step, samples_seen):
 
     accelerator.save_state(temp_checkpoint_dir)
     
-    if accelerator.is_local_main_process:
+    if accelerator.is_main_process:
         training_state = {
             "global_step": global_step,
             "samples_seen": samples_seen,
@@ -110,11 +110,12 @@ def save_full_state(args, accelerator, global_step, samples_seen):
     
     accelerator.get_state_dict = get_state_dict_unpatched
 
-    torch.distributed.barrier()
     if accelerator.is_main_process:
         shutil.rmtree(checkpoint_dir, ignore_errors=True)
         os.rename(temp_checkpoint_dir, checkpoint_dir)
 
+    torch.distributed.barrier()
+    
 def load_full_state_if_exists(args, accelerator):
     """Attempt to load the last checkpoint if it exists"""
     checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "last_checkpoint")
@@ -608,12 +609,14 @@ torchrun --nnodes=1 --nproc_per_node=8 --rdzv_id=101 \
 --seed=42 \
 --chat_tmpl_path="chat_templates/ibm_generic_tmpl.py" | tee /home/ubuntu/experiments/ap-llama-3.1-rhel3.0_28-01-25/train_rank_0.log
 
+set -Ux NCCL_SOCKET_IFNAME eth1
+set -Ux NCCL_IB_DISABLE 1
 mamba activate lab
 cd ~/training/src/instructlab/training/
 git checkout ap/simple_trainer_28-01-25
 git pull
+set -x DIR /new_data/experiments_rh/granite-r1-bespoke-v8/
 mkdir -p $DIR
-set -x DIR /new_data/experiments_rh/granite-r1-bespoke-v6/
 torchrun --nnodes=6 --node_rank=$RANK --nproc_per_node=8 --rdzv_id=101 \
 --rdzv_endpoint="10.7.0.16:29500" simple_main_ds.py \
 --model_name_or_path=/dev/shm/bmo-p07-chosen/ \
@@ -625,7 +628,7 @@ torchrun --nnodes=6 --node_rank=$RANK --nproc_per_node=8 --rdzv_id=101 \
 --lr_scheduler="constant_with_warmup" \
 --learning_rate=6e-06 \
 --num_warmup_steps=25 \
---save_samples=8000 \
+--save_samples=185000 \
 --log_level="INFO" \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
 --seed=42 \
