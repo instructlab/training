@@ -86,7 +86,11 @@ def save_full_state(args, accelerator, global_step, samples_seen):
     temp_checkpoint_dir = os.path.join(args.output_dir, "checkpoints", "temp_checkpoint")
     
     # Create temp directory for new checkpoint
-    os.makedirs(temp_checkpoint_dir, exist_ok=True)
+    if accelerator.is_main_process:
+        os.makedirs(temp_checkpoint_dir, exist_ok=True)
+    
+    torch.distributed.barrier()
+    
 
     def _get_state_dict_patched(model, unwrap=False):
         return get_state_dict_unpatched(model, unwrap=unwrap)
@@ -94,6 +98,7 @@ def save_full_state(args, accelerator, global_step, samples_seen):
     get_state_dict_unpatched = accelerator.get_state_dict
     accelerator.get_state_dict = _get_state_dict_patched
     
+
     accelerator.save_state(temp_checkpoint_dir)
     
     if accelerator.is_local_main_process:
@@ -106,7 +111,7 @@ def save_full_state(args, accelerator, global_step, samples_seen):
     accelerator.get_state_dict = get_state_dict_unpatched
 
     torch.distributed.barrier()
-    if accelerator.is_local_main_process:
+    if accelerator.is_main_process:
         shutil.rmtree(checkpoint_dir, ignore_errors=True)
         os.rename(temp_checkpoint_dir, checkpoint_dir)
 
