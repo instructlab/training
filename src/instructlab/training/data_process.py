@@ -406,6 +406,11 @@ def main(args: DataProcessArgs):
         print(
             f"\033[93mWarning: {dropped_samples} samples were dropped because they contained token IDs greater than or equal to {max_id}.\033[0m"
         )
+
+    # Calculate and print average tokens
+    avg_tokens = sum(final_valid_data["len"]) / len(final_valid_data)
+    print(f"\033[38;2;0;255;0mAverage tokens per sample in final dataset: {avg_tokens:.2f}\033[0m")
+
     # use path to get the stem of the file
     final_valid_data.to_json(Path(args.data_output_path) / "data.jsonl")
 
@@ -461,6 +466,29 @@ if __name__ == "__main__":
     )
     main(data_process_args)
 
+
 """
-python data_process.py --logging_level INFO --data_path "/new_data/refactored/chat-multiturn/oasst2_arena.jsonl" --data_output_path "./" --max_seq_len 4600 --model_name_or_path "mistralai/Mistral-7B-v0.1"
+cp /dev/shm/data.jsonl /new_data/data_rh/bespoke-stratos-35k-tokenized-granite.jsonl
+mamba create -n lab python=3.12 -y
+mamba activate lab
+cd ~
+git clone https://github.com/instructlab/training.git 
+git checkout ap/simple_trainer_28-01-25
+cd ~/training
+pip install -e .
+pip install -e .[cuda]
+"""
+"""
+# --chat-tmpl-path "chat_templates/ibm_generic_tmpl.py" \
+mkdir -p /mnt/ibmcos-aldo-data/experiments_rh/ap-granite-3.1-rhel3.0_28-01-25/
+mkdir -p /new_data/experiments_rh/llama-r1-bespoke/
+mkdir -p /mnt/ibmcos-aldo-data/experiments_rh/llama-r1-bespoke/
+cd ~/training/src/instructlab/training/
+python data_process.py --logging_level INFO \
+--chat-tmpl-path "chat_templates/ibm_legacy_tmpl.py" \
+--data_path "/dev/shm/bmo-knowledge_125_p10-granite-3.0-mix-bespoke-stratos-35k.jsonl" \
+--num_cpu_procs=192 \
+--data_output_path "/dev/shm" \
+--max_seq_len 32768 \
+--model_name_or_path "meta-llama/Llama-3.1-8B" | tee /mnt/ibmcos-aldo-data/experiments_rh/llama-r1-bespoke/data_0.log
 """
