@@ -163,15 +163,16 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
 
     model = align_model_and_tokenizer(model, tokenizer)
 
-    assert model.__class__.__name__ in [
+    if model.__class__.__name__ not in [
         "MistralForCausalLM",
-        "GPTDolomiteForCausalLM",
+        "GPTDolomiteForCausalLM", 
         "LlamaForCausalLM",
         "Starcoder2ForCausalLM",
         "GemmaForCausalLM",
         "MixtralForCausalLM",
         "GraniteForCausalLM",
-    ], f"Model class name: {model.__class__.__name__} is not supported."
+    ]:
+        log_rank_0(f"\033[38;2;255;255;0mWarning: Model class name: {model.__class__.__name__} is not in the list of supported models.\033[0m", to_print=True)
 
     model = convert_loss_to_reduce_sum(model, use_dolomite=False)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
@@ -640,3 +641,4 @@ curl -s \
         --form-string "6 nodes failed!!!!!!!!" \
         https://api.pushover.net/1/messages.json
 '''
+# 
