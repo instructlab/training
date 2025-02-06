@@ -71,10 +71,12 @@ def align_model_and_tokenizer(model, tokenizer):
         
         if (model_token is not None and tokenizer_token is not None 
             and model_token != tokenizer_token):
-            print(
+            log_rank_0(
+                "\033[38;5;226m"
                 f"WARNING: There is a mismatch between {token_type} token id of "
                 f"model({model_token}) and tokenizer({tokenizer_token}). "
                 f"{message} to be same as tokenizer's {token_type} token id"
+                "\033[0m"
             )
             setattr(model.config, token_attr, tokenizer_token)
 

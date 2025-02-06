@@ -9,7 +9,7 @@ SPECIAL_TOKENS = SpecialTokens(
     #tool=TokenInfo("<|tool_call|>", add_to_tokenizer=True),
     eos=TokenInfo("<|im_end|>", add_to_tokenizer=False),
     bos=TokenInfo("<|endoftext|>", add_to_tokenizer=False),
-    pad=TokenInfo("<|dummy_85|>", add_to_tokenizer=False),
+    pad=TokenInfo("<|endoftext|>", add_to_tokenizer=False),
 )
 
 
@@ -27,4 +27,3 @@ CHAT_TEMPLATE = (
     "{{ '<|im_start|>assistant<|im_sep|>' }}"
     "{% endif %}"
 )
-  

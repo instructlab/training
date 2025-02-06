@@ -33,7 +33,12 @@ def setup_tokenizer(
         tokenizer.add_bos_token = False
         tokenizer.add_eos_token = False
 
-    tokenizer.chat_template = CHAT_TEMPLATE
+    if getattr(tokenizer, "chat_template", None) is None:
+        log_rank_0(
+            "\033[91m!!!!!!!! tokenizer has no chat_template\033[0m"
+        )
+        tokenizer.chat_template = CHAT_TEMPLATE
+
     assert (
         len(get_sp_token(tokenizer, SPECIAL_TOKENS.eos.token)) == 1
     ), "EOS token doesn't exist or is of incorrect length"
