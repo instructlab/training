@@ -39,7 +39,12 @@ except ImportError:
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    get_scheduler,
+    PreTrainedTokenizer,
+)
 import torch
 import torch.distributed
 
@@ -109,7 +114,9 @@ def setup_optimizer(args, model):
     return optimizer
 
 
-def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
+def setup_model(
+    args, tokenizer: PreTrainedTokenizer, train_loader, grad_accum, flash_enabled
+):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         # Third Party
@@ -182,9 +189,18 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
         )
         model.config.eos_token_id = tokenizer.eos_token_id
 
-    assert (
-        "ForCausalLM" in model.__class__.__name__
-    ), f"Model class name: {model.__class__.__name__} is not supported."
+    if "ForCausalLM" not in model.__class__.__name__:
+        raise ValueError(
+            f"Model class name: {model.__class__.__name__} is not supported."
+        )
+
+    # ensure the model has any tokens which were added to the tokenizer
+    if tokenizer.pad_token_id is not None and model.config.pad_token_id is None:
+        model.config.pad_token_id = tokenizer.pad_token_id
+    if tokenizer.bos_token_id is not None and model.config.bos_token_id is None:
+        model.config.bos_token_id = tokenizer.bos_token_id
+    if tokenizer.eos_token_id is not None and model.config.eos_token_id is None:
+        model.config.eos_token_id = tokenizer.eos_token_id
 
     model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
@@ -311,7 +327,7 @@ def train(
     optimizer,
     lr_scheduler,
     accelerator: Accelerator,
-    tokenizer,
+    tokenizer: PreTrainedTokenizer,
     train_loader: DataLoader,
     grad_accum,
     metric_logger,
@@ -527,8 +543,7 @@ def main(args):
         metric_logger.log_sync({"script_params": vars(args)})
 
     setup_logger(args.log_level)
-    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
+    tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
     model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
@@ -698,8 +713,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
-        f"--chat-tmpl-path={train_args.chat_tmpl_path}",
     ]
+
+    if train_args.chat_tmpl_path is not None:
+        command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
 
     if train_args.keep_last_checkpoint_only:
         command.append(f"--keep_last_checkpoint_only")
@@ -953,11 +970,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument(
+        # TODO(osilkin): rename to chat_tmpl_path
         "--chat-tmpl-path",
         type=str,
-        default=os.path.join(
-            os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
-        ),
+        default=None,
+        help="Path to the chat template to set on the model for training. If none is provided, the chat template used in the model will be used.",
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
     parser.add_argument(

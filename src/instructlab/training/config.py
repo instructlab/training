@@ -44,6 +44,25 @@ class QuantizeDataType(Enum):
     # FP8 = "fp8" TODO: test and evaluate fp8
     NONE = None
 
+class NewDataProcessArgs(BaseModel):
+    data_path: str
+    data_output_path: str
+    max_seq_len: int  # defines the max sequence length of a sample
+    model_path: str  # either a HF model name or path to HF model
+    chat_tmpl_path: str | None = None
+    num_cpu_procs: int = Field(
+        default=16,
+        description="this is the number of CPU procs we use for data processing parallelization",
+    )
+    # this controls whether or not the unmasking will also encapsulate surrounding barriers.
+    # I.e., If you have <user>\s\sHello world\s\s<endoftext>, this determines whether unmasking targets:
+    # <user>\s\s[Hello world]\s\s<endoftext> or <user>[\s\sHello world\s\s]<endoftext>
+    expand_whitespace_barriers: bool = False
+
+    # disable the protected namespace for the model_config field
+    model_config = ConfigDict(protected_namespaces=())
+    is_aldo: bool = False
+
 
 # public API
 class DataProcessArgs(BaseModel):
@@ -55,7 +74,7 @@ class DataProcessArgs(BaseModel):
     data_output_path: str
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
-    chat_tmpl_path: str
+    chat_tmpl_path: str | None = None
     num_cpu_procs: int = Field(
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",
@@ -151,10 +170,8 @@ class TrainingArgs(BaseModel):
     # Either the name of a HuggingFace model or a path to a model saved in HuggingFace format.
     model_path: str
 
-    # Specify the chat template / special tokens for training (default is ibm-generic template/tokens)
-    chat_tmpl_path: str = os.path.join(
-        os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
-    )
+    # Specify the chat template / special tokens for training (default is None)
+    chat_tmpl_path: str | None = None
 
     # this field determines if ibm_legacy_tmpl should be used instead
     use_legacy_tmpl: bool = False
