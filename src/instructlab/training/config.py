@@ -55,7 +55,7 @@ class DataProcessArgs(BaseModel):
     data_output_path: str
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
-    chat_tmpl_path: str
+    chat_tmpl_path: str | None = None
     num_cpu_procs: int = Field(
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",

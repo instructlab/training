@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+from enum import StrEnum
 from functools import partial
 from pathlib import Path
 import os
+import typing as t
+import regex as re
 
 # Third Party
-from datasets import load_dataset
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from datasets import load_dataset, Dataset
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, AutoTokenizer
 import numpy as np
+from tqdm import tqdm
 
 # First Party
 from instructlab.training.config import DataProcessArgs
@@ -229,6 +233,9 @@ def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
                 break
 
 
+
+
+
 def main(args: DataProcessArgs):
     if not os.path.exists(args.data_output_path):
         os.makedirs(args.data_output_path, exist_ok=True)
@@ -416,12 +423,413 @@ def main(args: DataProcessArgs):
     final_valid_data.to_json(Path(args.data_output_path) / "data.jsonl")
 
 
+class UnmaskPolicy(StrEnum):
+    ALL_BUT_SYSTEM = "all-but-system"
+    ASSISTANT = "assistant"
+
+# this is what we will use as a placeholder
+PLACEHOLDER_GLYPH = ''
+
+def placeholder_msgs(msgs: t.List[t.Dict[str, str]]):
+    return [{"role": m["role"], "content": PLACEHOLDER_GLYPH} for m in msgs]
+
+# basically the algorithm will look like this:
+# 1. given some list of messages, create a template set of messages with the contents replaced with a glyph
+# 2. tokenize the glyph messages and identify the portions in the message where the glyph exists
+# 3. with the tokenized list, identify the ranges where the glyph exists. We will want to replace these ranges with tokenized copies of each message
+# 4. with the knowledge of where the new message ranges are, we can now unmask according to our policy
+#   1. create a copy of the input IDs and leave the portions masked (-100) except for where we expect them to be unmasked
+#   2. when unmasking a particular message, if the tokenizer has an EOS token, assert that it is last token 
+
+
+def get_placeholder_ranges(placeholder_ids: t.List[int], tokenizer: PreTrainedTokenizer):
+    glyph_id = tokenizer.encode(PLACEHOLDER_GLYPH, add_special_tokens=False)  # we want to ignore special tokens since we're just extracting the token IDs here
+    ranges = []
+    i = 0
+    while i < len(placeholder_ids):
+        # look to start substring matching
+        if placeholder_ids[i] == glyph_id[0]:
+            j = i
+            k = 0
+            matching = True
+            while k < len(glyph_id) and j < len(placeholder_ids):
+                # keep looking to see how far we can match against the glyphd ID
+                if placeholder_ids[j] != glyph_id[k]: 
+                    matching = False
+                    break
+
+                j += 1
+                k += 1
+
+            # we were able to loop through successfully
+            if k == len(glyph_id) and matching:
+                # we now know that between `starti` and `i` there exists a range which is part of a tokenizer
+                ranges.append((i, j))
+
+                # now we can set `i` <-- j, and set `starti` <-- j + 1
+                i = j
+        i += 1
+
+    # assert len(ranges) > 1
+    return ranges
+
+
+def unmask_messages(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokenizer, glyph_tokenizer: PreTrainedTokenizer, unmask_roles: t.List[str] = None) -> t.Dict[str, t.List[int]]:
+    """
+    Given a list of messages and an arbitrary tokenizer, returns a dictionary with
+    `input_ids` and `labels` containing the correct masking.
+    """
+    # unmask everything
+    if not unmask_roles:
+        unmask_roles = list(set(m["role"] for m in msgs))
+
+    # first we need to create the placeholder IDs
+    placeholder_ids = tokenizer.apply_chat_template(placeholder_msgs(msgs))
+    ranges = get_placeholder_ranges(placeholder_ids, glyph_tokenizer)
+    individual_msgs = [tokenizer.encode(m["content"], add_special_tokens=False) for m in msgs]  # no special tokens here since we are looking to inject these into a broader template
+
+    final_input_ids = []
+    final_labels = []
+
+    j = 0
+    while j < len(placeholder_ids):
+        # remove one range
+        if not ranges:
+            # just append everything else to the end
+            final_input_ids.extend(placeholder_ids[j:])
+            final_labels.extend([-100] * len(placeholder_ids[j:]))
+            break
+        
+        start_idx, end_idx = ranges[0]
+        if j < start_idx:
+            # default case, just continue adding into input IDs and labels without doing anything
+            final_input_ids.append(placeholder_ids[j])
+            final_labels.append(-100)   # mask this out, we dont care about it
+            j += 1
+            continue
+        else:
+            # otherwise, we now must insert the tokenized user message. We select it via:
+            msg_idx = len(individual_msgs) - len(ranges)  # this should always select the correct message
+            msg = individual_msgs[msg_idx]
+
+            # msg will go in no matter what
+            final_input_ids.extend(msg)
+
+            # check if we should unmask or not
+            should_unmask = msgs[msg_idx]["role"] in unmask_roles
+            if should_unmask:
+                # now we can append the correct message into the input IDs with the proper masking
+                final_labels.extend(msg)
+            else:
+                final_labels.extend([-100] * len(msg))
+
+            # continue only looking at the next set of ranges
+            j = end_idx
+            ranges = ranges[1:]
+
+            if tokenizer.eos_token_id is not None:
+                suffix_start_j = j
+                while j < len(placeholder_ids) and placeholder_ids[j] != tokenizer.eos_token_id:
+                    j += 1
+
+                if j >= len(placeholder_ids) or placeholder_ids[j] != tokenizer.eos_token_id:
+                    raise RuntimeError('failed to find the trailing EOS token id')
+
+                # by now we know that we are both within range and have found the trailing eos token id
+                final_input_ids.extend(placeholder_ids[suffix_start_j:j+1])
+                unmasked_eos_sequence = placeholder_ids[suffix_start_j:j+1]
+                if should_unmask:
+                    final_labels.extend(unmasked_eos_sequence)
+                else:
+                    final_labels.extend([-100] * len(unmasked_eos_sequence))
+                j += 1
+
+    return {
+        "input_ids": final_input_ids,
+        "labels": final_labels
+    }
+
+
+
+def unmask_sample(sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer, glyph_tokenizer: PreTrainedTokenizer) -> t.Dict[str, t.Any]:
+    # determine unmask policy
+    # TODO: make this simpler
+    policy = UnmaskPolicy.ALL_BUT_SYSTEM if sample["unmask"] else UnmaskPolicy.ASSISTANT
+    
+    # select roles to unmask
+    unmask_roles = {"assistant"}
+    if policy == UnmaskPolicy.ALL_BUT_SYSTEM:
+        unmask_roles = set(m["role"] for m in sample["messages"]) - {"system"}
+    
+    unmask_roles = list(unmask_roles)
+    return unmask_messages(sample["messages"], tokenizer, glyph_tokenizer, unmask_roles)
+
+    
+
+
+def extract_legacy_messages_from_text(text: str) -> t.List[t.Dict]:
+    # Regular expression pattern to match only <|user|> and <|assistant|>
+    pattern = r"<\|(user|assistant)\|>([^<]+)"
+
+    extracted_messages = []
+
+    # Generator function to process the matches iteratively
+    for match in re.finditer(pattern, text):
+        role = (match.group(1),)
+        content = match.group(2)
+        content = content.replace("<|endoftext|>", "")
+        extracted_messages.append({"role": role[0], "content": content})
+
+    return extracted_messages
+
+
+def convert_legacy_pretraining_into_new_template(
+    samples: t.List[dict], new_model_path: str
+):
+    new_tokenizer = AutoTokenizer.from_pretrained(new_model_path)
+
+    # count how many we ignored just for funsies
+    new_samples = []
+    num_ignored = 0
+    for sample in tqdm(
+        samples, total=len(samples), desc="Converting legacy format into new format..."
+    ):
+        old_msgs = sample["messages"]
+
+        # print the old content
+        # old_content = old_tokenizer.decode(old_tokenizer.apply_chat_template(old_msgs))
+        # print(old_content)
+        # print("- " * 81)
+
+        has_pretraining_msgs = any(m["role"] == "pretraining" for m in old_msgs)
+        if not has_pretraining_msgs:
+            num_ignored += 1
+            new_samples.append(sample.copy())
+            continue
+
+        idx, pretrain_message = next(
+            iter(
+                [
+                    (i, msg)
+                    for i, msg in enumerate(old_msgs)
+                    if msg["role"] == "pretraining"
+                ]
+            ),
+            None,
+        )
+
+        pretraining_inner_msgs = extract_legacy_messages_from_text(
+            pretrain_message["content"]
+        )
+        unique_roles = {m["role"] for m in pretraining_inner_msgs}
+        assert len(pretraining_inner_msgs) >= 2
+        assert "user" in unique_roles
+        assert "assistant" in unique_roles
+        inner_tokenized = new_tokenizer.apply_chat_template(pretraining_inner_msgs)
+
+        # hack to get around the <|end_of_text|> at the end
+        inner_tokenized_content = (
+            new_tokenizer.decode(inner_tokenized)
+            .rstrip()  # just in case \n actually isnt there
+            .removesuffix("<|end_of_text|>")
+            + "\n"
+        )
+
+        new_pretraining_msg = {
+            "role": "pretraining",
+            "content": inner_tokenized_content,
+        }
+        new_pretraining_msgs = (
+            old_msgs[:idx] + [new_pretraining_msg] + old_msgs[idx + 1 :]
+        )
+        new_sample = sample.copy()
+        new_sample["messages"] = new_pretraining_msgs
+        new_samples.append(new_sample)
+
+    print(f"print processed {len(new_samples)} samples, num ignored: {num_ignored}")
+    return new_samples
+
+
+def is_pretraining_format(ds: Dataset) -> bool:
+    """
+    Determine whether or not this is a legacy dataset which needs conversion.
+    Legacy == contains "pretraining" roles
+    """
+    for sample in ds:
+        for msg in sample["messages"]:
+            if msg['role'] == 'pretraining':
+                return True
+    return False
+
+def pretraining_is_using_legacy_chat_template(ds: Dataset) -> bool:
+    """
+    Determines whether or not this is using the legacy IBM chat template or the generic chat template.
+    I.e., 
+
+    ```
+    <|system|>
+    You are a friendly AI assistant...
+    <|user|>
+    Why is the sky blue?
+    <|assistant|>
+    Great question! What you perceive to be the sky being blue is actually the result of a process known as 'light difraction'...
+    <|endoftext|>
+    ```
+    """
+    pretraining_msg = None
+    for sample in ds:
+        if any(m["role"] == "pretraining" for m in sample["messages"]):
+            pretraining_msg = [m for m in sample['messages'] if m['role'] == 'pretraining'][0]
+            break
+    
+    if not pretraining_msg:
+        raise ValueError('could not find any pretraining messages')
+
+    if '<|user|>' in pretraining_msg:
+        # quick sanity check to ensure that the special tokens we expect to be in the message are there
+        assert '<|user|>' in pretraining_msg and '<|assistant|>' in pretraining_msg
+        return True
+    else:
+        # quick sanity check to ensure that the special tokens we expect to be in the message are there
+        assert '<|start_of_role|>user<|end_of_role|>' in pretraining_msg
+        assert '<|start_of_role|>assistant<|end_of_role|>' in pretraining_msg
+        return False
+
+def convert_legacy_pretraining_messages(ds: Dataset, tokenizer: PreTrainedTokenizer) -> Dataset:
+    """
+    For every `pretraining` sample, we unroll it back into the regular messages format and then
+    provide it with the unmasking field.
+    """
+
+
+
+def convert_legacy_dataset(ds: Dataset, tokenizer: PreTrainedTokenizer) -> Dataset:
+    """
+    Given an existing dataset, converts it into one that uses unmasking
+    fields to indicate whether or not we have a pretraining sample.
+    """
+
+    # the way that this will happen works like this:
+    # There are two possible formats:
+    # 1. legacy chat template 
+    # 2. generic IBM chat template (granite-3.x series)
+
+    # what we will do is convert these two into the new format of unmasked samples by
+    # parsing the existing chat template and parsing it into a new series of messages
+
+    if pretraining_is_using_legacy_chat_template(ds):
+        converted_ds = convert_legacy_pretraining_messages(ds, tokenizer)
+    else:
+        converted_ds = convert_generic_pretraining_messages(ds, tokenizer)
+
+
+
+
+def new_main(args: DataProcessArgs):
+    """
+    This should behave in the same way as the old process data script, but now we can use the newly updated
+    logic for performing the unmasking
+    """
+    if not os.path.exists(args.data_output_path):
+        os.makedirs(args.data_output_path, exist_ok=True)
+    print("\033[92m data arguments are:\033[0m")
+    print("\033[36m" + args.model_dump_json() + "\033[0m")
+
+    NUM_PROC = args.num_cpu_procs
+
+    # load dataset now 
+    try:
+        data = load_dataset("json", data_files=args.data_path, split="train")
+    except:
+        # pylint: disable=raise-missing-from,broad-exception-raised
+        raise Exception(
+            "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
+        )
+
+    if data.num_rows == 0:
+        raise ValueError(
+            "The provided dataset is empty, please make sure that your dataset contains samples and try again."
+        )
+
+    # check if we're in legacy mode
+    if is_pretraining_format(data):
+        raise ValueError("legacy pretraining datasets are not supported with the new method")
+
+
+
+    # configure tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+
+    # some tokenizers insert a prefix space when starting from the beginnning, so we create a separate one
+    # specifically so we can have an accurate mapping into the tokenized chat template
+    glyph_tokenizer = AutoTokenizer.from_pretrained(tokenizer.name_or_path, add_prefix_space=False)
+
+    if not tokenizer.chat_template:
+        raise ValueError("tokenizer doesn't currently have a chat template. Need to support adding one.")
+
+    # provide with a token for masking
+    tokenizer.add_special_tokens({
+        "additional_special_tokens": ["<|MASK|>"]
+    })
+
+    unmask_fn = partial(
+        unmask_sample,
+        tokenizer=tokenizer,
+        glyph_tokenizer=glyph_tokenizer,
+    )
+    data_with_input_ids = data.map(
+        unmask_fn,
+        num_proc=1,
+    )
+
+    # ensure that there are unmasked fields within the labels
+    all_have_unmasked = all(any(tok != -100 for tok in sample) for sample in data_with_input_ids["labels"])
+    assert all_have_unmasked
+
+    # --------------------------------------------------------
+    # by now we have a Dataset containing the input ids and labels, so we can proceed to the next phase
+    # --------------------------------------------------------
+
+    print("\033[38;2;255;165;0mten largest length percentiles:")
+    lens = np.array(
+        data_with_input_ids.map(
+            lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC
+        )["len"]
+    )
+    biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
+    for i, q in enumerate(biggest_10_percent):
+        print(f"quantile {90+i*1}th: {q}")
+    print("\033[0m")
+
+
+    num_dropped_samples = np.sum(lens > args.max_seq_len)
+    print(
+        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
+    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    if num_dropped_samples == len(data):
+        raise RuntimeError(
+            f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
+        )
+
+    lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
+    for i, q in enumerate(lowest_10_percent):
+        print(f"quantile {i}th: {q}")
+    num_dropped_samples = np.sum(lens < 20)
+    print(
+        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
+
+
 if __name__ == "__main__":
     # Standard
     import argparse
 
     parser = argparse.ArgumentParser(
         description="Preprocess a dataset for training a language model"
+    )
+    parser.add_argument(
+        '--legacy', action='store_true', default=False, help='Whether or not we should use the legacy processing script'
     )
     parser.add_argument(
         "--logging_level", type=str, default="INFO", help="Logging level"
@@ -465,7 +873,18 @@ if __name__ == "__main__":
         chat_tmpl_path=args.chat_tmpl_path,
         num_cpu_procs=args.num_cpu_procs,
     )
-    main(data_process_args)
+    if args.legacy:
+        main(data_process_args)
+    else:
+        new_main(DataProcessArgs(
+            data_path=args.data_path,
+            data_output_path='/home/oleg/Programming/training/test-output',
+            max_seq_len=350,
+            model_path='ibm-granite/granite-3.1-8b-instruct',
+            num_cpu_procs=16
+        ))
+
+
 
 """
 python data_process.py --logging_level INFO --data_path "/new_data/refactored/chat-multiturn/oasst2_arena.jsonl" --data_output_path "./" --max_seq_len 4600 --model_name_or_path "mistralai/Mistral-7B-v0.1"
