@@ -9,7 +9,7 @@ import typing as t
 import regex as re
 
 # Third Party
-from datasets import load_dataset, Dataset
+from datasets import load_dataset, Dataset, disable_caching
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, AutoTokenizer
 import numpy as np
 from tqdm import tqdm
@@ -19,6 +19,8 @@ from instructlab.training.config import DataProcessArgs
 from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
 from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
 
+
+disable_caching()
 
 def check_valid_sample(
     tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
@@ -428,10 +430,11 @@ class UnmaskPolicy(StrEnum):
     ASSISTANT = "assistant"
 
 # this is what we will use as a placeholder
-PLACEHOLDER_GLYPH = ''
+PLACEHOLDER_TOKEN = '<|placeholder|>'
+
 
 def placeholder_msgs(msgs: t.List[t.Dict[str, str]]):
-    return [{"role": m["role"], "content": PLACEHOLDER_GLYPH} for m in msgs]
+    return [{"role": m["role"], "content": PLACEHOLDER_TOKEN} for m in msgs]
 
 # basically the algorithm will look like this:
 # 1. given some list of messages, create a template set of messages with the contents replaced with a glyph
@@ -442,107 +445,76 @@ def placeholder_msgs(msgs: t.List[t.Dict[str, str]]):
 #   2. when unmasking a particular message, if the tokenizer has an EOS token, assert that it is last token 
 
 
-def get_placeholder_ranges(placeholder_ids: t.List[int], tokenizer: PreTrainedTokenizer):
-    glyph_id = tokenizer.encode(PLACEHOLDER_GLYPH, add_special_tokens=False)  # we want to ignore special tokens since we're just extracting the token IDs here
-    ranges = []
+def get_placeholder_locations(placeholder_ids: t.List[int], tokenizer: PreTrainedTokenizer):
+    placeholder_id = tokenizer.encode(PLACEHOLDER_TOKEN, add_special_tokens=False)[0]
+    locations = []
     i = 0
     while i < len(placeholder_ids):
         # look to start substring matching
-        if placeholder_ids[i] == glyph_id[0]:
-            j = i
-            k = 0
-            matching = True
-            while k < len(glyph_id) and j < len(placeholder_ids):
-                # keep looking to see how far we can match against the glyphd ID
-                if placeholder_ids[j] != glyph_id[k]: 
-                    matching = False
-                    break
-
-                j += 1
-                k += 1
-
-            # we were able to loop through successfully
-            if k == len(glyph_id) and matching:
-                # we now know that between `starti` and `i` there exists a range which is part of a tokenizer
-                ranges.append((i, j))
-
-                # now we can set `i` <-- j, and set `starti` <-- j + 1
-                i = j
+        if placeholder_ids[i] == placeholder_id:
+            locations.append(i)
         i += 1
 
     # assert len(ranges) > 1
-    return ranges
+    return locations
 
 
-def unmask_messages(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokenizer, glyph_tokenizer: PreTrainedTokenizer, unmask_roles: t.List[str] = None) -> t.Dict[str, t.List[int]]:
+def unmask_messages(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokenizer, unmask_roles: t.List[str] = None) -> t.Dict[str, t.List[int]]:
     """
     Given a list of messages and an arbitrary tokenizer, returns a dictionary with
     `input_ids` and `labels` containing the correct masking.
     """
     # unmask everything
     if not unmask_roles:
-        unmask_roles = list(set(m["role"] for m in msgs))
-
+        unmask_roles = set(m["role"] for m in msgs)
+    
     # first we need to create the placeholder IDs
-    placeholder_ids = tokenizer.apply_chat_template(placeholder_msgs(msgs))
-    ranges = get_placeholder_ranges(placeholder_ids, glyph_tokenizer)
-    individual_msgs = [tokenizer.encode(m["content"], add_special_tokens=False) for m in msgs]  # no special tokens here since we are looking to inject these into a broader template
+    placeholder_ids = tokenizer.apply_chat_template(placeholder_msgs(msgs), tokenize=True)
+    placeholder_locations = get_placeholder_locations(placeholder_ids, tokenizer)
 
     final_input_ids = []
     final_labels = []
 
-    j = 0
-    while j < len(placeholder_ids):
-        # remove one range
-        if not ranges:
-            # just append everything else to the end
-            final_input_ids.extend(placeholder_ids[j:])
-            final_labels.extend([-100] * len(placeholder_ids[j:]))
-            break
-        
-        start_idx, end_idx = ranges[0]
-        if j < start_idx:
-            # default case, just continue adding into input IDs and labels without doing anything
-            final_input_ids.append(placeholder_ids[j])
-            final_labels.append(-100)   # mask this out, we dont care about it
-            j += 1
-            continue
+    eos_token_id = None
+    if tokenizer.eos_token:
+        eos_token_id = tokenizer.encode(tokenizer.eos_token, add_special_tokens=False)[0]
+
+    # we will use i as a cursor 
+    prev_i = 0 
+
+    for location, msg in zip(placeholder_locations, msgs):
+        tokenized_msg = tokenizer.encode(msg["content"], add_special_tokens=False)
+
+
+        # first append the filler space between this and the previous sequence
+        final_input_ids += placeholder_ids[prev_i:location]
+        final_labels += [-100] * len(placeholder_ids[prev_i:location])
+
+        # next add the contents of the tokenized message, and determine whether or not to unmask
+        final_input_ids += tokenized_msg
+        if msg["role"] in unmask_roles:
+            final_labels += tokenized_msg
         else:
-            # otherwise, we now must insert the tokenized user message. We select it via:
-            msg_idx = len(individual_msgs) - len(ranges)  # this should always select the correct message
-            msg = individual_msgs[msg_idx]
+            final_labels += [-100] * len(tokenized_msg)
+        
+        prev_i = location + 1
 
-            # msg will go in no matter what
-            final_input_ids.extend(msg)
 
-            # check if we should unmask or not
-            should_unmask = msgs[msg_idx]["role"] in unmask_roles
-            if should_unmask:
-                # now we can append the correct message into the input IDs with the proper masking
-                final_labels.extend(msg)
-            else:
-                final_labels.extend([-100] * len(msg))
+        # Handle EOS token if present
+        if eos_token_id is not None and prev_i < len(placeholder_ids) and placeholder_ids[prev_i] == eos_token_id:
+            final_input_ids.append(eos_token_id)
+            final_labels.append(eos_token_id if msg["role"] in unmask_roles else -100)
+            prev_i += 1
+    # append the rest of the data
+    if prev_i < len(placeholder_ids):
+        final_input_ids += placeholder_ids[prev_i:]
+        final_labels += [-100] * len(placeholder_ids[prev_i:])
 
-            # continue only looking at the next set of ranges
-            j = end_idx
-            ranges = ranges[1:]
-
-            if tokenizer.eos_token_id is not None:
-                suffix_start_j = j
-                while j < len(placeholder_ids) and placeholder_ids[j] != tokenizer.eos_token_id:
-                    j += 1
-
-                if j >= len(placeholder_ids) or placeholder_ids[j] != tokenizer.eos_token_id:
-                    raise RuntimeError('failed to find the trailing EOS token id')
-
-                # by now we know that we are both within range and have found the trailing eos token id
-                final_input_ids.extend(placeholder_ids[suffix_start_j:j+1])
-                unmasked_eos_sequence = placeholder_ids[suffix_start_j:j+1]
-                if should_unmask:
-                    final_labels.extend(unmasked_eos_sequence)
-                else:
-                    final_labels.extend([-100] * len(unmasked_eos_sequence))
-                j += 1
+    # ensure that we didn't actually add the placeholder token into the input IDs
+    placeholder_token = tokenizer.encode(PLACEHOLDER_TOKEN, add_special_tokens=False)[0]
+    
+    assert placeholder_token not in final_input_ids and placeholder_token not in final_labels
+    assert len(final_input_ids) == len(final_labels), "Input IDs and labels must be the same length"
 
     return {
         "input_ids": final_input_ids,
@@ -550,11 +522,9 @@ def unmask_messages(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokeniz
     }
 
 
-
-def unmask_sample(sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer, glyph_tokenizer: PreTrainedTokenizer) -> t.Dict[str, t.Any]:
+def unmask_sample(sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer) -> t.Dict[str, t.Any]:
     # determine unmask policy
-    # TODO: make this simpler
-    policy = UnmaskPolicy.ALL_BUT_SYSTEM if sample["unmask"] else UnmaskPolicy.ASSISTANT
+    policy = UnmaskPolicy.ALL_BUT_SYSTEM if sample.get("unmask", False) else UnmaskPolicy.ASSISTANT
     
     # select roles to unmask
     unmask_roles = {"assistant"}
@@ -562,9 +532,9 @@ def unmask_sample(sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer, gl
         unmask_roles = set(m["role"] for m in sample["messages"]) - {"system"}
     
     unmask_roles = list(unmask_roles)
-    return unmask_messages(sample["messages"], tokenizer, glyph_tokenizer, unmask_roles)
-
     
+    result = unmask_messages(sample["messages"], tokenizer, unmask_roles)
+    return result
 
 
 def extract_legacy_messages_from_text(text: str) -> t.List[t.Dict]:
@@ -625,7 +595,7 @@ def convert_legacy_pretraining_into_new_template(
         assert len(pretraining_inner_msgs) >= 2
         assert "user" in unique_roles
         assert "assistant" in unique_roles
-        inner_tokenized = new_tokenizer.apply_chat_template(pretraining_inner_msgs)
+        inner_tokenized = new_tokenizer.apply_chat_template(pretraining_inner_msgs, )
 
         # hack to get around the <|end_of_text|> at the end
         inner_tokenized_content = (
@@ -760,31 +730,33 @@ def new_main(args: DataProcessArgs):
     # configure tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
 
-    # some tokenizers insert a prefix space when starting from the beginnning, so we create a separate one
-    # specifically so we can have an accurate mapping into the tokenized chat template
-    glyph_tokenizer = AutoTokenizer.from_pretrained(tokenizer.name_or_path, add_prefix_space=False)
-
     if not tokenizer.chat_template:
         raise ValueError("tokenizer doesn't currently have a chat template. Need to support adding one.")
 
     # provide with a token for masking
     tokenizer.add_special_tokens({
-        "additional_special_tokens": ["<|MASK|>"]
+        "additional_special_tokens": [PLACEHOLDER_TOKEN, "<|MASK|>"]
     })
 
-    unmask_fn = partial(
-        unmask_sample,
-        tokenizer=tokenizer,
-        glyph_tokenizer=glyph_tokenizer,
-    )
-    data_with_input_ids = data.map(
-        unmask_fn,
-        num_proc=1,
+    # Try using a wrapper function instead of partial
+    def process_sample(example):
+        return unmask_sample(example, tokenizer)
+
+    data_with_input_ids_and_labels = data.map(
+        process_sample,
+        num_proc=NUM_PROC,  # Keep this at 1 for debugging
+        desc="Processing samples...",
+        load_from_cache_file=False,
     )
 
     # ensure that there are unmasked fields within the labels
-    all_have_unmasked = all(any(tok != -100 for tok in sample) for sample in data_with_input_ids["labels"])
+    all_have_unmasked = all(any(tok != -100 for tok in sample) for sample in data_with_input_ids_and_labels["labels"])
     assert all_have_unmasked
+
+    # compatibility with old data format -- indicate unmasked == pretraining
+    data_with_input_ids_and_labels = data_with_input_ids_and_labels.map(
+        lambda x: {"is_pretrain": x["unmask"]}
+    )
 
     # --------------------------------------------------------
     # by now we have a Dataset containing the input ids and labels, so we can proceed to the next phase
@@ -792,7 +764,7 @@ def new_main(args: DataProcessArgs):
 
     print("\033[38;2;255;165;0mten largest length percentiles:")
     lens = np.array(
-        data_with_input_ids.map(
+        data_with_input_ids_and_labels.map(
             lambda x: {"len": len(x["input_ids"])}, num_proc=NUM_PROC
         )["len"]
     )
@@ -818,6 +790,22 @@ def new_main(args: DataProcessArgs):
     num_dropped_samples = np.sum(lens < 20)
     print(
         f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    )
+
+
+    print("\033[92m Samples Previews...\033[0m")
+    print("\033[92m \n \033[0m")
+    print_masked_samples(
+        data_with_input_ids_and_labels,
+        tokenizer,
+        is_pretrain=True,
+        num_proc=NUM_PROC,
+    )
+    print_masked_samples(
+        data_with_input_ids_and_labels,
+        tokenizer,
+        is_pretrain=False,
+        num_proc=NUM_PROC,
     )
 
 
