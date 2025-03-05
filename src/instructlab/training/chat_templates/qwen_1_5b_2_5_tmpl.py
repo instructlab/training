@@ -7,12 +7,12 @@ SPECIAL_TOKENS = SpecialTokens(
     start_role=TokenInfo("<|im_start|>", add_to_tokenizer=False),
     end_role=TokenInfo("<|im_sep|>", add_to_tokenizer=False),
     #tool=TokenInfo("<|tool_call|>", add_to_tokenizer=True),
-    eos=TokenInfo("<|im_end|>", add_to_tokenizer=False),
-    bos=TokenInfo("<|endoftext|>", add_to_tokenizer=False),
+    eos=TokenInfo("<|endoftext|>", add_to_tokenizer=False),
     pad=TokenInfo("<|endoftext|>", add_to_tokenizer=False),
 )
 
-CHAT_TEMPLATE = r'''{%- if tools %}
+CHAT_TEMPLATE = \
+r'''{%- if tools %}
     {{- '<|im_start|>system\n' }}
     {%- if messages[0]['role'] == 'system' %}
         {{- messages[0]['content'] }}
