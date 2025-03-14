@@ -16,6 +16,17 @@ With upcoming conference and public eyes on the library, there are a few updates
 - Update chat template / data processing logic to be compatible with all Causal LMs on HF
 - Decouple and re-organize files/structure so that code is grouped more logically
 - Update the torchrun cli entrypoint so that arg names are intuitive and match pythonic interface
+- Examples and documentation
+    - Building a page (github.io) and video around the paper, and reproducing/understanding the process and output followed in the paper
+    - (see unsloth landing page)
+    - Improving general library documentation and usability, adding starter examples in an `examples` dir in the repo
+- Understanding community needs
+    - Model for collaboration (contribution guide)
+    - Additional testing/coverage needs and requirements
+    - What needs to be maintained and supported
+- General Hub model
+    - Understanding how to have SFT, GRPO, etc. living in a single "hub", while remaining independent
+    - Explain the "why", understanding the reason behind creating a hub with independent implementations, rather than creating a single over-abstracted interface/library
 
 ### About the Library
 
