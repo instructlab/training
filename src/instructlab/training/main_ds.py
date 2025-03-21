@@ -11,6 +11,7 @@ import subprocess
 import time
 
 # Third Party
+from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler
 from accelerate import Accelerator
 
 try:
@@ -35,11 +36,22 @@ except ImportError:
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
         print("DeepSpeed is not available. Some features may be unavailable.")
 
+try:
+    # Third Party
+    from liger_kernel.transformers import AutoLigerKernelForCausalLM
+except ImportError:
+    AutoLigerKernelForCausalLM = AutoModelForCausalLM
+    local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    if __name__ == "__main__" and (not local_rank or local_rank == 0):
+        print(
+            "Liger Kernels could not be imported. Some features may not be available."
+        )
+
+
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler
 import torch
 import torch.distributed
 
@@ -140,7 +152,11 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
                 **base_model_args,
             )
     else:
-        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        if args.enable_liger_kernel:
+            model = AutoLigerKernelForCausalLM.from_pretrained(**base_model_args)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        print(model)
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
@@ -509,6 +525,11 @@ def train(
 def main(args):
     # Third Party
     import yaml
+
+    if args.lora_r > 0 and args.enable_liger_kernel:
+        raise ValueError(
+            "Cannot enable LoRA (lora_r > 0) and Liger Kernels (enable_liger_kernel) at the same time."
+        )
 
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
@@ -974,6 +995,8 @@ if __name__ == "__main__":
             "The last checkpoint will be saved as 'last_epoch'."
         ),
     )
+
+    parser.add_argument("--enable-liger-kernel", action="store_true")
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
