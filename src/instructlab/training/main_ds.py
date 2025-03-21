@@ -35,6 +35,18 @@ except ImportError:
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
         print("DeepSpeed is not available. Some features may be unavailable.")
 
+try:
+    # Third Party
+    from liger_kernel.transformers import apply_liger_kernel_to_granite
+except ImportError:
+    apply_liger_kernel_to_granite = lambda *args, **kwargs: None  # pylint: disable=C3001
+    local_rank = int(os.getenv("LOCAL_RANK", "0"))
+    if __name__ == "__main__" and (not local_rank or local_rank == 0):
+        print(
+            "Granite Liger Kernels could not be imported. Some features may not be available."
+        )
+
+
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
@@ -141,7 +153,11 @@ def setup_model(
                 **base_model_args,
             )
     else:
+        if args.enable_granite_liger_kernel:
+            apply_liger_kernel_to_granite()
+
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        print(model)
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
@@ -513,6 +529,11 @@ def train(
 def main(args):
     # Third Party
     import yaml
+
+    if args.lora_r > 0 and args.enable_granite_liger_kernel:
+        raise ValueError(
+            "Cannot enable LoRA (lora_r > 0) and Granite Liger Kernels (enable_granite_liger_kernel) at the same time."
+        )
 
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
@@ -977,6 +998,9 @@ if __name__ == "__main__":
             "The last checkpoint will be saved as 'last_epoch'."
         ),
     )
+
+    # this will work for granite-3.y models but not granite-7b because that's a Llama 2 model arch.
+    parser.add_argument("--enable-granite-liger-kernel", action="store_true")
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
