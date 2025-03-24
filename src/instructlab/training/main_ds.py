@@ -182,7 +182,9 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
         )
         model.config.eos_token_id = tokenizer.eos_token_id
 
-    assert "ForCausalLM" in model.__class__.__name__, f"Model class name: {model.__class__.__name__} is not supported."
+    assert (
+        "ForCausalLM" in model.__class__.__name__
+    ), f"Model class name: {model.__class__.__name__} is not supported."
 
     model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)

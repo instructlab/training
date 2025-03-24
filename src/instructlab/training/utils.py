@@ -65,7 +65,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             raise FileNotFoundError(
                 "Model path does not appear to be a directory. Please make sure that you're passing a Hugging Face Transformers compatible directory checkpoint."
             )
-    elif not len(train_args.model_path.split('/')) == 2:
+    elif not len(train_args.model_path.split("/")) == 2:
         raise FileNotFoundError(
             f"Provided path to model does not exist. Please make sure that you've passed a valid model and that it has appropriate permissions: {train_args.model_path}"
         )
@@ -163,10 +163,10 @@ class StreamablePopen(subprocess.Popen):
             while True:
                 byte = self.stdout.read(1)
                 if byte:
-                    if buffer := getattr(sys.stdout, 'buffer', None):
+                    if buffer := getattr(sys.stdout, "buffer", None):
                         buffer.write(byte)
                     else:
-                       sys.stdout.write(byte.decode('utf-8', 'ignore'))
+                        sys.stdout.write(byte.decode("utf-8", "ignore"))
                     sys.stdout.flush()
                     full_log_file.write(byte)
                 else:
