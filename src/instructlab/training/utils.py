@@ -67,7 +67,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             )
     elif not len(train_args.model_path.split("/")) == 2:
         raise FileNotFoundError(
-            f"Provided path to model does not exist. Please make sure that you've passed a valid model and that it has appropriate permissions: {train_args.model_path}"
+            f"Provided path does not exist locally and is not an HF format name. Please make sure that you've passed a valid model path and that it has appropriate permissions, or a Huggingface model name (org/repo): {train_args.model_path}"
         )
 
     if train_args.use_dolomite and train_args.disable_flash_attn:
