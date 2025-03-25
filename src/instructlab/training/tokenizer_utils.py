@@ -87,7 +87,7 @@ def setup_tokenizer(
         raise ValueError(
             "Tokenizer does not have a chat template. Please provide a path to a chat template."
         )
-    if chat_tmpl_path is None:
+    if not chat_tmpl_path:
         return setup_tokenizer_with_existing_chat_template(tokenizer)
     return setup_tokenizer_from_new_chat_template(tokenizer, chat_tmpl_path)
 
