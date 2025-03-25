@@ -1,32 +1,31 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from enum import StrEnum
 from functools import partial
 from pathlib import Path
 import os
 import typing as t
-import regex as re
 
 # Third Party
-from datasets import load_dataset, Dataset, disable_caching
-from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, AutoTokenizer
-import numpy as np
+from datasets import Dataset, disable_caching, load_dataset
 from tqdm import tqdm
+from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
+import numpy as np
+import regex as re
 
 # First Party
-from instructlab.training.config import DataProcessArgs, NewDataProcessArgs
+from instructlab.training.config import DataProcessArgs
 from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
 from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
 
 # Constants
-PLACEHOLDER_TOKEN = "<|PLACEHOLDER|>"
 MASK_TOKEN = "<|MASK|>"
-BEGIN_UNMASK_TOKEN = "<|UNMASK_BEGIN|>"
-END_UNMASK_TOKEN = "<|UNMASK_END|>"
+UNMASK_BEGIN_TOKEN = "<|UNMASK_BEGIN|>"
+UNMASK_END_TOKEN = "<|UNMASK_END|>"
 
 
 disable_caching()
+
 
 def check_valid_sample(
     tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
@@ -211,11 +210,6 @@ def unmask_message_content(
     return {"labels": final_labels, "input_ids": final_sentence_tk}
 
 
-def add_is_pretrain_sample(example, pretrain_tk):
-    if pretrain_tk in example["input_ids"]:
-        example["is_pretrain"] = True
-
-
 def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
     def get_masked_and_orig_text(sample):
         labels = sample["labels"]
@@ -235,13 +229,10 @@ def print_masked_samples(data, tokenizer, is_pretrain, num_proc):
             text, orig_text = get_masked_and_orig_text(sample)
             print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
             print(
-                f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i+1}: {text}\033[0m"
+                f"\033[33m{'Pretraining' if is_pretrain else 'Instruction'} ex sample {i + 1}: {text}\033[0m"
             )
             if i > 1:
                 break
-
-
-
 
 
 def main(args: DataProcessArgs):
@@ -250,8 +241,9 @@ def main(args: DataProcessArgs):
     print("\033[92m data arguments are:\033[0m")
     print("\033[36m" + args.model_dump_json() + "\033[0m")
     NUM_PROC = args.num_cpu_procs
-    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
+
+    _, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
+    tokenizer = setup_tokenizer(args.model_path, args.chat_tmpl_path)
 
     (
         system_tk,
@@ -329,7 +321,7 @@ def main(args: DataProcessArgs):
     )
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90+i*1}th: {q}")
+        print(f"quantile {90 + i * 1}th: {q}")
     print("\033[0m")
 
     num_dropped_samples = np.sum(lens > args.max_seq_len)
@@ -431,282 +423,60 @@ def main(args: DataProcessArgs):
     final_valid_data.to_json(Path(args.data_output_path) / "data.jsonl")
 
 
-class UnmaskPolicy(StrEnum):
-    ALL_BUT_SYSTEM = "all-but-system"
-    ASSISTANT = "assistant"
-
-
-def placeholder_msgs(msgs: t.List[t.Dict[str, str]]):
-    return [{"role": m["role"], "content": PLACEHOLDER_TOKEN} for m in msgs]
-
-# basically the algorithm will look like this:
-# 1. given some list of messages, create a template set of messages with the contents replaced with a glyph
-# 2. tokenize the glyph messages and identify the portions in the message where the glyph exists
-# 3. with the tokenized list, identify the ranges where the glyph exists. We will want to replace these ranges with tokenized copies of each message
-# 4. with the knowledge of where the new message ranges are, we can now unmask according to our policy
-#   1. create a copy of the input IDs and leave the portions masked (-100) except for where we expect them to be unmasked
-#   2. when unmasking a particular message, if the tokenizer has an EOS token, assert that it is last token 
-
-
-def get_placeholder_locations(placeholder_ids: t.List[int], tokenizer: PreTrainedTokenizer):
-    placeholder_id = tokenizer.encode(PLACEHOLDER_TOKEN, add_special_tokens=False)[0]
-    locations = []
-    i = 0
-    while i < len(placeholder_ids):
-        # look to start substring matching
-        if placeholder_ids[i] == placeholder_id:
-            locations.append(i)
-        i += 1
-
-    # assert len(ranges) > 1
-    return locations
-
-def unmask_from_ranges(input_ids: t.List[int], unmask_ranges: t.List[t.Tuple[int, int]]) -> t.List[int]:
-    """
-    Given a set of ranges and a set of input IDs, return a list representing the masked/unmasked labels.
-    We also assume that the unmask_ranges list is a sorted list of tuple pairs.
-    """
-    i = 0
-    labels = []
-    original_unmask_ranges = unmask_ranges[:]
-    unmask_ranges = unmask_ranges[:]  # create a copy so we don't overwrite the list passed in from the caller
-    while i < len(input_ids):
-        if not unmask_ranges:
-            labels.extend([-100] * (len(input_ids) - (i+1)))
-            break
-
-        # 2 cases: either i is the first element of one of the ranges, or i is outside of the unmask area
-        # at this point then we know that there is an unmask range still
-        next_li, next_ri = unmask_ranges[0]
-
-        if i == next_li:
-            # then we would just need to add the (next_li, next_ri) to the sequence
-            labels.extend(input_ids[next_li:next_ri])
-            i = next_ri
-            assert i > next_li
-            unmask_ranges = unmask_ranges[1:]
-        else:
-            assert i < next_li
-            labels.extend([-100] * (next_li - i))
-            i = next_li
-    
-    equal_lengths = len(labels) == len(input_ids)
-    if not equal_lengths:
-        print(f'we found a case where {len(labels)=} != {len(input_ids)=}')
-        import IPython
-        IPython.embed()
-
-    assert equal_lengths
-    return labels
-        
-        
-        
-
-def expand_ranges(input_ids: t.List[int], ranges: t.List[t.Tuple[int, int]], tokenizer: PreTrainedTokenizer, labels: t.List[int]) -> t.List[t.Tuple[int, int]]:
-    """
-    Given the input IDs, inserted ranges, and tokenizer, fill out the rest of the masks 
-
-    we want to answer the following question: given a certain range,
-    can we expand out the boundaries to unmask any additional whitespace/empty character that the tokenizer may have produced?
-
-    There are a few base cases that I can think of. 
-    
-    1. The sequences are all unmasked and contiguous: aaaaaa|bbbbbb|ccccc
-    2. Sequences can are separated by special characters aaaa|<role>|bbbbbb|<role>|cccccc
-    3. Sequences are separated by whitespace aaaa|\w\w|bbbb|\w\w|cccc
-    4. Sequences are separated by whtiespace and roles  aaaa|\w\w|<role>|\w\w|bbbb|\w\w|<role>|\w\w|cccc
-    """
-
-    def _can_unmask_token(s: str) -> bool:
-        # we want to unmask whitspace characters OR if zero-length tokens as some tokenizers register them
-        return s.isspace() or len(s) == 0
-
-    # create a list of string chunks to index into
-    str_chunks = tokenizer.batch_decode([[tok] for tok in input_ids])
-
-    # search for the ranges to potentially unmask
-    updated_ranges = []
-    for i, boundaries in enumerate(ranges):
-        li, ri = boundaries
-        assert -100 not in labels[li:ri]
-
-        # okay, first let's find out if we can push the range further left
-        left_boundary = -1 if i == 0 else ranges[i-1][0]
-        right_boundary = len(input_ids) if i + 1 == len(ranges) else ranges[i+1][1]
-
-        # now that we have the boundaries, what we want to do next 
-        new_li = li
-        while left_boundary < (new_li - 1) and _can_unmask_token(str_chunks[new_li - 1]):
-            new_li -= 1
-
-        # do the same thing for the right -- remember, the way we store the pairs is such that (i, j), i < j and if L = [0, 1, 2, 3, 4] then L[1:2] => [1], whereas L[3:5] = [3, 4]
-        new_ri = ri
-        while (new_ri) < right_boundary and _can_unmask_token(str_chunks[new_ri]):
-            new_ri += 1
-
-        updated_ranges.append((new_li, new_ri))
-    
-    return updated_ranges
-
-
-    
-def is_monotonic_and_non_overlapping(pairs: t.List[t.Tuple[int, int]]) -> bool:
-    """
-    Returns true if the provided list of pairs is a monotonic sequence such that for any (ai, bi), (aj, bj) where i < j we have that ai < bi <= aj < bj 
-    """
-    for pair1, pair2 in zip(pairs, pairs[1:]):
-        a, b = pair1
-        c, d = pair2 
-        if not (a < b <= c < d): 
-            return False
-    
-    return True
-        
-    
-
-
-
-
-def unmask_messages(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokenizer, unmask_roles: t.List[str] = None, expand_whitespace_barriers: bool = False) -> t.Dict[str, t.List[int]]:
-    """
-    Given a list of messages and an arbitrary tokenizer, returns a dictionary with
-    `input_ids` and `labels` containing the correct masking.
-    """
-    # unmask everything
-    if not unmask_roles:
-        unmask_roles = set(m["role"] for m in msgs)
-    
-    # first we need to create the placeholder IDs
-    placeholder_ids = tokenizer.apply_chat_template(placeholder_msgs(msgs), tokenize=True)
-    placeholder_locations = get_placeholder_locations(placeholder_ids, tokenizer)
-
-    final_input_ids = []
-    final_labels = []
-
-    eos_token_id = None
-    if tokenizer.eos_token:
-        eos_token_id = tokenizer.encode(tokenizer.eos_token, add_special_tokens=False)[0]
-
-    # we will use i as a cursor 
-    prev_i = 0
-    inserted_ranges = []
-
-    for location, msg in zip(placeholder_locations, msgs):
-
-        unmask_this_msg = msg["role"] in unmask_roles
-        tokenized_msg = tokenizer.encode(msg["content"], add_special_tokens=False)
-
-        # first append the filler space between this and the previous sequence
-        final_input_ids += placeholder_ids[prev_i:location]
-        final_labels += [-100] * len(placeholder_ids[prev_i:location])
-        prev_i = location + 1
-    
-        # next add the contents of the tokenized message, and determine whether or not to unmask
-        start_i = len(final_input_ids)  # record the index at which we're going to be inserting the new range
-        final_input_ids += tokenized_msg
-        if unmask_this_msg:
-            final_labels += tokenized_msg
-        else:
-            final_labels += [-100] * len(tokenized_msg)
-
-            # update the range
-            start_i = location
-
-        # record the index up unto that the current insertion has added to
-        end_i = len(final_input_ids)
-
-        # if we unmasked then that means we've inserted at a range in the final_input_ids
-        if unmask_this_msg:
-            selected_range = tokenizer.decode(final_labels[start_i:end_i])
-
-            assert len(final_labels[start_i:end_i]) == len(tokenized_msg), f"length of labels inserted doesnt match tokenized message: {len(final_labels[start_i:end_i])} != {len(tokenized_msg)}"
-            assert final_labels[start_i:end_i] == tokenized_msg, f"range selected at ({start_i}, {end_i}) does not match the tokenized message"
-
-        # Handle EOS token if present
-        if eos_token_id is not None and prev_i < len(placeholder_ids) and placeholder_ids[prev_i] == eos_token_id:
-            final_input_ids.append(eos_token_id)
-            final_labels.append(eos_token_id if unmask_this_msg else -100)
-            prev_i += 1
-            end_i = len(final_input_ids)
-    
-        # record the ranges into which we inserted something. We will need this again later
-        if unmask_this_msg:
-            inserted_ranges.append((start_i, end_i))
-    
-    
-    # append the rest of the data
-    if prev_i < len(placeholder_ids):
-        final_input_ids += placeholder_ids[prev_i:]
-        final_labels += [-100] * len(placeholder_ids[prev_i:])
-
-
-
-
-
-    # ensure that we didn't actually add the placeholder token into the input IDs
-    placeholder_token = tokenizer.encode(PLACEHOLDER_TOKEN, add_special_tokens=False)[0]
-    
-    assert placeholder_token not in final_input_ids and placeholder_token not in final_labels
-    assert len(final_input_ids) == len(final_labels), "Input IDs and labels must be the same length"
-
-    # now let's do some post-processing to expand the ranges
-    # first, let's 
-    assert is_monotonic_and_non_overlapping(inserted_ranges), "the given sequence of ranges must be monotonic and not overlapping"
-
-
-    # it's questionable whether or not we should do this. If we unmask beyond the simple contents of the message, then 
-    # we would potentially be training the model to generate things that are part of the template. 
-    if expand_whitespace_barriers:
-        expanded_ranges = expand_ranges(final_input_ids, inserted_ranges, tokenizer, final_labels)
-        assert is_monotonic_and_non_overlapping(expanded_ranges), "the given sequence of ranges must be monotonic and not overlapping"
-        final_labels = unmask_from_ranges(final_input_ids, expanded_ranges)
-
-    return {
-        "input_ids": final_input_ids,
-        "labels": final_labels
-    }
-
-def wrap_masked_messages(msgs: t.List[t.Dict[str, str]], unmask_roles: t.List[str]) -> t.List[t.Dict[str, str]]:
+def wrap_masked_messages(
+    msgs: t.List[t.Dict[str, str]], unmask_roles: t.List[str]
+) -> t.List[t.Dict[str, str]]:
     new_msgs = []
     for msg in msgs:
         content = msg["content"]
         if msg["role"] in unmask_roles:
-            content = BEGIN_UNMASK_TOKEN + content + END_UNMASK_TOKEN
-        new_msgs.append({
-            "role": msg["role"],
-            "content": content
-        })
+            content = UNMASK_BEGIN_TOKEN + content + UNMASK_END_TOKEN
+        new_msgs.append({"role": msg["role"], "content": content})
     return new_msgs
 
 
-def unmask_messages_aldo_method(msgs: t.List[t.Dict[str, str]], tokenizer: PreTrainedTokenizer, unmask_roles: t.List[str] = None) -> t.Dict[str, t.List[int]]:
+def unmask_messages(
+    msgs: t.List[t.Dict[str, str]],
+    tokenizer: PreTrainedTokenizer,
+    unmask_roles: t.List[str],
+) -> t.Dict[str, t.List[int]]:
     """
     Perform the unmasking logic using Aldo's approach
     """
     msgs_with_unmasking = wrap_masked_messages(msgs, unmask_roles)
     input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
 
-    # get token ids 
-    begin_unmask_token_id = tokenizer.encode(BEGIN_UNMASK_TOKEN, add_special_tokens=False)[0]
-    end_unmask_token_id = tokenizer.encode(END_UNMASK_TOKEN, add_special_tokens=False)[0]
+    # get token ids
+    unmask_begin_token_id = tokenizer.encode(
+        UNMASK_BEGIN_TOKEN, add_special_tokens=False
+    )[0]
+    unmask_end_token_id = tokenizer.encode(UNMASK_END_TOKEN, add_special_tokens=False)[
+        0
+    ]
     eos_token_id = None
     if tokenizer.eos_token is not None:
-        eos_token_id = tokenizer.encode(tokenizer.eos_token, add_special_tokens=False)[0]
+        eos_token_id = tokenizer.encode(tokenizer.eos_token, add_special_tokens=False)[
+            0
+        ]
 
     final_input_ids = []
     final_labels = []
     i = 0
     unmasking = False
+    # pylint: disable=too-many-nested-blocks
     while i < len(input_ids):
         tok = input_ids[i]
         # the opposite conditions of each other
         if unmasking:
-            if tok == begin_unmask_token_id:
-                raise Exception('encountered a <|BEGIN_UNMASK|> token while already unmasking')
-            
-            if tok == end_unmask_token_id:
+            if tok == unmask_begin_token_id:
+                raise ValueError(
+                    f'encountered a "{UNMASK_BEGIN_TOKEN}" token while already unmasking. This should never happen, pleas contact the training maintainers.'
+                )
+
+            if tok == unmask_end_token_id:
                 # we need to just make sure that we capture the EOS token
                 if eos_token_id is not None:
+                    # TODO(osilkin): clean up this portion so that we don't run into race conditions or other bugs
                     i += 1
                     while i < len(input_ids):
                         final_input_ids.append(input_ids[i])
@@ -719,45 +489,67 @@ def unmask_messages_aldo_method(msgs: t.List[t.Dict[str, str]], tokenizer: PreTr
                 final_input_ids.append(tok)
                 final_labels.append(tok)
         else:
-            if tok == end_unmask_token_id:
-                raise Exception('encountered an <|END_UNMASK|> token while not unmasking')
-            
-            if tok == begin_unmask_token_id:
+            if tok == unmask_end_token_id:
+                raise ValueError(
+                    f'encountered an "{UNMASK_END_TOKEN}" token while not unmasking. This should never happen, please contact the training maintainers.'
+                )
+
+            if tok == unmask_begin_token_id:
                 unmasking = True
             else:
                 final_input_ids.append(tok)
                 final_labels.append(-100)
-        
+
         i += 1
 
-    # ensure we did this correctly
-    assert begin_unmask_token_id not in final_input_ids
-    assert begin_unmask_token_id not in final_labels
-    assert end_unmask_token_id not in final_input_ids
-    assert end_unmask_token_id not in final_labels
+    # validation logic
+    if unmask_begin_token_id in final_input_ids:
+        raise ValueError(
+            f"{UNMASK_BEGIN_TOKEN} token found in final_input_ids. This should never happen, please contact the training maintainers."
+        )
+    if unmask_begin_token_id in final_labels:
+        raise ValueError(
+            f"{UNMASK_BEGIN_TOKEN} token found in final_labels. This should never happen, please contact the training maintainers."
+        )
+    if unmask_end_token_id in final_input_ids:
+        raise ValueError(
+            f"{UNMASK_END_TOKEN} token found in final_input_ids. This should never happen, please contact the training maintainers."
+        )
+    if unmask_end_token_id in final_labels:
+        raise ValueError(
+            f"{UNMASK_END_TOKEN} token found in final_labels. This should never happen, please contact the training maintainers."
+        )
 
-    return {
-        "input_ids": final_input_ids,
-        "labels": final_labels
-    }
-    
+    return {"input_ids": final_input_ids, "labels": final_labels}
 
-def unmask_sample(sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer, expand_whitespace_barriers: bool, is_aldo: bool) -> t.Dict[str, t.Any]:
-    # determine unmask policy
-    policy = UnmaskPolicy.ALL_BUT_SYSTEM if sample.get("unmask", False) else UnmaskPolicy.ASSISTANT
 
-    # select roles to unmask
-    unmask_roles = {"assistant"}
-    if policy == UnmaskPolicy.ALL_BUT_SYSTEM:
-        unmask_roles = set(m["role"] for m in sample["messages"]) - {"system"}
+def unmask_sample(
+    sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer
+) -> t.Dict[str, t.Any]:
+    """
+    Given a sample from a dataset, unmask the appropriate messages and return a sample containing the
+    `input_ids` and `labels` fields.
 
-    unmask_roles = list(unmask_roles)
+    Args:
+        sample: A sample from a dataset.
+        tokenizer: The tokenizer to use for unmasking.
 
-    if is_aldo:
-        result = unmask_messages_aldo_method(sample["messages"], tokenizer, unmask_roles)
-    else:
-        result = unmask_messages(sample["messages"], tokenizer, unmask_roles, expand_whitespace_barriers)
-    return result
+    Returns:
+        A sample (dict) containing the `input_ids` and `labels` fields.
+    """
+    # TODO(osilkin): we should define an unmasking policy that
+    # enables the user to more dynamically choose what should be unmasked and not.
+
+    # if sample has `unmask` set to true, we unmask everything other than the system role,
+    # else we only unmask assistant
+    unmask_roles_set = {"assistant"}
+    if "unmask" in sample and sample["unmask"]:
+        # TODO(osilkin): this computation happens everytime but we could optimize it by getting all
+        # the unique roles ahead of time
+        unmask_roles_set = set(m["role"] for m in sample["messages"]) - {"system"}
+
+    unmask_roles = list(unmask_roles_set)
+    return unmask_messages(sample["messages"], tokenizer, unmask_roles)
 
 
 def extract_legacy_messages_from_text(text: str) -> t.List[t.Dict]:
@@ -794,22 +586,20 @@ def convert_legacy_pretraining_into_new_template(
         # print(old_content)
         # print("- " * 81)
 
-        has_pretraining_msgs = any(m["role"] == "pretraining" for m in old_msgs)
-        if not has_pretraining_msgs:
+        pretraining_msgs = [
+            (i, msg) for i, msg in enumerate(old_msgs) if msg["role"] == "pretraining"
+        ]
+        if not pretraining_msgs:
             num_ignored += 1
             new_samples.append(sample.copy())
             continue
 
-        idx, pretrain_message = next(
-            iter(
-                [
-                    (i, msg)
-                    for i, msg in enumerate(old_msgs)
-                    if msg["role"] == "pretraining"
-                ]
-            ),
-            None,
-        )
+        if len(pretraining_msgs) > 1:
+            raise ValueError(
+                "Found more than one pretraining message in the dataset. Breaks our assumption that there's only one pretraining message per sample."
+            )
+
+        idx, pretrain_message = pretraining_msgs[0]
 
         pretraining_inner_msgs = extract_legacy_messages_from_text(
             pretrain_message["content"]
@@ -850,14 +640,15 @@ def is_pretraining_format(ds: Dataset) -> bool:
     """
     for sample in ds:
         for msg in sample["messages"]:
-            if msg['role'] == 'pretraining':
+            if msg["role"] == "pretraining":
                 return True
     return False
+
 
 def pretraining_is_using_legacy_chat_template(ds: Dataset) -> bool:
     """
     Determines whether or not this is using the legacy IBM chat template or the generic chat template.
-    I.e., 
+    I.e.,
 
     ```
     <|system|>
@@ -872,28 +663,42 @@ def pretraining_is_using_legacy_chat_template(ds: Dataset) -> bool:
     pretraining_msg = None
     for sample in ds:
         if any(m["role"] == "pretraining" for m in sample["messages"]):
-            pretraining_msg = [m for m in sample['messages'] if m['role'] == 'pretraining'][0]
+            pretraining_msg = [
+                m for m in sample["messages"] if m["role"] == "pretraining"
+            ][0]
             break
-    
-    if not pretraining_msg:
-        raise ValueError('could not find any pretraining messages')
 
-    if '<|user|>' in pretraining_msg:
+    if not pretraining_msg:
+        raise ValueError("could not find any pretraining messages")
+
+    if "<|user|>" in pretraining_msg:
         # quick sanity check to ensure that the special tokens we expect to be in the message are there
-        assert '<|user|>' in pretraining_msg and '<|assistant|>' in pretraining_msg
+        assert "<|user|>" in pretraining_msg and "<|assistant|>" in pretraining_msg
         return True
     else:
         # quick sanity check to ensure that the special tokens we expect to be in the message are there
-        assert '<|start_of_role|>user<|end_of_role|>' in pretraining_msg
-        assert '<|start_of_role|>assistant<|end_of_role|>' in pretraining_msg
+        assert "<|start_of_role|>user<|end_of_role|>" in pretraining_msg
+        assert "<|start_of_role|>assistant<|end_of_role|>" in pretraining_msg
         return False
 
-def convert_legacy_pretraining_messages(ds: Dataset, tokenizer: PreTrainedTokenizer) -> Dataset:
+
+def convert_generic_pretraining_messages(
+    ds: Dataset, tokenizer: PreTrainedTokenizer
+) -> Dataset:
+    """
+    Convert generic pretraining messages to the new format.
+    """
+    raise NotImplementedError("generic pretraining messages are not supported yet")
+
+
+def convert_legacy_pretraining_messages(
+    ds: Dataset, tokenizer: PreTrainedTokenizer
+) -> Dataset:
     """
     For every `pretraining` sample, we unroll it back into the regular messages format and then
     provide it with the unmasking field.
     """
-
+    raise NotImplementedError("legacy pretraining messages are not supported yet")
 
 
 def convert_legacy_dataset(ds: Dataset, tokenizer: PreTrainedTokenizer) -> Dataset:
@@ -904,22 +709,27 @@ def convert_legacy_dataset(ds: Dataset, tokenizer: PreTrainedTokenizer) -> Datas
 
     # the way that this will happen works like this:
     # There are two possible formats:
-    # 1. legacy chat template 
+    # 1. legacy chat template
     # 2. generic IBM chat template (granite-3.x series)
 
     # what we will do is convert these two into the new format of unmasked samples by
     # parsing the existing chat template and parsing it into a new series of messages
 
     if pretraining_is_using_legacy_chat_template(ds):
-        converted_ds = convert_legacy_pretraining_messages(ds, tokenizer)
-    else:
-        converted_ds = convert_generic_pretraining_messages(ds, tokenizer)
+        return convert_legacy_pretraining_messages(ds, tokenizer)
+    return convert_generic_pretraining_messages(ds, tokenizer)
 
 
-def new_main(args: NewDataProcessArgs) -> None:
+def new_main(
+    data_path: str,
+    data_output_path: str,
+    max_seq_len: int,
+    model_path: str,
+    num_cpu_procs: int,
+) -> None:
     """
     Process data for training using the updated unmasking logic.
-    
+
     This function orchestrates the data processing pipeline by delegating to specialized functions:
     1. Sets up the output directory
     2. Loads and validates the dataset
@@ -928,45 +738,61 @@ def new_main(args: NewDataProcessArgs) -> None:
     5. Analyzes dataset statistics
     6. Previews samples for verification
     7. Prepares and saves the final dataset
-    
+
     Args:
-        args: Configuration parameters for data processing
-        
+        data_path: Path to the input dataset
+        data_output_path: Directory in which to save the processed dataset
+        max_seq_len: Maximum sequence length for filtering samples
+        model_path: Path to the pre-trained model
+        num_cpu_procs: Number of CPU processes for parallel processing
+
     Returns:
         None
     """
-    print("\033[92m data arguments are:\033[0m")
-    print("\033[36m" + args.model_dump_json() + "\033[0m")
+    # validate that we can even write to the intended directory before
+    # spending potentially a long time processing the dataset only to find out
+    # that we can't write to the directory
+    ensure_can_write_to_directory(data_output_path)
 
-    # Setup output directory
-    setup_output_directory(args.data_output_path)
-    
     # Load and validate dataset
-    data = load_and_validate_dataset(args.data_path)
-    
+    data = load_and_validate_dataset(data_path)
+
     # Configure tokenizer
-    tokenizer = configure_tokenizer(args.model_path, is_aldo=args.is_aldo)
-    
+    tokenizer = configure_tokenizer(model_path)
+
     # Process samples to generate input_ids and labels
-    data_with_input_ids_and_labels = process_samples(data, tokenizer, args)
-    
+    data_with_input_ids_and_labels = process_samples(data, tokenizer, num_cpu_procs)
+
     # Analyze dataset statistics
-    analyze_dataset_statistics(data_with_input_ids_and_labels, args)
-    
+    analyze_dataset_statistics(
+        data_with_input_ids_and_labels, max_seq_len, num_cpu_procs
+    )
+
     # Preview samples
-    preview_samples(data_with_input_ids_and_labels, tokenizer, args.num_cpu_procs)
-    
-    # Prepare final dataset for saving
-    final_dataset = prepare_final_dataset(data_with_input_ids_and_labels, tokenizer, args.num_cpu_procs, args.is_aldo)
-    
-    # Save processed dataset
-    save_dataset(final_dataset, args.data_output_path)
+    preview_samples(data_with_input_ids_and_labels, tokenizer, num_cpu_procs)
+
+    # save the final dataset
+    final_dataset = prepare_final_dataset(
+        data_with_input_ids_and_labels, tokenizer, num_cpu_procs
+    )
+    save_dataset(final_dataset, data_output_path)
 
 
-def setup_output_directory(output_path: str) -> None:
-    """Create output directory if it doesn't exist."""
-    if not os.path.exists(output_path):
-        os.makedirs(output_path, exist_ok=True)
+def ensure_can_write_to_directory(output_dir: str) -> None:
+    """
+    Ensure that we can write to the output directory.
+
+    Args:
+        output_dir: Directory to check
+    """
+    dir_to_check = output_dir
+    while not os.path.exists(dir_to_check) and dir_to_check != "/":
+        dir_to_check = os.path.dirname(dir_to_check)
+
+    if not os.access(dir_to_check, os.W_OK):
+        raise OSError(
+            f"Cannot write to '{output_dir}'. Please ensure that you have write permissions to this directory."
+        )
 
 
 def load_and_validate_dataset(data_path: str) -> Dataset:
@@ -986,81 +812,97 @@ def load_and_validate_dataset(data_path: str) -> Dataset:
 
     # Check if we're in legacy mode
     if is_pretraining_format(data):
-        raise ValueError("Legacy pretraining datasets are not supported with the new method")
-        
+        raise ValueError(
+            "Legacy pretraining datasets are not supported with the new method"
+        )
+
     return data
 
 
-def configure_tokenizer(model_path: str, is_aldo: bool = False) -> PreTrainedTokenizer:
+def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
     """Configure the tokenizer with necessary special tokens."""
     tokenizer = AutoTokenizer.from_pretrained(model_path)
 
     if not tokenizer.chat_template:
-        raise ValueError("Tokenizer doesn't currently have a chat template. Need to support adding one.")
+        raise ValueError(
+            "Tokenizer doesn't currently have a chat template. Need to support adding one."
+        )
 
     # Add special tokens for masking
-    if is_aldo:
-        tokenizer.add_special_tokens({
-            "additional_special_tokens": [BEGIN_UNMASK_TOKEN, END_UNMASK_TOKEN, MASK_TOKEN]
-        })
-    else:
-        tokenizer.add_special_tokens({
-            "additional_special_tokens": [PLACEHOLDER_TOKEN, MASK_TOKEN]
-        })
-    
+    tokenizer.add_special_tokens(
+        {
+            "additional_special_tokens": [
+                UNMASK_BEGIN_TOKEN,
+                UNMASK_END_TOKEN,
+                MASK_TOKEN,
+            ]
+        }
+    )
+
     return tokenizer
 
 
-def process_samples(data: Dataset, tokenizer: PreTrainedTokenizer, args: NewDataProcessArgs) -> Dataset:
+def process_samples(
+    data: Dataset, tokenizer: PreTrainedTokenizer, num_cpu_procs: int
+) -> Dataset:
     """Process samples to generate input_ids and labels."""
+
     # Create a wrapper function for unmask_sample
     def process_sample(example: dict) -> dict:
-        return unmask_sample(example, tokenizer, args.expand_whitespace_barriers, is_aldo=args.is_aldo)
+        return unmask_sample(example, tokenizer)
 
     # Process the dataset
     processed_data = data.map(
         process_sample,
-        num_proc=args.num_cpu_procs,
+        num_proc=num_cpu_procs,
         desc="Processing samples...",
         load_from_cache_file=False,
     )
 
     # Ensure that there are unmasked fields within the labels
-    all_have_unmasked = all(any(tok != -100 for tok in sample) for sample in processed_data["labels"])
-    assert all_have_unmasked
+    all_have_unmasked = all(
+        any(tok != -100 for tok in sample) for sample in processed_data["labels"]
+    )
+    if not all_have_unmasked:
+        raise RuntimeError(
+            "We found samples that did not have any unmasked fields within the labels."
+        )
 
     # Compatibility with old data format -- indicate unmasked == pretraining
-    processed_data = processed_data.map(
-        lambda x: {"is_pretrain": x["unmask"]}
-    )
-    
+    processed_data = processed_data.map(lambda x: {"is_pretrain": x["unmask"]})
+
     return processed_data
 
 
-def analyze_dataset_statistics(data: Dataset, args: NewDataProcessArgs) -> None:
-    """Analyze and print dataset statistics."""
+def analyze_dataset_statistics(
+    data: Dataset, max_seq_len: int, num_cpu_procs: int
+) -> None:
+    """
+    Analyze and print dataset statistics.
+
+    Note:
+        This is a function used in the legacy data processing script.
+        Future support is not guaranteed.
+    """
     # Calculate sequence lengths
     lens = np.array(
-        data.map(
-            lambda x: {"len": len(x["input_ids"])}, 
-            num_proc=args.num_cpu_procs
-        )["len"]
+        data.map(lambda x: {"len": len(x["input_ids"])}, num_proc=num_cpu_procs)["len"]
     )
-    
+
     # Print largest length percentiles
     print("\033[38;2;255;165;0mten largest length percentiles:")
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90+i*1}th: {q}")
+        print(f"quantile {90 + i * 1}th: {q}")
     print("\033[0m")
 
     # Check for samples exceeding max sequence length
-    num_dropped_samples = np.sum(lens > args.max_seq_len)
+    num_dropped_samples = np.sum(lens > max_seq_len)
     print(
-        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+        f"\033[36mat {max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
     )
     print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
-    
+
     if num_dropped_samples == len(data):
         raise RuntimeError(
             f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\n"
@@ -1071,7 +913,7 @@ def analyze_dataset_statistics(data: Dataset, args: NewDataProcessArgs) -> None:
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
         print(f"quantile {i}th: {q}")
-    
+
     # Check for very short samples
     num_dropped_samples = np.sum(lens < 20)
     print(
@@ -1079,11 +921,13 @@ def analyze_dataset_statistics(data: Dataset, args: NewDataProcessArgs) -> None:
     )
 
 
-def preview_samples(data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int) -> None:
+def preview_samples(
+    data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
+) -> None:
     """Preview samples from the dataset."""
     print("\033[92m Samples Previews...\033[0m")
     print("\033[92m \n \033[0m")
-    
+
     # Print pretraining samples
     print_masked_samples(
         data,
@@ -1091,7 +935,7 @@ def preview_samples(data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
         is_pretrain=True,
         num_proc=num_proc,
     )
-    
+
     # Print instruction samples
     print_masked_samples(
         data,
@@ -1101,36 +945,105 @@ def preview_samples(data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
     )
 
 
-def prepare_final_dataset(data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int, is_aldo: bool) -> Dataset:
-    """Prepare the final dataset for saving."""
+def prepare_final_dataset(
+    data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
+) -> Dataset:
+    """
+    Prepare the final dataset for saving.
+
+    Note:
+        This is a function used in the legacy data processing script.
+        Future support is not guaranteed.
+    """
 
     # print the special tokens in the tokenizer
     print(f"Special tokens in the tokenizer: {tokenizer.special_tokens_map}")
 
-    # Add sequence length information
-    data_with_len = data.map(
-        lambda x: {"len": len(x["input_ids"])},
-        num_proc=num_proc
-    )
-    
-    # Select only necessary columns
+    # add sequence length information
+    data_with_len = data.map(lambda x: {"len": len(x["input_ids"])}, num_proc=num_proc)
+
+    # drop everything but what's needed for training
     final_data = data_with_len.select_columns(["labels", "input_ids", "len"])
-    
-    # Verify no placeholder tokens in the final dataset
-    placeholder_tokens = [BEGIN_UNMASK_TOKEN, END_UNMASK_TOKEN] if is_aldo else [PLACEHOLDER_TOKEN]
+
+    # verify that no placeholder tokens are in the final dataset
+    placeholder_tokens = [UNMASK_BEGIN_TOKEN, UNMASK_END_TOKEN]
     for placeholder_token in placeholder_tokens:
-        placeholder_token_id = tokenizer.encode(placeholder_token, add_special_tokens=False)[0]
-        assert all(
-            placeholder_token_id not in x["input_ids"] and 
-            placeholder_token_id not in x["labels"] 
-            for x in final_data
-        ), f"Placeholder token {placeholder_token} is still in the final dataset"
+        placeholder_token_id = tokenizer.encode(
+            placeholder_token, add_special_tokens=False
+        )[0]
+        if placeholder_token_id in final_data["input_ids"]:
+            raise ValueError(
+                f"{placeholder_token} token found in the input_ids of the processed dataset. This should never happen, please contact the training maintainers."
+            )
+        if placeholder_token_id in final_data["labels"]:
+            raise ValueError(
+                f"{placeholder_token} token found in the labels of the processed dataset. This should never happen, please contact the training maintainers."
+            )
     return final_data
 
 
-def save_dataset(dataset: Dataset, output_path: str) -> None:
-    """Save the processed dataset to disk."""
-    dataset.to_json(Path(output_path) / "data.jsonl")
+def save_dataset(dataset: Dataset, output_dir: str) -> None:
+    """
+    Save the processed dataset to disk.
+
+    Note:
+        This is a function used in the legacy data processing script.
+        Future support is not guaranteed.
+    """
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    dataset.to_json(Path(output_dir) / "data.jsonl")
+
+
+def process_data(
+    data_path: str,
+    data_output_path: str,
+    max_seq_len: int,
+    model_path: str,
+    num_cpu_procs: int,
+    chat_tmpl_path: str | None = None,
+    use_legacy_method: bool = False,
+):
+    """
+    Process data for training using the updated unmasking logic.
+    This serves as the primary entrypoint for data processing script.
+
+    Args:
+        data_path: Path to the input dataset.
+        data_output_path: Directory in which to save the processed dataset.
+        max_seq_len: Maximum sequence length for filtering samples based on the model.
+        model_path: Path to the pre-trained model or a HF reference.
+        num_cpu_procs: Number of CPU processes for parallel processing.
+        chat_tmpl_path: Path to the chat template and special tokens. Only used if `use_legacy_method` is `True`.
+        use_legacy_method: Whether or not to use the legacy pre-processing method.
+
+    """
+    if use_legacy_method:
+        if not chat_tmpl_path:
+            raise ValueError(
+                "`chat_tmpl_path` must be provided if `use_legacy_method` is `True`"
+            )
+        print(
+            "\033[93mWarning: The legacy data processing method will eventually be deprecated. "
+            "Please update your workflow to use the new processing method.\033[0m"
+        )
+        args = DataProcessArgs(
+            data_output_path=data_output_path,
+            data_path=data_path,
+            max_seq_len=max_seq_len,
+            model_path=model_path,
+            chat_tmpl_path=chat_tmpl_path,
+            num_cpu_procs=num_cpu_procs,
+        )
+        main(args)
+    else:
+        new_main(
+            data_output_path=data_output_path,
+            data_path=data_path,
+            max_seq_len=max_seq_len,
+            model_path=model_path,
+            num_cpu_procs=num_cpu_procs,
+        )
 
 
 if __name__ == "__main__":
@@ -1141,7 +1054,10 @@ if __name__ == "__main__":
         description="Preprocess a dataset for training a language model"
     )
     parser.add_argument(
-        '--legacy', action='store_true', default=False, help='Whether or not we should use the legacy processing script'
+        "--legacy",
+        action="store_true",
+        default=False,
+        help="Whether or not we should use the legacy processing script",
     )
     parser.add_argument(
         "--logging_level", type=str, default="INFO", help="Logging level"
@@ -1188,15 +1104,18 @@ if __name__ == "__main__":
     if args.legacy:
         main(data_process_args)
     else:
-        new_main(NewDataProcessArgs(
+        if args.chat_tmpl_path:
+            print(
+                "\033[93mWarning: Passing the `chat_tmpl_path` is not supported using the new method.\033[0m"
+            )
+
+        new_main(
             data_path=args.data_path,
             data_output_path=args.data_output_path,
             max_seq_len=args.max_seq_len,
             model_path=args.model_name_or_path,
             num_cpu_procs=args.num_cpu_procs,
-            chat_tmpl_path=args.chat_tmpl_path
-        ))
-
+        )
 
 
 """

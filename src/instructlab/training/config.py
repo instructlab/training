@@ -7,7 +7,6 @@ Collection of config objects used in the InstructLab training library.
 # Standard
 from enum import Enum
 from typing import List, Optional
-import os
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -44,25 +43,6 @@ class QuantizeDataType(Enum):
     # FP8 = "fp8" TODO: test and evaluate fp8
     NONE = None
 
-class NewDataProcessArgs(BaseModel):
-    data_path: str
-    data_output_path: str
-    max_seq_len: int  # defines the max sequence length of a sample
-    model_path: str  # either a HF model name or path to HF model
-    chat_tmpl_path: str | None = None
-    num_cpu_procs: int = Field(
-        default=16,
-        description="this is the number of CPU procs we use for data processing parallelization",
-    )
-    # this controls whether or not the unmasking will also encapsulate surrounding barriers.
-    # I.e., If you have <user>\s\sHello world\s\s<endoftext>, this determines whether unmasking targets:
-    # <user>\s\s[Hello world]\s\s<endoftext> or <user>[\s\sHello world\s\s]<endoftext>
-    expand_whitespace_barriers: bool = False
-
-    # disable the protected namespace for the model_config field
-    model_config = ConfigDict(protected_namespaces=())
-    is_aldo: bool = False
-
 
 # public API
 class DataProcessArgs(BaseModel):
@@ -74,7 +54,10 @@ class DataProcessArgs(BaseModel):
     data_output_path: str
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
-    chat_tmpl_path: str | None = None
+    chat_tmpl_path: str | None = Field(
+        default=None,
+        description="this is the path to the chat template file in the instructlab/training library format",
+    )
     num_cpu_procs: int = Field(
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",
@@ -171,7 +154,10 @@ class TrainingArgs(BaseModel):
     model_path: str
 
     # Specify the chat template / special tokens for training (default is None)
-    chat_tmpl_path: str | None = None
+    chat_tmpl_path: str | None = Field(
+        default=None,
+        description="this is the path to the chat template file in the instructlab/training library format",
+    )
 
     # this field determines if ibm_legacy_tmpl should be used instead
     use_legacy_tmpl: bool = False
@@ -183,6 +169,12 @@ class TrainingArgs(BaseModel):
     # this field defines where we should be saving the processed version of the training dataset
     # after we have tokenized it
     data_output_dir: str
+
+    # New option to use the new data processor implementation
+    use_legacy_data_processor: bool = Field(
+        default=False,
+        description="this field determines if the legacy data processor should be used instead",
+    )
 
     max_seq_len: int
     max_batch_len: int
