@@ -42,8 +42,8 @@ from tqdm import tqdm
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
-    get_scheduler,
     PreTrainedTokenizer,
+    get_scheduler,
 )
 import torch
 import torch.distributed
@@ -53,12 +53,7 @@ from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
-from instructlab.training.config import (
-    DataProcessArgs,
-    DistributedBackend,
-    TorchrunArgs,
-    TrainingArgs,
-)
+from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -77,7 +72,6 @@ from instructlab.training.utils import (
     load_latest_full_state,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
-    retrieve_chat_template,
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
@@ -676,24 +670,25 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     if train_args.process_data:
-        dp.main(
-            DataProcessArgs(
-                # XXX(osilkin): make a decision here, either:
-                #   1. the CLI is fully responsible for managing where the data is written
-                #   2. we never cache it and simply write it to a tmp file every time.
-                #
-                # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
-                # where the user has a defined place for new temporary data to be written.
-                data_output_path=train_args.data_output_dir,
-                model_path=train_args.model_path,
-                data_path=train_args.data_path,
-                max_seq_len=train_args.max_seq_len,
-                chat_tmpl_path=train_args.chat_tmpl_path,
-            )
+        # XXX(osilkin): make a decision here, either:
+        #   1. the CLI is fully responsible for managing where the data is written
+        #   2. we never cache it and simply write it to a tmp file every time.
+        #
+        # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
+        # where the user has a defined place for new temporary data to be written.
+        dp.process_data(
+            data_output_path=train_args.data_output_dir,
+            model_path=train_args.model_path,
+            data_path=train_args.data_path,
+            max_seq_len=train_args.max_seq_len,
+            chat_tmpl_path=train_args.chat_tmpl_path,
+            num_cpu_procs=torch_args.nproc_per_node,
+            use_legacy_method=train_args.use_legacy_data_processor,
         )
 
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
+
     command = [
         "torchrun",
         f"--nnodes={torch_args.nnodes}",
@@ -719,7 +714,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
 
     if train_args.keep_last_checkpoint_only:
-        command.append(f"--keep_last_checkpoint_only")
+        command.append("--keep_last_checkpoint_only")
 
     if train_args.checkpoint_at_epoch:
         command.append("--checkpoint_at_epoch")

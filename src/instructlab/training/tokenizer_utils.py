@@ -4,14 +4,16 @@
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 # First Party
-from instructlab.training.utils import log_rank_0
-from instructlab.training.utils import retrieve_chat_template
+from instructlab.training.utils import log_rank_0, retrieve_chat_template
+
 
 def setup_tokenizer_with_existing_chat_template(
     tokenizer: PreTrainedTokenizer,
 ) -> PreTrainedTokenizer:
     # otherwise, when the user doesn't provide a chat template path, we will use the default chat template
-    assert tokenizer.eos_token is not None, "provided chat template doesn't have an EOS token, need to handle this case"
+    assert (
+        tokenizer.eos_token is not None
+    ), "provided chat template doesn't have an EOS token, need to handle this case"
     if not tokenizer.pad_token:
         # we need to set the padding token
         tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
@@ -26,12 +28,19 @@ def setup_tokenizer_with_existing_chat_template(
     # ensure the tokens are being sorted to prevent any issues
     new_tokens = sorted(new_tokens)
     additional_special_tokens = tokenizer.additional_special_tokens + new_tokens
-    tokenizer.add_special_tokens({"additional_special_tokens": additional_special_tokens})
+    tokenizer.add_special_tokens(
+        {"additional_special_tokens": additional_special_tokens}
+    )
 
     # ensure the necessary tokens exist
-    assert len(get_sp_token(tokenizer, tokenizer.pad_token)) == 1, "padding token doesn't exist or is of incorrect length"
-    assert len(get_sp_token(tokenizer, tokenizer.eos_token)) == 1, "EOS token doesn't exist or is of incorrect length"
+    assert (
+        len(get_sp_token(tokenizer, tokenizer.pad_token)) == 1
+    ), "padding token doesn't exist or is of incorrect length"
+    assert (
+        len(get_sp_token(tokenizer, tokenizer.eos_token)) == 1
+    ), "EOS token doesn't exist or is of incorrect length"
     return tokenizer
+
 
 def setup_tokenizer_from_new_chat_template(
     tokenizer: PreTrainedTokenizer,
@@ -68,8 +77,9 @@ def setup_tokenizer_from_new_chat_template(
     ), "Padding token doesn't exist or is of incorrect length"
     return tokenizer
 
+
 def setup_tokenizer(
-    model_name_or_path, 
+    model_name_or_path,
     chat_tmpl_path: str | None = None,
 ) -> PreTrainedTokenizer:
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
