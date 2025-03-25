@@ -365,7 +365,7 @@ def main(args: DataProcessArgs):
             "is_pretrain": (
                 get_sp_token(tokenizer, "<|pretrain|>")[0] in x["input_ids"]
             )
-            or x["unmask"]
+            or ("unmask" in x and x["unmask"])
         },
         num_proc=NUM_PROC,
     )
@@ -446,6 +446,11 @@ def unmask_messages(
     msgs_with_unmasking = wrap_masked_messages(msgs, unmask_roles)
     input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
 
+    # get the order of unmasked roles
+    unmask_roles_order = iter(
+        [msg["role"] for msg in msgs_with_unmasking if msg["role"] in unmask_roles]
+    )
+
     # get token ids
     unmask_begin_token_id = tokenizer.encode(
         UNMASK_BEGIN_TOKEN, add_special_tokens=False
@@ -463,10 +468,11 @@ def unmask_messages(
     final_labels = []
     i = 0
     unmasking = False
+    role_being_actively_unmasked = None
+
     # pylint: disable=too-many-nested-blocks
     while i < len(input_ids):
         tok = input_ids[i]
-        # the opposite conditions of each other
         if unmasking:
             if tok == unmask_begin_token_id:
                 raise ValueError(
@@ -474,8 +480,11 @@ def unmask_messages(
                 )
 
             if tok == unmask_end_token_id:
-                # we need to just make sure that we capture the EOS token
-                if eos_token_id is not None:
+                # we need to just make sure that we unmask the EOS token for the assistant role
+                if (
+                    eos_token_id is not None
+                    and role_being_actively_unmasked == "assistant"
+                ):
                     # TODO(osilkin): clean up this portion so that we don't run into race conditions or other bugs
                     i += 1
                     while i < len(input_ids):
@@ -485,6 +494,7 @@ def unmask_messages(
                             break
                         i += 1
                 unmasking = False
+                role_being_actively_unmasked = None
             else:
                 final_input_ids.append(tok)
                 final_labels.append(tok)
@@ -496,10 +506,10 @@ def unmask_messages(
 
             if tok == unmask_begin_token_id:
                 unmasking = True
+                role_being_actively_unmasked = next(unmask_roles_order, None)
             else:
                 final_input_ids.append(tok)
                 final_labels.append(-100)
-
         i += 1
 
     # validation logic
@@ -519,6 +529,10 @@ def unmask_messages(
         raise ValueError(
             f"{UNMASK_END_TOKEN} token found in final_labels. This should never happen, please contact the training maintainers."
         )
+
+    assert (
+        role_being_actively_unmasked is None
+    ), "we should have fully exhausted the roles we decided to unmask"
 
     return {"input_ids": final_input_ids, "labels": final_labels}
 
@@ -754,21 +768,16 @@ def new_main(
     # that we can't write to the directory
     ensure_can_write_to_directory(data_output_path)
 
-    # Load and validate dataset
     data = load_and_validate_dataset(data_path)
-
-    # Configure tokenizer
     tokenizer = configure_tokenizer(model_path)
-
-    # Process samples to generate input_ids and labels
     data_with_input_ids_and_labels = process_samples(data, tokenizer, num_cpu_procs)
 
-    # Analyze dataset statistics
+    # provide an analysis of dataset statistics -- for legacy compatibility
     analyze_dataset_statistics(
         data_with_input_ids_and_labels, max_seq_len, num_cpu_procs
     )
 
-    # Preview samples
+    # preview samples -- for legacy compatibility
     preview_samples(data_with_input_ids_and_labels, tokenizer, num_cpu_procs)
 
     # save the final dataset
@@ -799,11 +808,10 @@ def load_and_validate_dataset(data_path: str) -> Dataset:
     """Load and validate the dataset from the specified path."""
     try:
         data = load_dataset("json", data_files=data_path, split="train")
-    except Exception:
-        # pylint: disable=raise-missing-from,broad-exception-raised
-        raise Exception(
+    except Exception as e:
+        raise ValueError(
             "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
-        )
+        ) from e
 
     if data.num_rows == 0:
         raise ValueError(
