@@ -218,8 +218,6 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
 def make_collate_fn(
     pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
 ):
-    # some tokenizers may not have a pad token id, so we use -100 as a default
-    pad_token_id = pad_token_id if pad_token_id is not None else -100
     rank = int(os.environ["RANK"])
     if use_dolomite:
 

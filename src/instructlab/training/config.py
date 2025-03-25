@@ -170,12 +170,6 @@ class TrainingArgs(BaseModel):
     # after we have tokenized it
     data_output_dir: str
 
-    # New option to use the new data processor implementation
-    use_legacy_data_processor: bool = Field(
-        default=False,
-        description="this field determines if the legacy data processor should be used instead",
-    )
-
     max_seq_len: int
     max_batch_len: int
     num_epochs: int
@@ -220,3 +214,12 @@ class TrainingArgs(BaseModel):
     # will overwrite the previous checkpoint directory, keeping only one directory called
     # "last_epoch". This works alongside the '--checkpoint_at_epoch' flag.
     keep_last_checkpoint_only: Optional[bool] = False
+
+    # TODO(osilkin):
+    #   we are only exposing this here because `run_training` today is implicitly coupled
+    #   with `process_data`. Since we don't have a specific field for data processing arguments,
+    #   we are forced to expose this. We should uncouple training from data processing and remove this.
+    data_process_num_cpu_procs: int = Field(
+        default=16,
+        description="This is the number of processes used for multiprocessing when processing the data",
+    )

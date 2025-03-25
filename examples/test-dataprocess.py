@@ -1,13 +1,15 @@
-# Standard
-import argparse
-
-# First Party
-from instructlab.training.data_process import process_data
+# SPDX-License-Identifier: Apache-2.0
 
 """
 This file showcases how someone can use the data-processing script to
 take a dataset from `messages` format into raw input_ids and labels
 """
+
+# Standard
+import argparse
+
+# First Party
+from instructlab.training.data_process import process_data
 
 parser = argparse.ArgumentParser()
 
@@ -38,7 +40,6 @@ process_data(
     data_path=args.data_path,
     data_output_path=args.data_output_path,
     model_path=model_path,
-    use_legacy_method=args.legacy,
     chat_tmpl_path=args.chat_tmpl_path,
     max_seq_len=args.max_seq_len,
     num_cpu_procs=1,

@@ -670,20 +670,17 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     if train_args.process_data:
-        # XXX(osilkin): make a decision here, either:
-        #   1. the CLI is fully responsible for managing where the data is written
-        #   2. we never cache it and simply write it to a tmp file every time.
-        #
-        # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
-        # where the user has a defined place for new temporary data to be written.
+        # TODO(osilkin):
+        #   Decouple the data processing logic from training.
+        #   Now that we've decided that repos will be less tethered to the
+        #   design choices of the `ilab` CLI, we can make this change.
         dp.process_data(
             data_output_path=train_args.data_output_dir,
             model_path=train_args.model_path,
             data_path=train_args.data_path,
             max_seq_len=train_args.max_seq_len,
             chat_tmpl_path=train_args.chat_tmpl_path,
-            num_cpu_procs=torch_args.nproc_per_node,
-            use_legacy_method=train_args.use_legacy_data_processor,
+            num_cpu_procs=train_args.data_process_num_cpu_procs,
         )
 
     if not os.path.exists(train_args.ckpt_output_dir):
