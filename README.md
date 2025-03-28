@@ -8,6 +8,15 @@
 ![`e2e-nvidia-l4-x1.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l4-x1.yml/badge.svg?branch=main)
 ![`e2e-nvidia-l40s-x4.yml` on `main`](https://github.com/instructlab/training/actions/workflows/e2e-nvidia-l40s-x4.yml/badge.svg?branch=main)
 
+### About the Library
+
+The InstructLab Training library is an optimized model instruction-tuning library, designed for messages-format data. This library can be used for efficiently fine-tuning Causal Language Models, working for both base models and previously-aligned models with existing chat templates. This library was used to achieve the results found in [Unveiling the Secret Recipe: A Guide For Supervised Fine-Tuning Small LLMs](https://arxiv.org/abs/2412.13337).
+
+To simplify the process of fine-tuning models with the [LAB
+method](https://arxiv.org/abs/2403.01081), or for general use, this library provides a simple pythonic training interface.
+
+### Usage and Guidance Sections
+
 - [Installing](#installing-the-library)
   - [Additional Nvidia packages](#additional-nvidia-packages)
 - [Using the library](#using-the-library)
@@ -18,9 +27,6 @@
   - [`loraOptions`](#loraoptions)
 - [Learning about `TorchrunArgs` arguments](#learning-about-torchrunargs-arguments)
 - [Example training run with arguments](#example-training-run-with-arguments)
-
-To simplify the process of fine-tuning models with the [LAB
-method](https://arxiv.org/abs/2403.01081), this library provides a simple training interface.
 
 ## Installing the library
 
@@ -56,6 +62,7 @@ pip install -e .[cuda]
 ```
 
 ## Using the library
+See the `examples` dir for guided sample notebooks on library usage. Below provides some added details on library options:
 
 You can utilize this training library by importing the necessary items.
 
@@ -94,7 +101,6 @@ for training jobs. There are a number of options you can specify, such as settin
 | save_samples | Number of samples the model should see before saving a checkpoint. Consider this to be the checkpoint save frequency. |
 | learning_rate | How fast we optimize the weights during gradient descent. Higher values may lead to unstable learning performance. It's generally recommended to have a low learning rate with a high effective batch size. |
 | warmup_steps | The number of steps a model should go through before reaching the full learning rate. We start at 0 and linearly climb up to `learning_rate`. |
-| is_padding_free | Boolean value to indicate whether or not we're training a padding-free transformer model such as Granite. |
 | random_seed | The random seed PyTorch will use. |
 | mock_data | Whether or not to use mock, randomly generated,  data during training. For debug purposes |
 | mock_data_len | Max length of a single mock data sample. Equivalent to `max_seq_len` but for mock data. |
@@ -284,7 +290,6 @@ training_args = TrainingArgs(
     save_samples = 250000,
     learning_rate = 2e-6,
     warmup_steps = 800,
-    is_padding_free = True, # set this to true when using Granite-based models
     random_seed = 42,
 )
 ```
@@ -345,7 +350,6 @@ training_args = TrainingArgs(
     save_samples = 250000,
     learning_rate = 2e-6,
     warmup_steps = 800,
-    is_padding_free = True, # set this to true when using Granite-based models
     random_seed = 42,
     process_data = True,
 )
