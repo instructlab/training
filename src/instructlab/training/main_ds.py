@@ -39,7 +39,12 @@ except ImportError:
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoConfig, AutoModelForCausalLM, get_scheduler
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    PreTrainedTokenizer,
+    get_scheduler,
+)
 import torch
 import torch.distributed
 
@@ -48,12 +53,7 @@ from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
-from instructlab.training.config import (
-    DataProcessArgs,
-    DistributedBackend,
-    TorchrunArgs,
-    TrainingArgs,
-)
+from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -72,7 +72,6 @@ from instructlab.training.utils import (
     load_latest_full_state,
     prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
-    retrieve_chat_template,
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
@@ -109,7 +108,9 @@ def setup_optimizer(args, model):
     return optimizer
 
 
-def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
+def setup_model(
+    args, tokenizer: PreTrainedTokenizer, train_loader, grad_accum, flash_enabled
+):
     bnb_config = None
     if args.lora_r > 0 and args.lora_quant_bits == 4:
         # Third Party
@@ -182,9 +183,18 @@ def setup_model(args, tokenizer, train_loader, grad_accum, flash_enabled):
         )
         model.config.eos_token_id = tokenizer.eos_token_id
 
-    assert (
-        "ForCausalLM" in model.__class__.__name__
-    ), f"Model class name: {model.__class__.__name__} is not supported."
+    if "ForCausalLM" not in model.__class__.__name__:
+        raise ValueError(
+            f"Model class name: {model.__class__.__name__} is not supported."
+        )
+
+    # ensure the model has any tokens which were added to the tokenizer
+    if tokenizer.pad_token_id is not None and model.config.pad_token_id is None:
+        model.config.pad_token_id = tokenizer.pad_token_id
+    if tokenizer.bos_token_id is not None and model.config.bos_token_id is None:
+        model.config.bos_token_id = tokenizer.bos_token_id
+    if tokenizer.eos_token_id is not None and model.config.eos_token_id is None:
+        model.config.eos_token_id = tokenizer.eos_token_id
 
     model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
@@ -311,7 +321,7 @@ def train(
     optimizer,
     lr_scheduler,
     accelerator: Accelerator,
-    tokenizer,
+    tokenizer: PreTrainedTokenizer,
     train_loader: DataLoader,
     grad_accum,
     metric_logger,
@@ -527,8 +537,7 @@ def main(args):
         metric_logger.log_sync({"script_params": vars(args)})
 
     setup_logger(args.log_level)
-    CHAT_TEMPLATE, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_name_or_path, SPECIAL_TOKENS, CHAT_TEMPLATE)
+    tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
     model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
@@ -661,24 +670,22 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     if train_args.process_data:
-        dp.main(
-            DataProcessArgs(
-                # XXX(osilkin): make a decision here, either:
-                #   1. the CLI is fully responsible for managing where the data is written
-                #   2. we never cache it and simply write it to a tmp file every time.
-                #
-                # An important reason for why #1 would be preferable is in the case of OpenShift/SELinux
-                # where the user has a defined place for new temporary data to be written.
-                data_output_path=train_args.data_output_dir,
-                model_path=train_args.model_path,
-                data_path=train_args.data_path,
-                max_seq_len=train_args.max_seq_len,
-                chat_tmpl_path=train_args.chat_tmpl_path,
-            )
+        # TODO(osilkin):
+        #   Decouple the data processing logic from training.
+        #   Now that we've decided that repos will be less tethered to the
+        #   design choices of the `ilab` CLI, we can make this change.
+        dp.process_data(
+            data_output_path=train_args.data_output_dir,
+            model_path=train_args.model_path,
+            data_path=train_args.data_path,
+            max_seq_len=train_args.max_seq_len,
+            chat_tmpl_path=train_args.chat_tmpl_path,
+            num_cpu_procs=train_args.data_process_num_cpu_procs,
         )
 
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
+
     command = [
         "torchrun",
         f"--nnodes={torch_args.nnodes}",
@@ -698,11 +705,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
-        f"--chat-tmpl-path={train_args.chat_tmpl_path}",
     ]
 
+    if train_args.chat_tmpl_path is not None:
+        command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
+
     if train_args.keep_last_checkpoint_only:
-        command.append(f"--keep_last_checkpoint_only")
+        command.append("--keep_last_checkpoint_only")
 
     if train_args.checkpoint_at_epoch:
         command.append("--checkpoint_at_epoch")
@@ -953,11 +962,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--NEFTune_alpha", type=float, default=None)
     parser.add_argument(
+        # TODO(osilkin): rename to chat_tmpl_path
         "--chat-tmpl-path",
         type=str,
-        default=os.path.join(
-            os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
-        ),
+        default=None,
+        help="Path to the chat template to set on the model for training. If none is provided, the chat template used in the model will be used.",
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
     parser.add_argument(

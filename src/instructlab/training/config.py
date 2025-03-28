@@ -7,7 +7,6 @@ Collection of config objects used in the InstructLab training library.
 # Standard
 from enum import Enum
 from typing import List, Optional
-import os
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -55,7 +54,10 @@ class DataProcessArgs(BaseModel):
     data_output_path: str
     max_seq_len: int  # defines the max sequence length of a sample
     model_path: str  # either a HF model name or path to HF model
-    chat_tmpl_path: str
+    chat_tmpl_path: str | None = Field(
+        default=None,
+        description="this is the path to the chat template file in the instructlab/training library format",
+    )
     num_cpu_procs: int = Field(
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",
@@ -151,9 +153,10 @@ class TrainingArgs(BaseModel):
     # Either the name of a HuggingFace model or a path to a model saved in HuggingFace format.
     model_path: str
 
-    # Specify the chat template / special tokens for training (default is ibm-generic template/tokens)
-    chat_tmpl_path: str = os.path.join(
-        os.path.dirname(__file__), "chat_templates/ibm_generic_tmpl.py"
+    # Specify the chat template / special tokens for training (default is None)
+    chat_tmpl_path: str | None = Field(
+        default=None,
+        description="this is the path to the chat template file in the instructlab/training library format",
     )
 
     # this field determines if ibm_legacy_tmpl should be used instead
@@ -211,3 +214,12 @@ class TrainingArgs(BaseModel):
     # will overwrite the previous checkpoint directory, keeping only one directory called
     # "last_epoch". This works alongside the '--checkpoint_at_epoch' flag.
     keep_last_checkpoint_only: Optional[bool] = False
+
+    # TODO(osilkin):
+    #   we are only exposing this here because `run_training` today is implicitly coupled
+    #   with `process_data`. Since we don't have a specific field for data processing arguments,
+    #   we are forced to expose this. We should uncouple training from data processing and remove this.
+    data_process_num_cpu_procs: int = Field(
+        default=16,
+        description="This is the number of processes used for multiprocessing when processing the data",
+    )

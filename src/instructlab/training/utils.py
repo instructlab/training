@@ -99,6 +99,20 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
+    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
+        # verify that the flash_attn package is actually installed
+        try:
+            # pylint: disable=unused-import
+            # Third Party
+            import flash_attn
+        except ImportError as exc:
+            raise ImportError(
+                "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
+                "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
+                "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
+                "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
+            ) from exc
+
 
 def retrieve_chat_template(chat_tmpl_path):
     try:
