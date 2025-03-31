@@ -107,3 +107,8 @@ exclude = [
 ]
 # honor excludes by not following there through imports
 follow_imports = "silent"
+
+[tool.pytest.ini_options]
+markers = [
+  "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
