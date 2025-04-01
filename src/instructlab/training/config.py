@@ -162,13 +162,10 @@ class TrainingArgs(BaseModel):
     # this field determines if ibm_legacy_tmpl should be used instead
     use_legacy_tmpl: bool = False
 
-    # this field specifies the filepath to the training dataset before processing
+    # this field specifies the filepath to the training dataset
     data_path: str
-    ckpt_output_dir: str
 
-    # this field defines where we should be saving the processed version of the training dataset
-    # after we have tokenized it
-    data_output_dir: str
+    ckpt_output_dir: str
 
     max_seq_len: int
     max_batch_len: int
@@ -206,9 +203,6 @@ class TrainingArgs(BaseModel):
     # https://github.com/instructlab/training/issues/28
     # quantize_dtype: QuantizeDataType = QuantizeDataType.NONE
     lora: LoraOptions | None = None
-
-    # This field defines whether or not data processing will occur inside of `run_training()`
-    process_data: Optional[bool] = True
 
     # This field specifies whether only the last checkpoint should be retained. When set to true, it
     # will overwrite the previous checkpoint directory, keeping only one directory called
