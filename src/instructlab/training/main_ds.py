@@ -77,7 +77,6 @@ from instructlab.training.utils import (
     set_random_seed,
     setup_logger,
 )
-import instructlab.training.data_process as dp
 
 
 def setup_optimizer(args, model):
@@ -669,20 +668,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             os.path.dirname(__file__), "chat_templates/ibm_legacy_tmpl.py"
         )
 
-    if train_args.process_data:
-        # TODO(osilkin):
-        #   Decouple the data processing logic from training.
-        #   Now that we've decided that repos will be less tethered to the
-        #   design choices of the `ilab` CLI, we can make this change.
-        dp.process_data(
-            data_output_path=train_args.data_output_dir,
-            model_path=train_args.model_path,
-            data_path=train_args.data_path,
-            max_seq_len=train_args.max_seq_len,
-            chat_tmpl_path=train_args.chat_tmpl_path,
-            num_cpu_procs=train_args.data_process_num_cpu_procs,
-        )
-
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
@@ -695,7 +680,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
         __file__,
         f"--model_name_or_path={train_args.model_path}",
-        f"--data_path={train_args.data_output_dir}/data.jsonl",
+        f"--data_path={train_args.data_path}",
         f"--output_dir={train_args.ckpt_output_dir}",
         f"--num_epochs={train_args.num_epochs}",
         f"--effective_batch_size={train_args.effective_batch_size}",
