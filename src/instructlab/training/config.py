@@ -223,3 +223,8 @@ class TrainingArgs(BaseModel):
         default=16,
         description="This is the number of processes used for multiprocessing when processing the data",
     )
+
+    use_liger: bool = Field(
+        default=False,
+        description="Whether to use Liger kernels for training.",
+    )

@@ -113,6 +113,23 @@ def check_valid_train_args(train_args: TrainingArgs):
                 "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
             ) from exc
 
+    # liger checks
+    if train_args.lora and train_args.lora.rank > 0 and train_args.use_liger:
+        raise ValueError(
+            "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
+        )
+    if train_args.use_liger and train_args.use_dolomite:
+        raise ValueError(
+            "Using Liger kernels and Dolomite padding-free transformer is not supported. Please disable either Liger kernels or Dolomite padding-free transformer."
+        )
+    if train_args.use_liger:
+        try:
+            from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        except ImportError as e:
+            raise ValueError(
+                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
+            ) from e
+
 
 def retrieve_chat_template(chat_tmpl_path):
     try:
@@ -716,12 +733,12 @@ def prepare_universal_checkpoint_from_latest(output_dir):
                 "an empty dictionary."
             )
             ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
-            assert (
-                ds_checkpoint.tp_degree == 1
-            ), "if universal checkpointing info is missing, TP must be absent"
-            assert (
-                ds_checkpoint.pp_degree == 1
-            ), "if universal checkpointing info is missing, PP must be absent"
+            assert ds_checkpoint.tp_degree == 1, (
+                "if universal checkpointing info is missing, TP must be absent"
+            )
+            assert ds_checkpoint.pp_degree == 1, (
+                "if universal checkpointing info is missing, PP must be absent"
+            )
         _check_for_required_state(ds_checkpoint)
 
         slice_shapes = []

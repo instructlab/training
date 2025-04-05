@@ -35,18 +35,6 @@ except ImportError:
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
         print("DeepSpeed is not available. Some features may be unavailable.")
 
-try:
-    # Third Party
-    from liger_kernel.transformers import apply_liger_kernel_to_granite
-except ImportError:
-    apply_liger_kernel_to_granite = lambda *args, **kwargs: None  # pylint: disable=C3001
-    local_rank = int(os.getenv("LOCAL_RANK", "0"))
-    if __name__ == "__main__" and (not local_rank or local_rank == 0):
-        print(
-            "Granite Liger Kernels could not be imported. Some features may not be available."
-        )
-
-
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
@@ -152,12 +140,23 @@ def setup_model(
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
             )
+    elif args.use_liger:
+        # TODO(osilkin): we duplicate some checks here because someone may run this script through
+        # torchrun directly and not `run_training`. To fix this, we should eventually move everything
+        # to using `torch.multiprocessing` and simplify the CLI.
+        if args.lora_r > 0:
+            raise ValueError(
+                "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
+            )
+        try:
+            from liger_kernel.transformers import AutoLigerKernelForCausalLM
+        except ImportError as e:
+            raise ValueError(
+                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
+            ) from e
+        model = AutoLigerKernelForCausalLM.from_pretrained(**base_model_args)
     else:
-        if args.enable_granite_liger_kernel:
-            apply_liger_kernel_to_granite()
-
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
-        print(model)
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
@@ -530,11 +529,6 @@ def main(args):
     # Third Party
     import yaml
 
-    if args.lora_r > 0 and args.enable_granite_liger_kernel:
-        raise ValueError(
-            "Cannot enable LoRA (lora_r > 0) and Granite Liger Kernels (enable_granite_liger_kernel) at the same time."
-        )
-
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
             "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
@@ -730,6 +724,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
+
+    if train_args.use_liger:
+        command.append("--use_liger")
 
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
@@ -999,8 +996,11 @@ if __name__ == "__main__":
         ),
     )
 
-    # this will work for granite-3.y models but not granite-7b because that's a Llama 2 model arch.
-    parser.add_argument("--enable-granite-liger-kernel", action="store_true")
+    parser.add_argument(
+        "--use_liger",
+        action="store_true",
+        help="Use Liger kernels for training.",
+    )
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
