@@ -397,6 +397,9 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
+        # track the total number of tokens in each minibatch to correctly rescale the loss
+        total_minibatch_loss_tokens_seen = 0
+
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
             if global_step <= args.last_step:
@@ -432,22 +435,37 @@ def train(
                     reduction="sum",
                 ),
             )
+            total_minibatch_loss_tokens_seen += num_loss_counted_tokens
             samples_seen += int(micro_batch_size)
 
             # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
+            # loss = (
+            #     loss / num_loss_counted_tokens * world_size
+            # )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
             accelerator.backward(loss)
 
             if global_step % grad_accum == 0:
+                # XXX(osilkin): we correct the loss by rescaling each gradient by the total
+                #               number of loss tokens seen. Only thing is this that waiting until
+                #               the gradients have been computed already to do this may likely lead to
+                #               to numeric instability
+                #
+                #               Also I'm not sure if this will work with FSDP Full Shard
+                for p in model.parameters():
+                    grad = p.grad
+                    assert grad is not None
+                    grad.mul_(1.0 / total_minibatch_loss_tokens_seen)
+
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+
+                # then we just reset the counter
+                total_minibatch_loss_tokens_seen = 0
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
