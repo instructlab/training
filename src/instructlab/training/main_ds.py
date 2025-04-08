@@ -149,6 +149,7 @@ def setup_model(
                 "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
             )
         try:
+            # Third Party
             from liger_kernel.transformers import AutoLigerKernelForCausalLM
         except ImportError as e:
             raise ValueError(
