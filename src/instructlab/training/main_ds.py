@@ -1,17 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from copy import deepcopy
 from pathlib import Path
 import argparse
-import math
 import os
 import re
 import subprocess
-import time
-
-# Third Party
-from accelerate import Accelerator
 
 try:
     # Third Party
@@ -36,15 +30,7 @@ except ImportError:
         print("DeepSpeed is not available. Some features may be unavailable.")
 
 # Third Party
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    PreTrainedTokenizer,
-    get_scheduler,
-)
+from transformers import AutoConfig
 import torch
 import torch.distributed
 
@@ -53,228 +39,26 @@ from instructlab.training import config
 from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
-from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
+from instructlab.training.config import (
+    DistributedBackend,
+    ModelTypes,
+    TorchrunArgs,
+    TrainingArgs,
+)
+from instructlab.training.model import Accelerator, Checkpointer, Model, setup_optimizer
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
-from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
-    add_noisy_embeddings,
-    apply_gradient_checkpointing,
-    check_flash_attn_enabled,
     check_valid_train_args,
-    convert_loss_to_reduce_sum,
-    create_lora_config,
-    ensure_loadable_dolomite_checkpoint,
-    load_latest_full_state,
-    prepare_peft_model,
     prepare_universal_checkpoint_from_latest,
-    save_checkpoint,
-    save_hf_format_accelerate,
     set_random_seed,
     setup_logger,
 )
 import instructlab.training.data_process as dp
-
-
-def setup_optimizer(args, model):
-    if args.distributed_training_framework == DistributedBackend.FSDP.value:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.0,
-        )
-    elif args.distributed_training_framework == DistributedBackend.DEEPSPEED.value:
-        # need to use this only when the CPU offload optimizer is enabled
-        if args.cpu_offload_optimizer:
-            print(
-                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-            )
-            optimizer = DeepSpeedCPUAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-        else:
-            optimizer = FusedAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-    else:
-        raise ValueError(
-            f"Sharding framework {args.distributed_training_framework} is not supported."
-        )
-    return optimizer
-
-
-def setup_model(
-    args, tokenizer: PreTrainedTokenizer, train_loader, grad_accum, flash_enabled
-):
-    bnb_config = None
-    if args.lora_r > 0 and args.lora_quant_bits == 4:
-        # Third Party
-        from transformers import BitsAndBytesConfig
-
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
-        )
-
-    base_model_args = {
-        "pretrained_model_name_or_path": args.model_name_or_path,
-        "torch_dtype": torch.bfloat16,
-        "quantization_config": bnb_config,
-    }
-    if flash_enabled:
-        base_model_args["attn_implementation"] = "flash_attention_2"
-
-    if args.use_dolomite:
-        with ensure_loadable_dolomite_checkpoint(
-            args.model_name_or_path, args.output_dir
-        ) as path:
-            base_model_args["pretrained_model_name_or_path"] = path
-            base_model_args["use_padding_free_transformer"] = True
-            model = GPTDolomiteForCausalLM.from_pretrained(
-                **base_model_args,
-            )
-    elif args.use_liger:
-        # TODO(osilkin): we duplicate some checks here because someone may run this script through
-        # torchrun directly and not `run_training`. To fix this, we should eventually move everything
-        # to using `torch.multiprocessing` and simplify the CLI.
-        if args.lora_r > 0:
-            raise ValueError(
-                "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
-            )
-        try:
-            # Third Party
-            from liger_kernel.transformers import AutoLigerKernelForCausalLM
-        except ImportError as e:
-            raise ValueError(
-                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
-            ) from e
-
-        # NOTE: (jkunstle) we disable fused_linear_cross_entropy, even though it's a default for most of the models with LK support,
-        #   because reduce_sum_loss requires the logits, and fused_linear_cross_entropy explicitly skips materializing them for
-        #   performance.
-        model = AutoLigerKernelForCausalLM.from_pretrained(
-            **base_model_args, cross_entropy=True, fused_linear_cross_entropy=False
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
-
-    # store the base model args so we can recall them later if saving a LoRA model
-    args.base_model_args = base_model_args
-
-    if len(tokenizer) > model.config.vocab_size:
-        print(
-            f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
-        )
-        model.resize_token_embeddings(
-            int(8 * math.ceil(len(tokenizer) / 8.0))
-        )  # make the vocab size multiple of 8 for sharding the embedding layer.
-
-    # Fix any discrepancy between model and tokenizer
-    if (
-        model.config.pad_token_id is not None
-        and tokenizer.pad_token_id is not None
-        and model.config.pad_token_id != tokenizer.pad_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
-        )
-        model.config.pad_token_id = tokenizer.pad_token_id
-    if (
-        model.config.bos_token_id is not None
-        and tokenizer.bos_token_id is not None
-        and model.config.bos_token_id != tokenizer.bos_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
-        )
-        model.config.bos_token_id = tokenizer.bos_token_id
-    if (
-        model.config.eos_token_id is not None
-        and tokenizer.eos_token_id
-        and model.config.eos_token_id != tokenizer.eos_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
-        )
-        model.config.eos_token_id = tokenizer.eos_token_id
-
-    if "ForCausalLM" not in model.__class__.__name__:
-        raise ValueError(
-            f"Model class name: {model.__class__.__name__} is not supported."
-        )
-
-    # ensure the model has any tokens which were added to the tokenizer
-    if tokenizer.pad_token_id is not None and model.config.pad_token_id is None:
-        model.config.pad_token_id = tokenizer.pad_token_id
-    if tokenizer.bos_token_id is not None and model.config.bos_token_id is None:
-        model.config.bos_token_id = tokenizer.bos_token_id
-    if tokenizer.eos_token_id is not None and model.config.eos_token_id is None:
-        model.config.eos_token_id = tokenizer.eos_token_id
-
-    model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
-    model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
-
-    # handling of gradient checkpointing
-    # it is handled differently for lora and full
-    # - with the exception of granite, which handles it
-    #   in the later stanza
-    if args.lora_r > 0:
-        lora_config = create_lora_config(model, args)
-        model = prepare_peft_model(
-            model,
-            lora_config,
-            args.distributed_training_framework,
-            gradient_checkpointing=not args.use_dolomite,
-        )
-        args.lora_config = lora_config
-    elif not args.use_dolomite:
-        model.gradient_checkpointing_enable()
-
-    # granite gradient checkpointing is handled uniformly
-    # for both lora and full here
-    if args.use_dolomite:
-        block_name = model._no_split_modules[0]
-        apply_gradient_checkpointing(
-            model,
-            block_name=block_name,
-            use_reentrant=True,  # this should be the HF default mode
-        )
-
-        if args.lora_r > 0:
-
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    accelerator = setup_accelerator(args, model, grad_accum)
-    if args.distributed_training_framework == DistributedBackend.FSDP.value:
-        model = accelerator.prepare(model)
-    optimizer = setup_optimizer(args, model)
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
-    )
-    model, optimizer, _, lr_scheduler = accelerator.prepare(
-        model,
-        optimizer,
-        deepcopy(train_loader),
-        lr_scheduler,
-    )
-    # Necessary so that Accelerate does not step once per GPU
-    # see https://github.com/huggingface/accelerate/blob/127818fc27ebe5cb236357fff59ff1748326d643/src/accelerate/scheduler.py#L69
-    lr_scheduler.split_batches = True
-    return model, lr_scheduler, optimizer, accelerator
 
 
 # this function is to check if the checkpoint provided can be resumed
@@ -337,204 +121,12 @@ def maybe_resume_training(args, model):
     return model
 
 
-def train(
-    args,
-    model,
-    optimizer,
-    lr_scheduler,
-    accelerator: Accelerator,
-    tokenizer: PreTrainedTokenizer,
-    train_loader: DataLoader,
-    grad_accum,
-    metric_logger,
-):
-    model.train()
-
-    global_step = 1
-    local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-
-    batch_size = args.effective_batch_size // grad_accum
-    samples_seen = 0
-
-    if hasattr(args, "samples_seen"):
-        print(f"\033[93mUpdating 'samples_seen' {args.samples_seen}\033[0m")
-        samples_seen = args.samples_seen
-
-    if args.save_samples > 0:
-        args.save_samples = (args.save_samples // batch_size) * batch_size
-        (
-            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-            if local_rank == 0
-            else None
-        )
-
-    if args.save_samples_ds is not None:
-        args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
-        (
-            print(
-                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
-            )
-            if local_rank == 0
-            else None
-        )
-
-    global_grad_norm = None
-    for epoch in range(args.current_epoch, args.num_epochs):
-        if args.sampler in ("multipack"):
-            train_loader.batch_sampler.set_epoch(epoch)
-        elif args.sampler in ("distributed"):
-            train_loader.sampler.set_epoch(epoch)
-        else:
-            raise NotADirectoryError
-
-        if local_rank == 0:
-            inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
-
-        # blast through the batches in the train loader up to the last step within the epoch.
-        for batch in train_loader:
-            if global_step <= args.last_step:
-                # in the case of resuming, last_step > 0
-                global_step += 1
-                if local_rank == 0:
-                    inner_pb.update(1)
-                continue
-            start = time.time()
-            num_loss_counted_tokens = float(
-                torch.tensor([batch.pop("num_loss_counted_tokens")])
-            )
-            micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
-            if not args.use_dolomite:
-                for k in batch:
-                    batch[k] = batch[k].to(local_rank)
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
-            log_loss = loss.detach().item()
-
-            num_loss_counted_tokens, micro_batch_size, log_loss = map(
-                float,
-                accelerator.reduce(
-                    torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_loss],
-                        dtype=torch.float32,
-                        device=accelerator.device,
-                    ),
-                    reduction="sum",
-                ),
-            )
-            samples_seen += int(micro_batch_size)
-
-            # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            print(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
-            )
-            accelerator.backward(loss)
-
-            if global_step % grad_accum == 0:
-                global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-            if local_rank == 0:
-                elapsed_time = time.time() - start
-                overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
-                global_grad_norm = (
-                    model.get_global_grad_norm()
-                    if hasattr(model, "get_global_grad_norm")
-                    else global_grad_norm
-                )
-                global_grad_norm = (
-                    float(global_grad_norm) if global_grad_norm is not None else None
-                )
-                # TODO - Bring back weight_norm gather
-                # weight_norm = float(
-                #     model.optimizer.single_partition_of_fp32_groups[0].norm()
-                # )
-
-                # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_sync(
-                    {
-                        "epoch": epoch,
-                        "step": global_step,
-                        "rank": torch.distributed.get_rank(),
-                        "overall_throughput": overall_throughput,
-                        "lr": current_lr,
-                        "cuda_mem_allocated": cuda_mem_allocated,
-                        "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "batch_size": int(micro_batch_size),
-                        "total_loss": float(log_loss / num_loss_counted_tokens),
-                        "samples_seen": samples_seen,
-                        "gradnorm": global_grad_norm,
-                        "total_samples": len(train_loader.dataset),
-                        # "weight_norm": weight_norm,
-                    }
-                )
-
-            if args.save_samples > 0 and (
-                global_step * batch_size % args.save_samples == 0
-            ):
-                save_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=tokenizer,
-                    samples_seen=samples_seen,
-                    is_lora=bool(args.lora_r),
-                    hf_format=True,
-                )
-
-            # if (
-            #     args.save_samples_ds is not None
-            #     and global_step * batch_size % args.save_samples_ds == 0
-            # ):
-            #     save_model_ds_native(
-            #         args,
-            #         model,
-            #         tokenizer,
-            #         global_step * args.samples_per_gpu * world_size,
-            #     )
-            global_step += 1
-            if local_rank == 0:
-                inner_pb.update(1)
-            torch.cuda.empty_cache()
-        if args.checkpoint_at_epoch:
-            save_checkpoint(
-                args=args,
-                accelerator=accelerator,
-                model=model,
-                tokenizer=tokenizer,
-                samples_seen=samples_seen,
-                is_lora=bool(args.lora_r),
-                full_state=args.accelerate_full_state_at_epoch,
-                hf_format=True,
-                epoch=epoch,
-            )
-
-    if args.save_last:
-        save_hf_format_accelerate(
-            args,
-            model,
-            tokenizer,
-            accelerator,
-            samples_seen,
-            is_lora=bool(args.lora_r),
-        )
-
-
 def main(args):
     # Third Party
     import yaml
+
+    # First Party
+    from instructlab.training.train import train
 
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
@@ -560,7 +152,6 @@ def main(args):
 
     setup_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
-    # device = torch.device("cuda", args.local_rank)
 
     model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
     args.model_type = model_conf.model_type
@@ -574,8 +165,14 @@ def main(args):
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
-    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
+    flash_enabled = Model.check_flash_attn_enabled(
+        args.disable_flash_attn, args.use_dolomite
+    )
 
+    # TODO: would like to replace this with either
+    # a) a dataset class
+    # b) a dataloader class
+    # c) a bit of both
     dataset = setup_dataset(
         args.data_path,
         mock=args.mock_data,
@@ -602,6 +199,25 @@ def main(args):
         packing_max_batch_len = None
         grad_accum = 1
         args.sampler = "distributed"
+
+    # This model class wraps the various AutoModel classes we support
+    # based on model_type, and model_path -> choose auto_model
+    lora_config = Model.create_lora_config(
+        lora_target_modules=args.lora_target_modules,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        lora_r=args.lora_r,
+    )
+    m = Model(
+        model_path=args.model_name_or_path,
+        output_dir=args.output_dir,
+        lora_config=lora_config,
+        distributed_framework=DistributedBackend(args.distributed_training_framework),
+        tokenizer=tokenizer,
+        model_type=ModelTypes(args.model_class),
+        flash_enabled=flash_enabled,
+        noise_alpha=args.NEFTune_alpha,
+    )
 
     args.samples_per_gpu = (
         args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
@@ -655,25 +271,55 @@ def main(args):
                 "total_samples": len(dataset),  # emit the total number of samples
             }
         )
-
-    model, lr_scheduler, optimizer, accelerator = setup_model(
-        args, tokenizer, train_loader, grad_accum, flash_enabled
+    # accelerator does not need optimizer to init, in fact, the optimizer needs to be initialized AFTER the Accelerator
+    accelerator = Accelerator(
+        model=m,
+        samples_per_gpu=args.samples_per_gpu,
+        grad_accum=grad_accum,
+        train_loader=train_loader,
+        distributed_framework=DistributedBackend(args.distributed_training_framework),
+        fsdp_sharding_strategy=args.fsdp_sharding_strategy,
+        deepspeed_cpu_offload_optimizer=args.cpu_offload_optimizer,
+        deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+        deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+        fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        save_samples=args.save_samples,
+    )
+    # optimizer needs model that has been prepared by accelerator
+    # and then accelerator needs to be prepared AGAIN once optimizer is initialized
+    optimizer = setup_optimizer(
+        model=m,
+        cpu_offload=args.cpu_offload_optimizer,
+        name=None,  # choose based on backend
+        learning_rate=args.learning_rate,
+    )
+    accelerator.prepare_with_optimizer(
+        optimizer=optimizer,
+        lr_scheduler=args.lr_scheduler,
+        num_epochs=args.num_epochs,
+        num_warmup_steps=args.num_warmup_steps,
     )
 
-    load_latest_full_state(args=args, accelerator=accelerator)
-
+    strategy = "full_state"
+    if not args.accelerate_full_state_at_epoch:
+        strategy = "hf_format"
+    checkpointer = Checkpointer(strategy=strategy)
+    checkpointer.load_latest_full_state(Path(args.output_dir))
     train(
-        args,
-        model,
-        optimizer,
-        lr_scheduler,
-        accelerator,
-        tokenizer,
-        train_loader,
-        grad_accum,
-        metric_logger,
+        model=m,
+        optimizer=optimizer,
+        accelerator=accelerator,
+        checkpointer=checkpointer,
+        sampler=args.sampler,
+        use_dolomite=args.use_dolomite,
+        metric_logger=metric_logger,
+        output_dir=args.output_dir,
+        checkpoint_at_epoch=args.checkpoint_at_epoch,
+        effective_batch_size=args.effective_batch_size,
+        last_step=args.last_step,
+        num_epochs=args.num_epochs,
+        save_last=args.save_last,
     )
-
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
 
@@ -870,6 +516,11 @@ if __name__ == "__main__":
     #               Maybe switch out from argparse to something smarter
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
+    parser.add_argument(
+        "--model-class",
+        type=str,
+        help=f"valid model classes are {ModelTypes.LIGER.value}, {ModelTypes.DOLOMITE.value}, and {ModelTypes.CAUSALLM.value}.",
+    )
     parser.add_argument("--data_path", type=str)
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--num_epochs", type=int, default=1)
