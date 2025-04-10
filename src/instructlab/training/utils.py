@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from argparse import Namespace
-from collections import OrderedDict
 from contextlib import contextmanager
-from copy import deepcopy
 from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, List, Optional, Tuple
 import importlib
 import inspect
@@ -22,12 +18,7 @@ import warnings
 
 # Third Party
 # pylint: disable=no-name-in-module
-from accelerate import Accelerator, DistributedType
-from instructlab.dolomite.hf_models import (
-    GPTDolomiteConfig,
-    export_to_huggingface,
-    import_from_huggingface,
-)
+from instructlab.dolomite.hf_models import GPTDolomiteConfig, import_from_huggingface
 from rich.logging import RichHandler
 from torch import distributed as dist
 from torch import nn
@@ -487,109 +478,6 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     return False
 
 
-def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
-    # if lora
-    # Third Party
-    from peft import LoraConfig
-
-    # ensure we select only the modules that exist in the model
-    proj_layers = get_projection_layer_names(model)
-    if not args.lora_target_modules:
-        print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
-        )
-        if not proj_layers:
-            raise RuntimeError("could not find any projection layers in the model")
-        args.__dict__["lora_target_modules"] = proj_layers
-    else:
-        # when the user specifies the module, we should verify that they align with what's in the model
-        lora_target_modules_set = set(args.lora_target_modules)
-        diff = lora_target_modules_set - set(proj_layers)
-        layers_to_target = lora_target_modules_set - diff
-        if len(diff) == len(args.lora_target_modules):
-            raise ValueError(
-                f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
-            )
-        if diff:
-            print(
-                f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
-            )
-        args.__dict__["lora_target_modules"] = list(layers_to_target)
-
-    return LoraConfig(
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        r=args.lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=args.lora_target_modules,
-    )
-
-
-def save_fsdp_lora_model(
-    args: Namespace,
-    model: FSDP,
-    tokenizer: PreTrainedTokenizer,
-    accelerator: Accelerator,
-    output_dir: Path,
-):
-    """Given a LoRA model wrapped by FSDP and Accelerate, save a full copy of the original
-    model with the trained LoRA adapters merged into the copy.
-
-    This function creates a full copy of the model being trained and stores it in CPU memory.
-    If encountering OOM errors on CPU, this is likely a culprit.
-
-    Args:
-        args (Namespace): Args received by the ArgumentParser.
-        model (FSDP): FSDP model as prepared by `accelerate.Accelerator`
-        accelerator (Accelerator): The given accelerator object.
-    """
-    # Third Party
-    from peft import LoraConfig, LoraModel
-
-    if accelerator.distributed_type != DistributedType.FSDP:
-        raise RuntimeError(
-            "`save_fsdp_lora_model` was called when FSDP was not being used."
-        )
-    if not wraps(model, FSDP):
-        raise RuntimeError(
-            "`save_fsdp_lora_model` was called but provided model is not an FSDP model."
-        )
-    if not wraps(model, LoraModel):
-        raise RuntimeError(
-            "`save_fsdp_lora_model` was called but provided model is not a LoRA model."
-        )
-
-    # okay now that validation is out of the way, we are free to implement saving
-    lora_conf: LoraConfig = args.lora_config
-    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
-        state = model.state_dict()
-
-    # When training a LoRA with FSDP and Accelerate, you cannot directly merge the adapters into
-    # the model wrapped by FSDP. To get around this limitation, we get a copy of the state dict
-    # create an identical model on CPU, load the state dict into the CPU model, merge the adapters
-    # and save the model to disk.
-    if accelerator.is_main_process:
-        # remove device_map from args list so we can load the model on CPU
-        old_device_map = args.base_model_args.pop("device_map", None)
-        model_copy = AutoModelForCausalLM.from_pretrained(
-            **args.base_model_args, device_map="cpu"
-        )
-        model_copy = LoraModel(model_copy, lora_conf, "default")
-        model_copy.load_state_dict(state)
-        model_copy.merge_and_unload(progressbar=True)
-        model_copy.save_pretrained(output_dir, safe_serialization=True)
-        model.config.to_json_file(f"{output_dir}/config.json")
-        tokenizer.save_pretrained(output_dir)
-        del model_copy
-        if old_device_map:
-            # return the previous device_map so it can be used later on if needed
-            args.base_model_args["device_map"] = old_device_map
-
-    dist.barrier()
-
-
 def prepare_peft_model(
     model: PreTrainedModel,
     peft_config,
@@ -916,195 +804,42 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         # print(msg)
 
 
-def _copy_no_lora_dict(state_dict):
-    cleaned_state_dict = OrderedDict()
-    for param_tensor in state_dict:
-        if not "lora" in param_tensor:
-            cleaned_state_dict[
-                param_tensor.replace(".base_layer", "").replace("base_model.model.", "")
-            ] = deepcopy(state_dict[param_tensor]).cpu()
-    return cleaned_state_dict
+# # this is native deepspeed saving with optimizer, scheduler
+# def save_model_ds_native(
+#     args,
+#     model,
+#     tokenizer,
+#     samples_seen,
+# ):
+#     # to get a statedict from a zero checkpoint, all you need to do is
+#     # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+#     # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
+#     # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
 
+#     log_rank_0(
+#         f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
+#         to_print=True,
+#     )
+#     start = time.time()
+#     # used to save huggingface format, so we can use it for hf.from_pretrained
+#     output_dir = Path(args.output_dir) / "ds_native"
+#     tag = f"samples_{samples_seen}"
+#     use_lora = args.lora_r > 0
 
-def save_dict_accelerate(
-    accelerator: Accelerator,
-    state_to_save,
-    save_directory,
-    max_shard_size="5GB",
-    safe_serialization=True,
-):
-    old_get_state = accelerator.get_state_dict
-    accelerator.get_state_dict = _copy_no_lora_dict
+#     # NOTE: this is a distributed save
+#     # if its lora, we only save the adapters
+#     # - so we exclude frozen if use_lora==True
+#     model.save_checkpoint(
+#         output_dir,
+#         exclude_frozen_parameters=use_lora,
+#         tag=tag,  # this will create the subdirectory with the correct name
+#     )
 
-    def skip_precheck_loops():
-        return []
+#     # for now we are not saving tokenizer, config, eg..
+#     # so it is not totally "HF compatible"
 
-    # The save model does a loop over modules and params in order to determine how to get state dict. Since we already have the state dict directly, we want to bypass those checks.
-    state_to_save.modules = skip_precheck_loops
-    state_to_save.parameters = skip_precheck_loops
-
-    accelerator.save_model(
-        state_to_save,
-        save_directory=save_directory,
-        max_shard_size=max_shard_size,
-        safe_serialization=safe_serialization,
-    )
-
-    accelerator.get_state_dict = old_get_state
-
-
-def save_hf_format_accelerate(
-    args,
-    model,
-    tokenizer,
-    accelerator: Accelerator,
-    samples_seen,
-    is_lora=False,
-):
-    # Build the subdirectory name
-    subdir = (
-        "last_epoch" if args.keep_last_checkpoint_only else f"samples_{samples_seen}"
-    )
-
-    log_rank_0(
-        f"\033[93mSaving model in huggingface format at: {subdir}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-
-    if args.model_type in ("gpt_megatron", "gpt_dolomite"):
-        convert_dolomite = False
-    else:
-        convert_dolomite = True
-
-    # Build the final output directory path
-    final_output_dir = Path(args.output_dir) / "hf_format" / subdir
-
-    if args.use_dolomite and convert_dolomite:
-        tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
-        output_dir = Path(tmpdir.name)
-    else:
-        output_dir = final_output_dir
-
-    CONFIG_NAME = "config.json"
-    output_config_file = output_dir / CONFIG_NAME
-
-    # XXX(osilkin): LoRA + FSDP requires a different saving path than the others
-    #               so we set this variable and use it to avoid those paths further down.
-    is_fsdp_lora = is_lora and accelerator.distributed_type == DistributedType.FSDP
-    if is_fsdp_lora:
-        save_fsdp_lora_model(
-            args=args,
-            model=model,
-            tokenizer=tokenizer,
-            accelerator=accelerator,
-            output_dir=output_dir,
-        )
-
-    get_state_dict_unpatched = accelerator.get_state_dict
-
-    def _get_state_dict_patched(model, unwrap=False):
-        return get_state_dict_unpatched(model, unwrap=unwrap)
-
-    accelerator.get_state_dict = _get_state_dict_patched
-
-    if not is_fsdp_lora and accelerator.is_main_process:
-        if is_lora:
-            model.module.merge_adapter()
-            model_state = model.module.state_dict()
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-        if not model.module.config.architectures and convert_dolomite:
-            arch_added = False
-            if args.model_type == "llama":
-                model.module.config.architectures = ["LlamaForCausalLM"]
-                arch_added = True
-            elif args.model_type == "granite":
-                model.module.config.architectures = ["GraniteForCausalLM"]
-                arch_added = True
-            if arch_added:
-                warnings.warn(
-                    f"Adding architectures to ckpt: {model.module.config.architectures}",
-                )
-            else:
-                warnings.warn(
-                    f"Converting from dolomite, but no architecture field added to config.json",
-                )
-        model.module.config.to_json_file(output_config_file)
-        tokenizer.save_pretrained(output_dir)
-
-        if is_lora:
-            save_dict_accelerate(
-                accelerator,
-                model_state,
-                save_directory=output_dir,
-                max_shard_size="5GB",
-                safe_serialization=True,
-            )
-            model.module.unmerge_adapter()
-
-    if not is_lora:
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
-
-    if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
-        # export doesnt like the directory to exist
-        if final_output_dir.exists():
-            shutil.rmtree(final_output_dir)
-        export_to_huggingface(
-            pretrained_model_name_or_path=tmpdir.name,
-            save_path=final_output_dir,
-            model_type=args.model_type,
-        )
-        tmpdir.cleanup()
-
-    log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
-    dist.barrier()
-
-    accelerator.get_state_dict = get_state_dict_unpatched
-
-
-# this is native deepspeed saving with optimizer, scheduler
-def save_model_ds_native(
-    args,
-    model,
-    tokenizer,
-    samples_seen,
-):
-    # to get a statedict from a zero checkpoint, all you need to do is
-    # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
-    # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
-    # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
-
-    log_rank_0(
-        f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    output_dir = Path(args.output_dir) / "ds_native"
-    tag = f"samples_{samples_seen}"
-    use_lora = args.lora_r > 0
-
-    # NOTE: this is a distributed save
-    # if its lora, we only save the adapters
-    # - so we exclude frozen if use_lora==True
-    model.save_checkpoint(
-        output_dir,
-        exclude_frozen_parameters=use_lora,
-        tag=tag,  # this will create the subdirectory with the correct name
-    )
-
-    # for now we are not saving tokenizer, config, eg..
-    # so it is not totally "HF compatible"
-
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
+#     log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+#     log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 def set_random_seed(seed):
@@ -1113,83 +848,6 @@ def set_random_seed(seed):
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-
-
-def save_checkpoint(
-    args,
-    accelerator: Accelerator,
-    model,
-    tokenizer,
-    samples_seen,
-    is_lora: bool,
-    epoch: int = None,
-    hf_format: bool = True,
-    full_state: bool = False,
-) -> None:
-    if hf_format:
-        save_hf_format_accelerate(
-            args=args,
-            model=model,
-            accelerator=accelerator,
-            tokenizer=tokenizer,
-            samples_seen=samples_seen,
-            is_lora=is_lora,
-        )
-
-    if full_state:
-        save_full_state(
-            args=args,
-            accelerator=accelerator,
-            is_lora=is_lora,
-            epoch=epoch,
-            samples_seen=samples_seen,
-        )
-
-
-def save_full_state(args, accelerator, is_lora: bool, epoch: int, samples_seen: int):
-    """
-    Saves model, optimizer, and lr_scheduler state.
-    TODO: save model config - decided not to do this.
-    TODO: save tokenizer - decided not to do this.
-    TODO: handle LoRA
-    TODO: handle granite
-    """
-    if is_lora:
-        raise NotImplementedError("Can't save full state for LoRA at the moment.")
-
-    # if args.is_granite:
-    #     raise NotImplementedError("Can't save full state for Granite models yet.")
-
-    output_dir = Path(args.output_dir) / "full_state" / f"epoch_{epoch}"
-    log_rank_0(f"\033[93mSaving full model state in {output_dir}\033[0m", to_print=True)
-
-    # patch FSDP state dict method so it works correctly.
-    def _get_state_dict_patched(model, unwrap=False):
-        return get_state_dict_unpatched(model, unwrap=unwrap)
-
-    if args.distributed_training_framework == "fsdp":
-        get_state_dict_unpatched = accelerator.get_state_dict
-        accelerator.get_state_dict = _get_state_dict_patched
-
-    accelerator.save_state(
-        output_dir=output_dir,
-        # max_shard_size="5GB",
-        # safe_serialization=True,
-    )
-
-    # save metadata file for current training status
-    if accelerator.is_main_process:
-        # TODO: should we set the global_step here rather than calculating global_step
-        #   based on samples_seen?
-        metadata = {"current_epoch": epoch, "samples_seen": samples_seen}
-        torch.save(metadata, output_dir / "training_metadata.json")
-        log_rank_0(f"\033[93mSaving training state: {metadata}\033[0m", to_print=True)
-
-    log_rank_0(f"\033[93mModel state saved in: {output_dir}\033[0m", to_print=True)
-
-    # cleanup
-    if args.distributed_training_framework == "fsdp":
-        accelerator.get_state_dict = get_state_dict_unpatched
 
 
 def load_latest_full_state(args, accelerator) -> None:
