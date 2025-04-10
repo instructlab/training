@@ -1,0 +1,146 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: "Run smoke tests via Tox::pytest"
+# These tests will be long running and require accelerated hardware.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        type: string
+        default: main
+  # using this rather than pull_request because this workflow
+  # needs to run in the context of the base branch (main) and
+  # access the repo's secrets to start the AWS instances.
+  pull_request_target:
+    branches:
+      - main
+      - release-*
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ec2_runner_variant: "g6e.12xlarge" # 4x L40s
+
+jobs:
+  start-ec2-runner:
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id}}
+
+    steps:
+      - name: "Harden runner"
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
+        with:
+          egress-policy: audit
+
+      - name: "Configure AWS credentials"
+        uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: "Start EC2 runner"
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@28fbe1c4d7d9ba74134ca5ebc559d5b0a989a856 # v2.3.8
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          ec2-image-id: ${{ vars.AWS_EC2_AMI }}
+          ec2-instance-type: ${{ env.ec2_runner_variant }}
+          subnet-id: subnet-024298cefa3bedd61
+          security-group-id: sg-06300447c4a5fbef3
+          iam-role-name: instructlab-ci-runner
+          aws-resource-tags: >
+            [
+            {"Key": "Name", "Value": "instructlab-ci-github-smoketest-runner"},
+            {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
+            {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
+            ]
+
+  run-smoke-tests:
+    needs:
+      - start-ec2-runner
+    runs-on: ${{needs.start-ec2-runner.outputs.label}}
+    # It is important that this job has no write permissions and has
+    # no access to any secrets. This part is where we are running
+    # untrusted code from PRs.
+    permissions: {}
+    steps:
+      - name: "Harden runner"
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
+        with:
+          egress-policy: audit
+
+      - name: "Install packages"
+        run: |
+          cat /etc/os-release
+          sudo dnf install -y gcc gcc-c++ make git-core python3.11 python3.11-devel
+
+      - name: "Verify cuda environment is setup"
+        run: |
+          export CUDA_HOME="/usr/local/cuda"
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CUDA_HOME}/lib64:${CUDA_HOME}/extras/CUPTI/lib64"
+          export PATH="${PATH}:${CUDA_HOME}/bin"
+          nvidia-smi
+
+      - name: "Checkout code"
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: ${{inputs.branch}}
+
+      # installs in $GITHUB_WORKSPACE/venv.
+      # only has to install Tox because Tox will do the other virtual environment management.
+      - name: "Setup Python virtual environment"
+        run: |
+          python3.11 -m venv --upgrade-deps venv
+          . venv/bin/activate
+          pip install tox
+
+      - name: "Show disk utilization BEFORE tests"
+        run: |
+          df -h
+
+      - name: "Run smoke tests with Tox and Pytest"
+        run: |
+          source venv/bin/activate
+          tox -e py3-smoke
+
+      - name: "Show disk utilization AFTER tests"
+        run: |
+          df -h
+
+  stop-ec2-runner:
+    needs:
+      - start-ec2-runner
+      - run-smoke-tests
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: "Harden runner"
+        uses: step-security/harden-runner@cb605e52c26070c328afc4562f0b4ada7618a84e # v2.10.1
+        with:
+          egress-policy: audit
+
+      - name: "Configure AWS credentials"
+        uses: "aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502" # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: "Stop EC2 runner"
+        uses: machulav/ec2-github-runner@28fbe1c4d7d9ba74134ca5ebc559d5b0a989a856 # v2.3.8
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start-ec2-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-ec2-runner.outputs.ec2-instance-id }}
