@@ -1,9 +1,6 @@
 flash-attn>=2.4.0
 bitsandbytes>=0.43.1
 
-# available as an option for NVIDIA, FSDP still default
-deepspeed>=0.14.3
-
 # required for FSDP updates
 accelerate>=0.34.2,<1.1.0
 
