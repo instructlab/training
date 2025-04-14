@@ -62,7 +62,7 @@ jobs:
             [
             {"Key": "Name", "Value": "instructlab-ci-github-smoketest-runner"},
             {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
-            {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
+            {"Key": "GitHubRef", "Value": "${{ github.ref }}"}
             ]
 
   run-smoke-tests:
