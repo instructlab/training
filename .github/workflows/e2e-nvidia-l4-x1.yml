@@ -3,23 +3,28 @@
 name: E2E (NVIDIA L4 x1)
 
 on:
-  # run against every merge commit to 'main' and release branches
-  push:
-    branches:
-      - main
-      - release-*
-  # only run on PRs that touch certain regex paths
-  pull_request_target:
-    branches:
-      - main
-      - release-*
-    paths:
-      # note this should match the merging criteria in 'mergify.yml'
-      - "**.py"
-      - "pyproject.toml"
-      - "requirements**.txt"
-      - ".github/workflows/e2e-nvidia-l4-x1.yml" # This workflow
-      - "!tests/**" # we don't need to run e2e if we're just changing the tests.
+  workflow_dispatch:
+
+  # jkunstle: I'm disabling this check because it's relatively expensive and
+  #   doesn't actually test this library (instructlab/training).
+  #   It runs `ilab model train --data <>` which runs `ilab.model.full_train`.
+
+  # push:
+  #   branches:
+  #     - main
+  #     - release-*
+  # # only run on PRs that touch certain regex paths
+  # pull_request_target:
+  #   branches:
+  #     - main
+  #     - release-*
+  #   paths:
+  #     # note this should match the merging criteria in 'mergify.yml'
+  #     - "**.py"
+  #     - "pyproject.toml"
+  #     - "requirements**.txt"
+  #     - ".github/workflows/e2e-nvidia-l4-x1.yml" # This workflow
+  #     - "!tests/**" # we don't need to run e2e if we're just changing the tests.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
