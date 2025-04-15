@@ -60,14 +60,6 @@ toml-fmt: check-engine ## Format pyproject.toml
 check-engine:
 	@command -v $(CENGINE) &> /dev/null || (echo "'$(CENGINE)' container engine is not installed, you can override it with the 'CENGINE' variable" && exit 1)
 
-.PHONY: spellcheck
-spellcheck: ## Spellcheck markdown files
-	tox p -e spellcheck
-
-.PHONY: spellcheck-sort
-spellcheck-sort: .spellcheck-en-custom.txt ## Sort spellcheck directory
-	sort -d -f -o $< $<
-
 .PHONY: verify
 verify: check-tox ## Run linting, typing, and formatting checks via tox
 	tox p -e fastlint,mypy,ruff
