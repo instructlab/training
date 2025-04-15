@@ -202,7 +202,8 @@ def unmask_message_content(
 
     # 3. The labels have to be aligned with the sentence_tk unless they are masked
     assert all(
-        label in (token, -100) for label, token in zip(final_labels, final_sentence_tk)
+        label in (token, -100)
+        for label, token in zip(final_labels, final_sentence_tk, strict=False)
     ), "Labels are not aligned with sentence tokens"
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
@@ -293,11 +294,11 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     try:
         data = load_dataset("json", data_files=args.data_path, split="train")
-    except:
+    except Exception as e:
         # pylint: disable=raise-missing-from,broad-exception-raised
         raise Exception(
             "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
-        )
+        ) from e
 
     if data.num_rows == 0:
         raise ValueError(

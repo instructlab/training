@@ -64,7 +64,7 @@ unfixable = []
 
 # Fixers will be enabled gradually.
 select = [
-  # "B",  # flake8-bugbear
+  "B",  # flake8-bugbear
   # "E",  # pycodestyle
   # "F",  # Pyflakes
   "Q", # flake8-quotes

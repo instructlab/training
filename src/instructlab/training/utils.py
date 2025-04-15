@@ -278,10 +278,13 @@ def make_collate_fn(
                 total_len = 0
                 num_loss_counted_tokens = 0
 
-                for num_samples, item in enumerate(batch):
+                num_samples = 0
+                for item in batch:
                     item_len = len(item["input_ids"])
                     if total_len + item_len > max_batch_len:
                         break
+
+                    num_samples += 1
 
                     input_ids.extend(item["input_ids"].tolist())
                     labels.extend(item["labels"].tolist())
@@ -301,7 +304,7 @@ def make_collate_fn(
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "num_samples": num_samples + 1,  # pylint: disable=W0631
+                    "num_samples": num_samples + 1,
                 }
 
         else:
@@ -595,7 +598,7 @@ def prepare_peft_model(
     peft_config,
     distributed_backend: str,
     gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": True},
+    gradient_checkpointing_kwargs=None,
     mixed_precision="bf16",
 ):
     # will guard this
@@ -619,16 +622,13 @@ def prepare_peft_model(
         if getattr(model, "is_loaded_in_8bit", False) or getattr(
             model, "is_loaded_in_4bit", False
         ):
-            preprare_model_kwargs = {
-                "use_gradient_checkpointing": gradient_checkpointing
+            prepare_model_kwargs = {
+                "use_gradient_checkpointing": gradient_checkpointing,
+                "gradient_checkpointing_kwargs": gradient_checkpointing_kwargs
+                or {"use_reentrant": True},
             }
 
-            # if _support_gc_kwargs:
-            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
-                gradient_checkpointing_kwargs
-            )
-
-            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
+            model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
 
         elif gradient_checkpointing:
             # For backward compatibility with older versions of transformers
@@ -732,7 +732,8 @@ def prepare_universal_checkpoint_from_latest(output_dir):
         if UNIVERSAL_CHECKPOINT_INFO not in ds_checkpoint.global_state:
             warnings.warn(
                 "Universal checkpoint information not found, setting it to "
-                "an empty dictionary."
+                "an empty dictionary.",
+                stacklevel=2,
             )
             ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
             assert (
@@ -1025,10 +1026,12 @@ def save_hf_format_accelerate(
             if arch_added:
                 warnings.warn(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
+                    stacklevel=2,
                 )
             else:
                 warnings.warn(
                     f"Converting from dolomite, but no architecture field added to config.json",
+                    stacklevel=2,
                 )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)

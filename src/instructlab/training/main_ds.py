@@ -830,33 +830,31 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         print("Unexpected exception received during distributed training")
         interrupt = e
     finally:
-        if "process" not in locals() or process is None:
-            return
+        if process is not None:
+            failure = process.poll() != 0
+            if not failure:
+                print("\033[92mOperation completed successfully! 🎉\033[0m")
+            else:
+                print(
+                    "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
+                )
 
-        failure = process.poll() != 0
-        if not failure:
-            print("\033[92mOperation completed successfully! 🎉\033[0m")
-        else:
-            print(
-                "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
-            )
+            process.terminate()
+            try:
+                print("Waiting for process to exit, 60s...")
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                print(
+                    "\033[91mTraining subprocess did not terminate before timeout, sending SIGKILL.\033[0m"
+                )
+                process.kill()
 
-        process.terminate()
-        try:
-            print("Waiting for process to exit, 60s...")
-            process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
-            print(
-                "\033[91mTraining subprocess did not terminate before timeout, sending SIGKILL.\033[0m"
-            )
-            process.kill()
-
-        if interrupt:
-            raise interrupt
-        if failure:
-            raise RuntimeError(
-                "Suffered a failure during distributed training. Please see the training logs for more context."
-            )
+            if interrupt:
+                raise interrupt
+            if failure:
+                raise RuntimeError(
+                    "Suffered a failure during distributed training. Please see the training logs for more context."
+                )
 
 
 if __name__ == "__main__":
