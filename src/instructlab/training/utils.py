@@ -8,7 +8,7 @@ from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, List, Optional, Tuple
+from typing import Any
 import importlib
 import importlib.util
 import inspect
@@ -401,15 +401,15 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
 
         def reduce_sum_forward(
             input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.LongTensor | None = None,
+            past_key_values: list[torch.FloatTensor] | None = None,
+            inputs_embeds: torch.FloatTensor | None = None,
+            labels: torch.LongTensor | None = None,
+            use_cache: bool | None = None,
+            output_attentions: bool | None = None,
+            output_hidden_states: bool | None = None,
+            return_dict: bool | None = None,
             **deprecated_arguments,
         ):
             output = model.__original_forward__(
@@ -465,7 +465,7 @@ def patch_target_module(
     setattr(source, obj_name_to_patch, replace_with)
 
 
-def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
+def wraps(module: nn.Module, wrapped_classes: tuple[Any]) -> bool:
     """Checks if a module or its children are an instance of one of the provided classes.
 
     Args:
@@ -1229,7 +1229,7 @@ def load_latest_full_state(args, accelerator) -> None:
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
 
 
-def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
+def get_projection_layer_names(model: PreTrainedModel) -> list[str]:
     """
     Given a pretrained model, returns all of the projection layers (matching '_proj')
     """

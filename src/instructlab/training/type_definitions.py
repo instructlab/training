@@ -26,6 +26,6 @@ class ProcessedMessagesData(t.TypedDict):
     consumed and processed.
     """
 
-    input_ids: t.List[int]
-    labels: t.List[int]
+    input_ids: list[int]
+    labels: list[int]
     len: int

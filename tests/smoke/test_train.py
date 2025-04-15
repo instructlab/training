@@ -1,5 +1,5 @@
 # Standard
-from typing import Generator
+from collections.abc import Generator
 import pathlib
 import shutil
 import tempfile

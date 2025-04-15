@@ -3,7 +3,6 @@
 from argparse import ArgumentParser
 from pathlib import Path
 from subprocess import run
-from typing import Dict, List
 import json
 
 # Third Party
@@ -24,7 +23,7 @@ class Arguments(BaseModel):
     origin_repository: str
 
 
-def render_image(loss_data: List[float], outfile: Path) -> str:
+def render_image(loss_data: list[float], outfile: Path) -> str:
     # create the plot
     plt.figure()
     plt.plot(loss_data)
@@ -38,16 +37,16 @@ def render_image(loss_data: List[float], outfile: Path) -> str:
     plt.savefig(outfile, format="png")
 
 
-def contents_from_file(log_file: Path) -> List[Dict]:
+def contents_from_file(log_file: Path) -> list[dict]:
     if not log_file.exists():
         raise FileNotFoundError(f"Log file {log_file} does not exist")
     if log_file.is_dir():
         raise ValueError(f"Log file {log_file} is a directory")
-    with open(log_file, "r") as f:
+    with open(log_file) as f:
         return [json.loads(l) for l in f.read().splitlines()]
 
 
-def read_loss_data(log_file: Path) -> List[float]:
+def read_loss_data(log_file: Path) -> list[float]:
     if not log_file:
         raise ValueError("log_file must be provided when source is file")
     contents = contents_from_file(log_file)

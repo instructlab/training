@@ -70,7 +70,7 @@ select = [
   "Q", # flake8-quotes
   # Ruff does not support isort's import_headings feature, yet.
   # "I",  # isort
-  # "UP",  # pyupgrade
+  "UP",  # pyupgrade
   # "SIM",  # flake8-simplify
   "TID", # flake8-tidy-imports
 ]

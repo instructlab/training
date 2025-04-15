@@ -28,7 +28,7 @@ def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
         print("IndexError: no matching files found")
         return
     print("Converting", latest_train_file)
-    with open(latest_train_file, "r") as file:
+    with open(latest_train_file) as file:
         # Read each line (which represents a JSON object)
         for line in file:
             line = json.loads(line)

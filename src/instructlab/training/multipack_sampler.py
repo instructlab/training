@@ -24,7 +24,6 @@ taken from https://github.com/imoneoi/multipack_sampler
 """
 
 # Standard
-from typing import List, Optional
 
 # Third Party
 from torch.utils.data import Sampler
@@ -346,9 +345,9 @@ class MultipackDistributedBatchSampler(Sampler):
     def __init__(
         self,
         batch_max_length: int,
-        lengths: List[int],
-        num_replicas: Optional[int] = None,
-        rank: Optional[int] = None,
+        lengths: list[int],
+        num_replicas: int | None = None,
+        rank: int | None = None,
         seed: int = 0,
         padding: bool = True,
     ):
