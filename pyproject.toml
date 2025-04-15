@@ -10,7 +10,7 @@ authors = [{ name = "InstructLab", email = "dev@instructlab.ai" }]
 description = "Training Library"
 readme = "README.md"
 license = { text = "Apache-2.0" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -20,7 +20,6 @@ classifiers = [
   "Operating System :: POSIX :: Linux",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
@@ -53,7 +52,7 @@ where = ["src"]
 include = ["instructlab.training"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 # same as black's default line length
 line-length = 88
 
