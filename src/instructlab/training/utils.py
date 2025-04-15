@@ -10,6 +10,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, List, Optional, Tuple
 import importlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -101,17 +102,13 @@ def check_valid_train_args(train_args: TrainingArgs):
 
     if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
         # verify that the flash_attn package is actually installed
-        try:
-            # pylint: disable=unused-import
-            # Third Party
-            import flash_attn
-        except ImportError as exc:
+        if not importlib.util.find_spec("flash_attn"):
             raise ImportError(
                 "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
                 "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
                 "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
                 "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
-            ) from exc
+            )
 
     # liger checks
     if train_args.lora and train_args.lora.rank > 0 and train_args.use_liger:
@@ -123,14 +120,12 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Using Liger kernels and Dolomite padding-free transformer is not supported. Please disable either Liger kernels or Dolomite padding-free transformer."
         )
     if train_args.use_liger:
-        try:
-            # Third Party
-            # pylint: disable-next=W0611
-            from liger_kernel.transformers import AutoLigerKernelForCausalLM
-        except ImportError as e:
+        if not importlib.util.find_spec(
+            "liger_kernel.transformers.AutoLigerKernelForCausalLM"
+        ):
             raise ValueError(
                 "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
-            ) from e
+            )
 
 
 def retrieve_chat_template(chat_tmpl_path):
@@ -490,7 +485,7 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     return False
 
 
-def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
+def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":  # noqa: F821
     # if lora
     # Third Party
     from peft import LoraConfig
@@ -499,7 +494,7 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
     proj_layers = get_projection_layer_names(model)
     if not args.lora_target_modules:
         print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+            "WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
         )
         if not proj_layers:
             raise RuntimeError("could not find any projection layers in the model")
@@ -1030,7 +1025,7 @@ def save_hf_format_accelerate(
                 )
             else:
                 warnings.warn(
-                    f"Converting from dolomite, but no architecture field added to config.json",
+                    "Converting from dolomite, but no architecture field added to config.json",
                     stacklevel=2,
                 )
         model.module.config.to_json_file(output_config_file)

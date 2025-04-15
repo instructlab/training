@@ -1,13 +1,10 @@
 # Standard
 from typing import Generator
-import os
 import pathlib
 import shutil
-import sys
 import tempfile
 
 # Third Party
-from transformers import AutoModelForCausalLM
 import huggingface_hub
 import pytest
 

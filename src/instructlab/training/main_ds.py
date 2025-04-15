@@ -718,7 +718,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--learning_rate={train_args.learning_rate}",
         f"--num_warmup_steps={train_args.warmup_steps}",
         f"--save_samples={train_args.save_samples}",
-        f"--log_level=INFO",
+        "--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
     ]
