@@ -37,7 +37,17 @@ env:
 
 jobs:
   run-unit-tests:
-    runs-on: ubuntu-latest
+    name: "unit: ${{ matrix.python }} on ${{ matrix.platform }}"
+    runs-on: "${{ matrix.platform }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+        platform:
+          - "ubuntu-latest"
     # It is important that this job has no write permissions and has
     # no access to any secrets. This part is where we are running
     # untrusted code from PRs.
@@ -48,10 +58,10 @@ jobs:
         with:
           egress-policy: audit
 
-      - name: Setup Python 3.11
+      - name: Setup Python ${{ matrix.python }}
         uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
         with:
-          python-version: 3.11
+          python-version: "${{ matrix.python }}"
 
       - name: "Checkout code"
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -62,7 +72,7 @@ jobs:
       # only has to install Tox because Tox will do the other virtual environment management.
       - name: "Setup Python virtual environment"
         run: |
-          python3.11 -m venv --upgrade-deps venv
+          python -m venv --upgrade-deps venv
           . venv/bin/activate
           pip install tox
 
