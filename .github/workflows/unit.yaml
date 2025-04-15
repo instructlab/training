@@ -23,6 +23,7 @@ on:
     paths:
       # note this should match the merging criteria in 'mergify.yml'
       - "**.py"
+      - "tox.ini"
       - "pyproject.toml"
       - "requirements**.txt"
       - ".github/workflows/unit-tests.yaml" # This workflow
