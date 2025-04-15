@@ -16,6 +16,14 @@ on:
     branches:
       - main
       - release-*
+    paths:
+      # note this should match the merging criteria in 'mergify.yml'
+      - "**.py"
+      - "tox.ini"
+      - "pyproject.toml"
+      - "requirements-dev.txt"
+      - "requirements-cuda.txt"
+      - ".github/workflows/smoke.yaml" # This workflow
 
 permissions:
   contents: read
