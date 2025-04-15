@@ -32,9 +32,6 @@ defaults:
   run:
     shell: bash
 
-env:
-  ec2_runner_variant: "m7i.xlarge" # 4 Xeon CPU, 16GB RAM
-
 jobs:
   run-unit-tests:
     runs-on: ubuntu-latest
