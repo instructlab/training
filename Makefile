@@ -72,12 +72,9 @@ spellcheck-sort: .spellcheck-en-custom.txt ## Sort spellcheck directory
 verify: check-tox ## Run linting, typing, and formatting checks via tox
 	tox p -e fastlint,mypy,ruff
 
-
-# TODO: add unit tests in the future
 .PHONY: tests
-tests: check-tox ## Run type checks.
-	tox -e mypy
-
+tests: check-tox ## Run misc tests
+	tox
 
 .PHONY: fix
 fix: check-tox ## Fix everything that's fixable by the automated tooling.
