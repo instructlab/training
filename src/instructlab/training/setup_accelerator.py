@@ -76,11 +76,6 @@ def get_fsdp_config(args, model: PreTrainedModel):
     fsdp_plugin = FullyShardedDataParallelPlugin(
         auto_wrap_policy=wrap_policy,
         limit_all_gathers=True,
-        mixed_precision_policy=MixedPrecision(
-            param_dtype=torch.bfloat16,
-            reduce_dtype=torch.bfloat16,
-            buffer_dtype=torch.bfloat16,
-        ),
         backward_prefetch=prefetch_policy,
         sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
@@ -127,6 +122,7 @@ def setup_accelerator(args, model: PreTrainedModel, grad_accum):
     elif args.distributed_training_framework == "fsdp":
         accel_args = {
             "fsdp_plugin": get_fsdp_config(args, model),
+            "mixed_precision": "bf16",
         }
     else:
         raise ValueError(

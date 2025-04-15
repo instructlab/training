@@ -138,7 +138,7 @@ class FSDPOptions(BaseModel):
     """
 
     cpu_offload_params: Optional[bool] = False
-    sharding_strategy: ShardingStrategies = ShardingStrategies.SHARD_GRAD_OP
+    sharding_strategy: ShardingStrategies = ShardingStrategies.HYBRID_SHARD
 
 
 # public API
