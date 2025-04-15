@@ -87,7 +87,6 @@ pull_request_rules:
       - files=scripts/ruff.sh
       - files=.pre-commit-config.yaml
       - files=.pylintrc
-      - files~=^\.spellcheck[^/]+$
       - files=tox.ini
       - files=.markdownlint-cli2.yaml
   actions:
