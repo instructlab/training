@@ -19,7 +19,7 @@ on:
       - "tox.ini"
       - "pyproject.toml"
       - "requirements**.txt"
-      - ".github/workflows/unit-tests.yaml" # This workflow
+      - ".github/workflows/unit.yaml" # This workflow
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
