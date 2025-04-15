@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: "Run unit tests via Tox::pytest"
-# This tests should run only those tests that are marked as 'fast.'
-# The opposite are those that would require the mark 'slow,' which would
-# include longer-running integration and smoke tests.
-#
-# Essentially, this workflow should be used frequently for cheap tests,
-# and a 'slow' marked workflow will be used later in review, manually triggered,
-# to verify integration correctness.
 
 on:
   # run against every merge commit to 'main' and release branches
@@ -39,7 +32,6 @@ defaults:
     shell: bash
 
 env:
-  pytest_mark: "fast"
   ec2_runner_variant: "m7i.xlarge" # 4 Xeon CPU, 16GB RAM
 
 jobs:
@@ -120,7 +112,7 @@ jobs:
       - name: "Run unit tests with Tox and Pytest"
         run: |
           source venv/bin/activate
-          tox -e py3-unit -- -m ${{env.pytest_mark}}
+          tox -e py3-unit
 
       - name: "Show disk utilization AFTER tests"
         run: |
