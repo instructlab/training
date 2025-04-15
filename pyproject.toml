@@ -71,7 +71,7 @@ select = [
   # Ruff does not support isort's import_headings feature, yet.
   # "I",  # isort
   "UP",  # pyupgrade
-  # "SIM",  # flake8-simplify
+  "SIM",  # flake8-simplify
   "TID", # flake8-tidy-imports
 ]
 ignore = [

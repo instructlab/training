@@ -258,7 +258,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         _,
     ) = (
         get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token)
-        for sp in SPECIAL_TOKENS.__annotations__.keys()
+        for sp in SPECIAL_TOKENS.__annotations__
     )
     if start_role_tk and end_role_tk:
         system_tk = (
@@ -1013,13 +1013,11 @@ def prepare_final_dataset(
 
     def find_samples_with_unmask_ids(sample):
         labels_have_unmask_ids = any(
-            # pylint: disable=consider-using-in
-            tkid == unmask_begin_token_id or tkid == unmask_end_token_id
+            tkid in (unmask_begin_token_id, unmask_end_token_id)
             for tkid in sample["labels"]
         )
         input_ids_have_unmask_ids = any(
-            # pylint: disable=consider-using-in
-            tkid == unmask_begin_token_id or tkid == unmask_end_token_id
+            tkid in (unmask_begin_token_id, unmask_end_token_id)
             for tkid in sample["input_ids"]
         )
         return labels_have_unmask_ids or input_ids_have_unmask_ids

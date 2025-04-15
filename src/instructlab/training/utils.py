@@ -66,7 +66,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             raise FileNotFoundError(
                 "Model path does not appear to be a directory. Please make sure that you're passing a Hugging Face Transformers compatible directory checkpoint."
             )
-    elif not len(train_args.model_path.split("/")) == 2:
+    elif len(train_args.model_path.split("/")) != 2:
         raise FileNotFoundError(
             f"Provided path does not exist locally and is not an HF format name. Please make sure that you've passed a valid model path and that it has appropriate permissions, or a Huggingface model name (org/repo): {train_args.model_path}"
         )
@@ -100,15 +100,16 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
-        # verify that the flash_attn package is actually installed
-        if not importlib.util.find_spec("flash_attn"):
-            raise ImportError(
-                "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
-                "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
-                "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
-                "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
-            )
+    # also verify that the flash_attn package is actually installed
+    if check_flash_attn_enabled(
+        train_args.disable_flash_attn, train_args.use_dolomite
+    ) and not importlib.util.find_spec("flash_attn"):
+        raise ImportError(
+            "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
+            "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
+            "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
+            "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
+        )
 
     # liger checks
     if train_args.lora and train_args.lora.rank > 0 and train_args.use_liger:
@@ -119,13 +120,12 @@ def check_valid_train_args(train_args: TrainingArgs):
         raise ValueError(
             "Using Liger kernels and Dolomite padding-free transformer is not supported. Please disable either Liger kernels or Dolomite padding-free transformer."
         )
-    if train_args.use_liger:
-        if not importlib.util.find_spec(
-            "liger_kernel.transformers.AutoLigerKernelForCausalLM"
-        ):
-            raise ValueError(
-                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
-            )
+    if train_args.use_liger and not importlib.util.find_spec(
+        "liger_kernel.transformers.AutoLigerKernelForCausalLM"
+    ):
+        raise ValueError(
+            "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
+        )
 
 
 def retrieve_chat_template(chat_tmpl_path):
@@ -478,11 +478,7 @@ def wraps(module: nn.Module, wrapped_classes: tuple[Any]) -> bool:
     if isinstance(module, wrapped_classes):
         return True
 
-    for m in module.children():
-        if wraps(m, wrapped_classes):
-            return True
-
-    return False
+    return any(wraps(m, wrapped_classes) for m in module.children())
 
 
 def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":  # noqa: F821

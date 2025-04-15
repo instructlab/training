@@ -83,10 +83,7 @@ def write_to_s3(
 
 
 def get_destination_path(base_ref: str, head_sha: str, phase: str | None):
-    if phase is None:
-        image_file_name = "loss-graph.png"
-    else:
-        image_file_name = f"loss-graph-{phase}.png"
+    image_file_name = "loss-graph.png" if phase is None else f"loss-graph-{phase}.png"
     return f"loss_graphs/{base_ref}/{head_sha}/{image_file_name}"
 
 
@@ -126,10 +123,7 @@ def main(args: Arguments):
     output_file = Path(args.output_file)
     title = args.title
     if not title:
-        if args.phase is None:
-            phase_str = ""
-        else:
-            phase_str = f" for Phase {args.phase}"
+        phase_str = "" if args.phase is None else f" for Phase {args.phase}"
         title = f"Training Loss Graph{phase_str}"
     render_image(loss_data=loss_data, outfile=output_image)
     destination_path = get_destination_path(
