@@ -9,7 +9,7 @@ on:
       - main
       - release-*
   # only run on PRs that touch certain regex paths
-  pull_request_target:
+  pull_request:
     branches:
       - main
       - release-*
