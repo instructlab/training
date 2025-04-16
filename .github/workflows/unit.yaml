@@ -18,7 +18,8 @@ on:
       - "**.py"
       - "tox.ini"
       - "pyproject.toml"
-      - "requirements**.txt"
+      - "requirements.txt"
+      - "requirements-dev.txt"
       - ".github/workflows/unit.yaml" # This workflow
 
 concurrency:
