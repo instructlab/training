@@ -3,7 +3,6 @@
 from argparse import ArgumentParser
 from pathlib import Path
 from subprocess import run
-from typing import Dict, List
 import json
 
 # Third Party
@@ -24,7 +23,7 @@ class Arguments(BaseModel):
     origin_repository: str
 
 
-def render_image(loss_data: List[float], outfile: Path) -> str:
+def render_image(loss_data: list[float], outfile: Path) -> str:
     # create the plot
     plt.figure()
     plt.plot(loss_data)
@@ -38,16 +37,16 @@ def render_image(loss_data: List[float], outfile: Path) -> str:
     plt.savefig(outfile, format="png")
 
 
-def contents_from_file(log_file: Path) -> List[Dict]:
+def contents_from_file(log_file: Path) -> list[dict]:
     if not log_file.exists():
         raise FileNotFoundError(f"Log file {log_file} does not exist")
     if log_file.is_dir():
         raise ValueError(f"Log file {log_file} is a directory")
-    with open(log_file, "r") as f:
+    with open(log_file) as f:
         return [json.loads(l) for l in f.read().splitlines()]
 
 
-def read_loss_data(log_file: Path) -> List[float]:
+def read_loss_data(log_file: Path) -> list[float]:
     if not log_file:
         raise ValueError("log_file must be provided when source is file")
     contents = contents_from_file(log_file)
@@ -84,10 +83,7 @@ def write_to_s3(
 
 
 def get_destination_path(base_ref: str, head_sha: str, phase: str | None):
-    if phase is None:
-        image_file_name = "loss-graph.png"
-    else:
-        image_file_name = f"loss-graph-{phase}.png"
+    image_file_name = "loss-graph.png" if phase is None else f"loss-graph-{phase}.png"
     return f"loss_graphs/{base_ref}/{head_sha}/{image_file_name}"
 
 
@@ -127,10 +123,7 @@ def main(args: Arguments):
     output_file = Path(args.output_file)
     title = args.title
     if not title:
-        if args.phase is None:
-            phase_str = ""
-        else:
-            phase_str = f" for Phase {args.phase}"
+        phase_str = "" if args.phase is None else f" for Phase {args.phase}"
         title = f"Training Loss Graph{phase_str}"
     render_image(loss_data=loss_data, outfile=output_image)
     destination_path = get_destination_path(

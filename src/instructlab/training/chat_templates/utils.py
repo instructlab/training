@@ -1,6 +1,5 @@
 # Standard
 from dataclasses import dataclass, field
-from typing import List
 
 
 @dataclass
@@ -21,7 +20,7 @@ class SpecialTokens:
     end_role: TokenInfo = field(default_factory=lambda: TokenInfo(""))
     tool: TokenInfo = field(default_factory=lambda: TokenInfo(""))
 
-    def get_tokens_to_add(self) -> List[str]:
+    def get_tokens_to_add(self) -> list[str]:
         return [
             token_info.token
             for token_info in self.__dict__.values()

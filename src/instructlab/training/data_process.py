@@ -202,7 +202,8 @@ def unmask_message_content(
 
     # 3. The labels have to be aligned with the sentence_tk unless they are masked
     assert all(
-        label in (token, -100) for label, token in zip(final_labels, final_sentence_tk)
+        label in (token, -100)
+        for label, token in zip(final_labels, final_sentence_tk, strict=False)
     ), "Labels are not aligned with sentence tokens"
 
     return {"labels": final_labels, "input_ids": final_sentence_tk}
@@ -255,10 +256,10 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         start_role_tk,
         end_role_tk,
         _,
-    ) = [
+    ) = (
         get_sp_token(tokenizer, getattr(SPECIAL_TOKENS, sp).token)
-        for sp in SPECIAL_TOKENS.__annotations__.keys()
-    ]
+        for sp in SPECIAL_TOKENS.__annotations__
+    )
     if start_role_tk and end_role_tk:
         system_tk = (
             start_role_tk
@@ -293,11 +294,11 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     try:
         data = load_dataset("json", data_files=args.data_path, split="train")
-    except:
+    except Exception as e:
         # pylint: disable=raise-missing-from,broad-exception-raised
         raise Exception(
             "Malformed or missing data, please ensure that your dataset is not empty and correctly formatted"
-        )
+        ) from e
 
     if data.num_rows == 0:
         raise ValueError(
@@ -428,9 +429,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     )
 
 
-def wrap_masked_messages(
-    msgs: t.List[Message], unmask_roles: t.List[str]
-) -> t.List[Message]:
+def wrap_masked_messages(msgs: list[Message], unmask_roles: list[str]) -> list[Message]:
     """
     Given a list of messages and a set of roles we want to unmask, return
     a list with the matching messages wrapped with `<|UNMASK_BEGIN|>` and `<|UNMASK_END|>` tokens
@@ -443,7 +442,7 @@ def wrap_masked_messages(
     Returns:
         List[Message]: The resultant list with all appropriate messages wrapped.
     """
-    new_msgs: t.List[Message] = []
+    new_msgs: list[Message] = []
     for msg in msgs:
         content = msg["content"]
         if msg["role"] in unmask_roles:
@@ -453,9 +452,9 @@ def wrap_masked_messages(
 
 
 def unmask_messages(
-    msgs: t.List[Message],
+    msgs: list[Message],
     tokenizer: PreTrainedTokenizer,
-    unmask_roles: t.List[str],
+    unmask_roles: list[str],
 ) -> ProcessedMessagesData:
     """
     Algorithm to unmask messages with any arbitrary Tokenizer, provided the following
@@ -590,7 +589,7 @@ def unmask_messages(
 
 
 def unmask_sample(
-    sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer
+    sample: dict[str, t.Any], tokenizer: PreTrainedTokenizer
 ) -> ProcessedMessagesData:
     """
     Given a sample from a dataset, unmask the appropriate messages and return a sample containing the
@@ -618,7 +617,7 @@ def unmask_sample(
     return unmask_messages(sample["messages"], tokenizer, unmask_roles)
 
 
-def extract_messages_from_pretraining_text(text: str) -> t.List[Message]:
+def extract_messages_from_pretraining_text(text: str) -> list[Message]:
     """
     Given a message from a pretraining message that was formatted using either the generic
     Granite (3.x) template or the legacy Granite 7B template, extract the contents
@@ -645,7 +644,7 @@ def extract_messages_from_pretraining_text(text: str) -> t.List[Message]:
     pattern = legacy_pattern if use_legacy_template else generic_pattern
     eot_str = legacy_eos_token if use_legacy_template else generic_eos_token
 
-    extracted_messages: t.List[Message] = []
+    extracted_messages: list[Message] = []
 
     # Generator function to process the matches iteratively
     for match in re.finditer(pattern, text):
@@ -724,8 +723,8 @@ def pretraining_is_using_legacy_granite_chat_template(ds: Dataset) -> bool:
 
 
 def ensure_dataset_is_compatible_with_legacy_format(
-    sample: t.Dict[str, t.Any],
-) -> t.Dict[str, t.Any]:
+    sample: dict[str, t.Any],
+) -> dict[str, t.Any]:
     """
     Given a sample that uses the legacy pre-training format, we unroll the samples into ones with the
     original messages contents.
@@ -1014,13 +1013,11 @@ def prepare_final_dataset(
 
     def find_samples_with_unmask_ids(sample):
         labels_have_unmask_ids = any(
-            # pylint: disable=consider-using-in
-            tkid == unmask_begin_token_id or tkid == unmask_end_token_id
+            tkid in (unmask_begin_token_id, unmask_end_token_id)
             for tkid in sample["labels"]
         )
         input_ids_have_unmask_ids = any(
-            # pylint: disable=consider-using-in
-            tkid == unmask_begin_token_id or tkid == unmask_end_token_id
+            tkid in (unmask_begin_token_id, unmask_end_token_id)
             for tkid in sample["input_ids"]
         )
         return labels_have_unmask_ids or input_ids_have_unmask_ids

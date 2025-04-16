@@ -64,14 +64,14 @@ unfixable = []
 
 # Fixers will be enabled gradually.
 select = [
-  # "B",  # flake8-bugbear
+  "B",  # flake8-bugbear
   # "E",  # pycodestyle
-  # "F",  # Pyflakes
+  "F",  # Pyflakes
   "Q", # flake8-quotes
   # Ruff does not support isort's import_headings feature, yet.
   # "I",  # isort
-  # "UP",  # pyupgrade
-  # "SIM",  # flake8-simplify
+  "UP",  # pyupgrade
+  "SIM",  # flake8-simplify
   "TID", # flake8-tidy-imports
 ]
 ignore = [

@@ -8,8 +8,9 @@ from copy import deepcopy
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, List, Optional, Tuple
+from typing import Any
 import importlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -65,7 +66,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             raise FileNotFoundError(
                 "Model path does not appear to be a directory. Please make sure that you're passing a Hugging Face Transformers compatible directory checkpoint."
             )
-    elif not len(train_args.model_path.split("/")) == 2:
+    elif len(train_args.model_path.split("/")) != 2:
         raise FileNotFoundError(
             f"Provided path does not exist locally and is not an HF format name. Please make sure that you've passed a valid model path and that it has appropriate permissions, or a Huggingface model name (org/repo): {train_args.model_path}"
         )
@@ -99,19 +100,16 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
-        # verify that the flash_attn package is actually installed
-        try:
-            # pylint: disable=unused-import
-            # Third Party
-            import flash_attn
-        except ImportError as exc:
-            raise ImportError(
-                "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
-                "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
-                "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
-                "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
-            ) from exc
+    # also verify that the flash_attn package is actually installed
+    if check_flash_attn_enabled(
+        train_args.disable_flash_attn, train_args.use_dolomite
+    ) and not importlib.util.find_spec("flash_attn"):
+        raise ImportError(
+            "Flash attention is enabled but flash_attn is not installed. You can resolve this in the following ways:\n"
+            "1. Ensure the CUDA/ROCM version of the training library is installed via: `pip install instructlab-training[cuda]` or `pip install instructlab-training[rocm]`\n"
+            "2. Install flash_attn manually via: `pip install flash-attn --no-build-isolation`\n"
+            "3. Disable flash attention by setting `disable_flash_attn=True` in your training arguments\n"
+        )
 
     # liger checks
     if train_args.lora and train_args.lora.rank > 0 and train_args.use_liger:
@@ -122,15 +120,12 @@ def check_valid_train_args(train_args: TrainingArgs):
         raise ValueError(
             "Using Liger kernels and Dolomite padding-free transformer is not supported. Please disable either Liger kernels or Dolomite padding-free transformer."
         )
-    if train_args.use_liger:
-        try:
-            # Third Party
-            # pylint: disable-next=W0611
-            from liger_kernel.transformers import AutoLigerKernelForCausalLM
-        except ImportError as e:
-            raise ValueError(
-                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
-            ) from e
+    if train_args.use_liger and not importlib.util.find_spec(
+        "liger_kernel.transformers.AutoLigerKernelForCausalLM"
+    ):
+        raise ValueError(
+            "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
+        )
 
 
 def retrieve_chat_template(chat_tmpl_path):
@@ -278,10 +273,13 @@ def make_collate_fn(
                 total_len = 0
                 num_loss_counted_tokens = 0
 
-                for num_samples, item in enumerate(batch):
+                num_samples = 0
+                for item in batch:
                     item_len = len(item["input_ids"])
                     if total_len + item_len > max_batch_len:
                         break
+
+                    num_samples += 1
 
                     input_ids.extend(item["input_ids"].tolist())
                     labels.extend(item["labels"].tolist())
@@ -301,7 +299,7 @@ def make_collate_fn(
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "num_samples": num_samples + 1,  # pylint: disable=W0631
+                    "num_samples": num_samples + 1,
                 }
 
         else:
@@ -403,15 +401,15 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
 
         def reduce_sum_forward(
             input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            attention_mask: torch.Tensor | None = None,
+            position_ids: torch.LongTensor | None = None,
+            past_key_values: list[torch.FloatTensor] | None = None,
+            inputs_embeds: torch.FloatTensor | None = None,
+            labels: torch.LongTensor | None = None,
+            use_cache: bool | None = None,
+            output_attentions: bool | None = None,
+            output_hidden_states: bool | None = None,
+            return_dict: bool | None = None,
             **deprecated_arguments,
         ):
             output = model.__original_forward__(
@@ -467,7 +465,7 @@ def patch_target_module(
     setattr(source, obj_name_to_patch, replace_with)
 
 
-def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
+def wraps(module: nn.Module, wrapped_classes: tuple[Any]) -> bool:
     """Checks if a module or its children are an instance of one of the provided classes.
 
     Args:
@@ -480,14 +478,10 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     if isinstance(module, wrapped_classes):
         return True
 
-    for m in module.children():
-        if wraps(m, wrapped_classes):
-            return True
-
-    return False
+    return any(wraps(m, wrapped_classes) for m in module.children())
 
 
-def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
+def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":  # noqa: F821
     # if lora
     # Third Party
     from peft import LoraConfig
@@ -496,7 +490,7 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
     proj_layers = get_projection_layer_names(model)
     if not args.lora_target_modules:
         print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+            "WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
         )
         if not proj_layers:
             raise RuntimeError("could not find any projection layers in the model")
@@ -595,7 +589,7 @@ def prepare_peft_model(
     peft_config,
     distributed_backend: str,
     gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": True},
+    gradient_checkpointing_kwargs=None,
     mixed_precision="bf16",
 ):
     # will guard this
@@ -619,16 +613,13 @@ def prepare_peft_model(
         if getattr(model, "is_loaded_in_8bit", False) or getattr(
             model, "is_loaded_in_4bit", False
         ):
-            preprare_model_kwargs = {
-                "use_gradient_checkpointing": gradient_checkpointing
+            prepare_model_kwargs = {
+                "use_gradient_checkpointing": gradient_checkpointing,
+                "gradient_checkpointing_kwargs": gradient_checkpointing_kwargs
+                or {"use_reentrant": True},
             }
 
-            # if _support_gc_kwargs:
-            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
-                gradient_checkpointing_kwargs
-            )
-
-            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
+            model = prepare_model_for_kbit_training(model, **prepare_model_kwargs)
 
         elif gradient_checkpointing:
             # For backward compatibility with older versions of transformers
@@ -732,7 +723,8 @@ def prepare_universal_checkpoint_from_latest(output_dir):
         if UNIVERSAL_CHECKPOINT_INFO not in ds_checkpoint.global_state:
             warnings.warn(
                 "Universal checkpoint information not found, setting it to "
-                "an empty dictionary."
+                "an empty dictionary.",
+                stacklevel=2,
             )
             ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
             assert (
@@ -1025,10 +1017,12 @@ def save_hf_format_accelerate(
             if arch_added:
                 warnings.warn(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
+                    stacklevel=2,
                 )
             else:
                 warnings.warn(
-                    f"Converting from dolomite, but no architecture field added to config.json",
+                    "Converting from dolomite, but no architecture field added to config.json",
+                    stacklevel=2,
                 )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
@@ -1231,7 +1225,7 @@ def load_latest_full_state(args, accelerator) -> None:
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
 
 
-def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
+def get_projection_layer_names(model: PreTrainedModel) -> list[str]:
     """
     Given a pretrained model, returns all of the projection layers (matching '_proj')
     """

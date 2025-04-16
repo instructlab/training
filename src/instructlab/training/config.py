@@ -6,7 +6,6 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
-from typing import List, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -97,7 +96,7 @@ class LoraOptions(BaseModel):
     When set to `None`, it selects all projection layers in the model (matching `_proj`).
     `None` by default.
     """
-    target_modules: Optional[List[str]] = None
+    target_modules: list[str] | None = None
 
     quantize_data_type: QuantizeDataType = QuantizeDataType.NONE
 
@@ -115,9 +114,9 @@ class DeepSpeedOptions(BaseModel):
     Defaults are all taken from the above docs.
     """
 
-    cpu_offload_optimizer: Optional[bool] = False
+    cpu_offload_optimizer: bool | None = False
     cpu_offload_optimizer_ratio: float = 1
-    cpu_offload_optimizer_pin_memory: Optional[bool] = False
+    cpu_offload_optimizer_pin_memory: bool | None = False
 
     # don't save in deepspeed format as a default
     save_samples: int | None = None
@@ -137,7 +136,7 @@ class FSDPOptions(BaseModel):
     Represents the options for configuring FSDP which are exposed by the Training Library
     """
 
-    cpu_offload_params: Optional[bool] = False
+    cpu_offload_params: bool | None = False
     sharding_strategy: ShardingStrategies = ShardingStrategies.SHARD_GRAD_OP
 
 
@@ -183,7 +182,7 @@ class TrainingArgs(BaseModel):
     checkpoint_at_epoch: bool = True
     accelerate_full_state_at_epoch: bool = True
 
-    mock_data: Optional[bool] = False
+    mock_data: bool | None = False
     mock_data_len: int = 0
 
     deepspeed_options: DeepSpeedOptions = Field(
@@ -200,7 +199,7 @@ class TrainingArgs(BaseModel):
     )
     distributed_backend: DistributedBackend = DistributedBackend.FSDP
 
-    disable_flash_attn: Optional[bool] = False
+    disable_flash_attn: bool | None = False
 
     # TODO(osilkin): support quantized full fine-tuning:
     # https://github.com/instructlab/training/issues/28
@@ -208,12 +207,12 @@ class TrainingArgs(BaseModel):
     lora: LoraOptions | None = None
 
     # This field defines whether or not data processing will occur inside of `run_training()`
-    process_data: Optional[bool] = True
+    process_data: bool | None = True
 
     # This field specifies whether only the last checkpoint should be retained. When set to true, it
     # will overwrite the previous checkpoint directory, keeping only one directory called
     # "last_epoch". This works alongside the '--checkpoint_at_epoch' flag.
-    keep_last_checkpoint_only: Optional[bool] = False
+    keep_last_checkpoint_only: bool | None = False
 
     # TODO(osilkin):
     #   we are only exposing this here because `run_training` today is implicitly coupled
