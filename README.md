@@ -92,9 +92,8 @@ for training jobs. There are a number of options you can specify, such as settin
 | Field | Description |
 | --- | --- |
 | model_path | Either a reference to a HuggingFace repo or a path to a model saved in the HuggingFace format.  |
-| data_path | A path to the `.jsonl` training dataset. This is expected to be in the messages format.  |
+| data_path | A path to the `.jsonl` training dataset. This is expected to be processed (post filtering/tokenization/masking).  |
 | ckpt_output_dir | Directory where trained model checkpoints will be saved. |
-| data_output_dir | Directory where the processed training data is stored (post filtering/tokenization/masking) |
 |  max_seq_len | The maximum sequence length to be included in the training set. Samples exceeding this length will be dropped. |
 | max_batch_len | Maximum tokens per gpu for each batch that will be handled in a single step. Used as part of the multipack calculation. If running into out-of-memory errors, try to lower this value, but not below the `max_seq_len`. |
 | num_epochs | Number of epochs to run through before stopping. |
@@ -281,7 +280,7 @@ training_args = TrainingArgs(
     model_path = "ibm-granite/granite-7b-base",
     data_path = "path/to/dataset.jsonl",
     ckpt_output_dir = "data/saved_checkpoints",
-    data_output_dir = "data/outputs",
+    data_path = "data/outputs/data.jsonl",
 
     # define model-trianing parameters
     max_seq_len = 4096,
@@ -335,13 +334,14 @@ from instructlab.training import (
     DataProcessArgs,
     data_process as dp
 )
+import os
 
 training_args = TrainingArgs(
     # define data-specific arguments
     model_path = "ibm-granite/granite-7b-base",
     data_path = "path/to/dataset.jsonl",
     ckpt_output_dir = "data/saved_checkpoints",
-    data_output_dir = "data/outputs",
+    data_path = "data/outputs/data.jsonl",
 
     # define model-trianing parameters
     max_seq_len = 4096,
@@ -352,12 +352,11 @@ training_args = TrainingArgs(
     learning_rate = 2e-6,
     warmup_steps = 800,
     random_seed = 42,
-    process_data = True,
 )
 ...
 
 data_process_args = DataProcessArgs(
-    data_output_path = training_args.data_output_dir,
+    data_output_path = os.path.dirname(training_args.data_path),
     model_path = training_args.model_path,
     data_path = training_args.data_path,
     max_seq_len = training_args.max_seq_len,
