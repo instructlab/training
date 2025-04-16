@@ -113,6 +113,16 @@ jobs:
           . venv/bin/activate
           pip install tox
 
+      # flash-attn has a bug in the setup.py that causes pip to attempt
+      # installing it before torch is installed. This is a bug because their
+      # setup.py depends on importing the module, so it should have been listed
+      # in build_requires. Alas.
+      # See: https://github.com/Dao-AILab/flash-attention/pull/958
+      - name: "Install torch before other dependencies"
+        run: |
+          source venv/bin/activate
+          pip install torch
+
       - name: "Show disk utilization BEFORE tests"
         run: |
           df -h
