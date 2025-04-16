@@ -4,7 +4,7 @@ from functools import partial
 # Third Party
 from accelerate import Accelerator
 from peft.utils.other import fsdp_auto_wrap_policy
-from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers import PreTrainedModel
 import torch
