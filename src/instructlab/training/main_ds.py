@@ -155,7 +155,13 @@ def setup_model(
             raise ValueError(
                 "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
             ) from e
-        model = AutoLigerKernelForCausalLM.from_pretrained(**base_model_args)
+
+        # NOTE: (jkunstle) we disable fused_linear_cross_entropy, even though it's a default for most of the models with LK support,
+        #   because reduce_sum_loss requires the logits, and fused_linear_cross_entropy explicitly skips materializing them for
+        #   performance.
+        model = AutoLigerKernelForCausalLM.from_pretrained(
+            **base_model_args, cross_entropy=True, fused_linear_cross_entropy=False
+        )
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
