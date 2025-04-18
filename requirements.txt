@@ -7,7 +7,7 @@ transformers>=4.45.2
 
 datasets>=2.15.0
 numba
-numpy>=1.26.4,<2.0.0
+numpy>=1.26.4
 rich
 instructlab-dolomite>=0.2.0
 trl>=0.9.4

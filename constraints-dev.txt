@@ -109,7 +109,7 @@ nodeenv==1.9.1            # via pre-commit
 notebook==7.4.3           # via jupyter
 notebook-shim==0.2.4      # via jupyterlab, notebook
 numba==0.61.2             # via -r requirements.txt
-numpy==1.26.4             # via accelerate, bitsandbytes, contourpy, datasets, deepspeed, matplotlib, numba, pandas, peft, tensorboard, transformers, -r requirements-dev.txt, -r requirements.txt
+numpy==2.2.6              # via accelerate, bitsandbytes, contourpy, datasets, deepspeed, matplotlib, numba, pandas, peft, tensorboard, transformers, -r requirements-dev.txt, -r requirements.txt
 nvidia-cublas-cu12==12.4.5.8  # via nvidia-cudnn-cu12, nvidia-cusolver-cu12, torch
 nvidia-cuda-cupti-cu12==12.4.127  # via torch
 nvidia-cuda-nvrtc-cu12==12.4.127  # via torch
