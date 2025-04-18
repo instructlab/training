@@ -25,22 +25,6 @@ pull_request_rules:
         - -files~=^\.github/(actions|workflows)/.*\.ya?ml$
         - -files~=^\.github/workflows/actionlint\.
 
-    # e2e medium workflow
-    - or:
-      - and:
-        # note this should match the triggering criteria in 'e2e-nvidia-l4-x1.yml'
-        - check-success~=e2e-medium-workflow-complete
-        - or:
-          - files~=\.py$
-          - files=pyproject.toml
-          - files~=^requirements.*\.txt$
-          - files=.github/workflows/e2e-nvidia-l4-x1.yml
-      - and:
-        - -files~=\.py$
-        - -files=pyproject.toml
-        - -files~=^requirements.*\.txt$
-        - -files=.github/workflows/e2e-nvidia-l4-x1.yml
-
     # code lint workflow
     - or:
       - and:
