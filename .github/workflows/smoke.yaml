@@ -123,6 +123,16 @@ jobs:
           source venv/bin/activate
           pip install torch
 
+      - name: "Install tox-current-env to reuse the venv with torch"
+        run: |
+          source venv/bin/activate
+          pip install tox-current-env
+
+      - name: "Install dependencies from tox.ini in the current venv"
+        run: |
+          source venv/bin/activate
+          tox --print-deps-to=- | pip install -r /dev/stdin
+
       - name: "Show disk utilization BEFORE tests"
         run: |
           df -h
@@ -130,7 +140,7 @@ jobs:
       - name: "Run smoke tests with Tox and Pytest"
         run: |
           source venv/bin/activate
-          tox -e py3-smoke
+          tox --current-env -e py3-smoke
 
       - name: "Show disk utilization AFTER tests"
         run: |
