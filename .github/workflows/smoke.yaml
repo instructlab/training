@@ -36,47 +36,72 @@ env:
   ec2_runner_variant: "g6e.12xlarge" # 4x L40s
 
 jobs:
-  start-ec2-runner:
+  start-large-ec2-runner:
     runs-on: ubuntu-latest
     outputs:
-      label: ${{ steps.start-ec2-runner.outputs.label }}
-      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id}}
-
+      label: ${{ steps.launch-ec2-instance-with-fallback.outputs.label }}
+      ec2-instance-id: ${{ steps.launch-ec2-instance-with-fallback.outputs.ec2-instance-id }}
+      ec2-instance-region: ${{ steps.launch-ec2-instance-with-fallback.outputs.ec2-instance-region }}
     steps:
-      - name: "Harden runner"
-        uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.10.1
+      - name: Checkout "launch-ec2-runner-with-fallback" in-house CI action
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          egress-policy: audit
+          repository: instructlab/ci-actions
+          # clone the "ci-actions" repo to a local directory called "ci-actions", instead of overwriting the current WORKDIR contents
+          path: ci-actions
+          ref: release-v0.1
+          sparse-checkout: |
+            actions/launch-ec2-runner-with-fallback
 
-      - name: "Configure AWS credentials"
-        uses: "aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722" # v4.1.0
+      - name: Launch EC2 Runner with Fallback
+        id: launch-ec2-instance-with-fallback
+        uses: ./ci-actions/actions/launch-ec2-runner-with-fallback
+        env:
+          TMPDIR: "/tmp"
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: "Start EC2 runner"
-        id: start-ec2-runner
-        uses: machulav/ec2-github-runner@a8c20fc0876503410b2b966c124abc2311984ce2 # v2.3.9
-        with:
-          mode: start
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          ec2-image-id: ${{ vars.AWS_EC2_AMI }}
-          ec2-instance-type: ${{ env.ec2_runner_variant }}
-          subnet-id: subnet-024298cefa3bedd61
-          security-group-id: sg-06300447c4a5fbef3
-          iam-role-name: instructlab-ci-runner
-          aws-resource-tags: >
+          aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          github_token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          regions_config: >
             [
-            {"Key": "Name", "Value": "instructlab-ci-github-smoketest-runner"},
-            {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
-            {"Key": "GitHubRef", "Value": "${{ github.ref }}"}
+              {
+                "region": "us-east-2",
+                "subnets": {
+                  "us-east-2a": "${{ vars.SUBNET_US_EAST_2A }}",
+                  "us-east-2b": "${{ vars.SUBNET_US_EAST_2B }}",
+                  "us-east-2c": "${{ vars.SUBNET_US_EAST_2C }}"
+                },
+                "ec2-ami": "${{ vars.AWS_EC2_AMI_US_EAST_2 }}",
+                "security-group-id": "${{ vars.SECURITY_GROUP_ID_US_EAST_2 }}"
+              },
+              {
+                "region": "us-east-1",
+                "subnets": {
+                  "us-east-1a": "${{ vars.SUBNET_US_EAST_1A }}",
+                  "us-east-1b": "${{ vars.SUBNET_US_EAST_1B }}",
+                  "us-east-1c": "${{ vars.SUBNET_US_EAST_1C }}",
+                  "us-east-1d": "${{ vars.SUBNET_US_EAST_1D }}",
+                  "us-east-1e": "${{ vars.SUBNET_US_EAST_1E }}",
+                  "us-east-1f": "${{ vars.SUBNET_US_EAST_1F }}"
+                },
+                "ec2-ami": "${{ vars.AWS_EC2_AMI_US_EAST_1 }}",
+                "security-group-id": "${{ vars.SECURITY_GROUP_ID_US_EAST_1 }}"
+              }
+            ]
+          try_spot_instance_first: false
+          ec2_instance_type: g6e.12xlarge
+          aws_resource_tags: >
+            [
+              {"Key": "Name", "Value": "instructlab-training-ci-github-large-runner"},
+              {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
+              {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
+              {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
             ]
 
   run-smoke-tests:
     needs:
-      - start-ec2-runner
-    runs-on: ${{needs.start-ec2-runner.outputs.label}}
+      - start-large-ec2-runner
+    runs-on: ${{needs.start-large-ec2-runner.outputs.label}}
     # It is important that this job has no write permissions and has
     # no access to any secrets. This part is where we are running
     # untrusted code from PRs.
@@ -136,9 +161,9 @@ jobs:
         run: |
           df -h
 
-  stop-ec2-runner:
+  stop-large-ec2-runner:
     needs:
-      - start-ec2-runner
+      - start-large-ec2-runner
       - run-smoke-tests
     runs-on: ubuntu-latest
     if: ${{ always() }}
@@ -153,12 +178,12 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-region }}
 
       - name: "Stop EC2 runner"
         uses: machulav/ec2-github-runner@a8c20fc0876503410b2b966c124abc2311984ce2 # v2.3.9
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          label: ${{ needs.start-ec2-runner.outputs.label }}
-          ec2-instance-id: ${{ needs.start-ec2-runner.outputs.ec2-instance-id }}
+          label: ${{ needs.start-large-ec2-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-id }}
