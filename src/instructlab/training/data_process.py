@@ -723,30 +723,32 @@ def pretraining_is_using_legacy_granite_chat_template(ds: Dataset) -> bool:
         return False
 
 
-def ensure_dataset_is_compatible_with_legacy_format(
-    sample: t.Dict[str, t.Any],
-) -> t.Dict[str, t.Any]:
+def ensure_dataset_is_compatible_with_legacy_format(batch: t.Dict[str, t.List[t.Any]]) -> t.Dict[str, t.List[t.Any]]:
     """
-    Given a sample that uses the legacy pre-training format, we unroll the samples into ones with the
-    original messages contents.
+    Given a batch of samples using the legacy pre-training format, unroll the samples into ones with
+    the original messages contents.
     """
-    # deepcopy to prevent re-referencing the existing objects
-    new_sample = {
-        "messages": [],
-        "unmask": sample.get("unmask", False),
+    processed_messages = []
+    unmask_flags = []
+
+    for messages, unmask_flag in zip(batch["messages"], batch.get("unmask", [False] * len(batch["messages"]))):
+        new_messages = []
+        unmask = unmask_flag
+
+        for msg in messages:
+            if msg["role"] != "pretraining":
+                new_messages.append(msg)
+            else:
+                new_messages.extend(extract_messages_from_pretraining_text(msg["content"]))
+                unmask = True  # if any pretraining message is found, set unmask to True
+
+        processed_messages.append(new_messages)
+        unmask_flags.append(unmask)
+
+    return {
+        "messages": processed_messages,
+        "unmask": unmask_flags,
     }
-    for msg in sample["messages"]:
-        if msg["role"] != "pretraining":
-            new_sample["messages"].append(msg)
-            continue
-
-        # handle unmasking
-        new_sample["messages"].extend(
-            extract_messages_from_pretraining_text(msg["content"])
-        )
-        new_sample["unmask"] = True
-
-    return new_sample
 
 
 def filter_samples_by_length(
@@ -876,6 +878,8 @@ def load_and_validate_dataset(data_path: str, num_procs: int) -> Dataset:
 
     return data.map(
         ensure_dataset_is_compatible_with_legacy_format,
+        batched=True,
+        batch_size=1000,
         num_proc=num_procs,
         desc="Ensuring dataset is compatible with legacy format.",
     )
