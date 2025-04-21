@@ -379,7 +379,13 @@ def train(
             else None
         )
 
+    # variables for tracking statistics
     global_grad_norm = None
+    stats_momentum = 0.999  # average strength is effectively 1/1000
+    avg_throughput = 0.0
+    avg_time_per_step = 0.0
+    num_batches = None
+
     for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
             train_loader.batch_sampler.set_epoch(epoch)
@@ -393,6 +399,9 @@ def train(
 
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
+            if not num_batches:
+                num_batches = len(train_loader)
+
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
                 global_step += 1
@@ -445,6 +454,28 @@ def train(
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
+
+                # moving averages
+                avg_throughput = (
+                    stats_momentum * avg_throughput
+                    + (1 - stats_momentum) * overall_throughput
+                )
+                avg_time_per_step = (
+                    stats_momentum * avg_time_per_step
+                    + (1 - stats_momentum) * elapsed_time
+                )
+
+                # bias-correction so initial values dont tend towards 0
+                corrected_avg_throughput = avg_throughput / (
+                    1 - (stats_momentum**global_step)
+                )
+                corrected_avg_time_per_step = avg_time_per_step / (
+                    1 - (stats_momentum**global_step)
+                )
+
+                # now we can estimate the estimated epoch length
+                length_per_epoch = corrected_avg_time_per_step * num_batches
+
                 current_lr = lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
@@ -468,6 +499,13 @@ def train(
                         "step": global_step,
                         "rank": torch.distributed.get_rank(),
                         "overall_throughput": overall_throughput,
+                        "avg_overall_throughput": avg_throughput,
+                        "corrected_avg_overall_throughput": corrected_avg_throughput,
+                        "elapsed_time": elapsed_time,
+                        "avg_elapsed_time": avg_time_per_step,
+                        "corrected_avg_elapsed_time": corrected_avg_time_per_step,
+                        "length_per_epoch": length_per_epoch / 3600,
+                        "num_batches": num_batches,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
