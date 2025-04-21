@@ -195,7 +195,7 @@ class TrainingArgs(BaseModel):
     )
     fsdp_options: FSDPOptions = Field(
         default_factory=lambda: FSDPOptions(
-            cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
+            cpu_offload_params=False,
         )
     )
     distributed_backend: DistributedBackend = DistributedBackend.FSDP
