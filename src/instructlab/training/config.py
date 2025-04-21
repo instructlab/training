@@ -229,3 +229,9 @@ class TrainingArgs(BaseModel):
         default=False,
         description="Whether to use Liger kernels for training.",
     )
+
+    # TODO(osilkin): Create a better API for this, should not merge into library this way
+    use_multipack_v2: bool = Field(
+        default=False,
+        description="Use the MultipackV2 sampler which balances batches based on computational cost. Does not support Padding transformers.",
+    )

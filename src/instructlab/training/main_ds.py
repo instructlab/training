@@ -57,6 +57,9 @@ from instructlab.training.config import DistributedBackend, TorchrunArgs, Traini
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
+from instructlab.training.multipack_sampler_v2 import (
+    find_packing_max_batch_len_and_grad_accum as find_packing_max_batch_len_and_grad_accum_v2,
+)
 from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
@@ -387,7 +390,7 @@ def train(
     num_batches = None
 
     for epoch in range(args.current_epoch, args.num_epochs):
-        if args.sampler in ("multipack"):
+        if args.sampler in ("multipack", "multipack_v2"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
             train_loader.sampler.set_epoch(epoch)
@@ -618,19 +621,35 @@ def main(args):
         args.data_path,
         mock=args.mock_data,
         mock_len=args.mock_len,
+        mock_num_samples=args.mock_num_samples,
     )
 
     try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
-            dataset=dataset,
-            seed=args.seed,
-        )
-        args.sampler = "multipack"
+        if args.use_multipack_v2:
+            packing_max_batch_len, grad_accum = (
+                find_packing_max_batch_len_and_grad_accum_v2(
+                    num_gpus=torch.distributed.get_world_size(),
+                    avg_sample_len=dataset.get_lengths().mean(),
+                    effective_batch_size=args.effective_batch_size,
+                    max_batch_len_per_gpu=args.max_batch_len,
+                    dataset=dataset,
+                    seed=args.seed,
+                )
+            )
+            args.sampler = "multipack_v2"
+        else:
+            packing_max_batch_len, grad_accum = (
+                find_packing_max_batch_len_and_grad_accum(
+                    num_gpus=torch.distributed.get_world_size(),
+                    avg_sample_len=dataset.get_lengths().mean(),
+                    effective_batch_size=args.effective_batch_size,
+                    max_batch_len_per_gpu=args.max_batch_len,
+                    is_padding=not (args.use_dolomite or flash_enabled),
+                    dataset=dataset,
+                    seed=args.seed,
+                )
+            )
+            args.sampler = "multipack"
     except RuntimeError as e:
         if os.environ["LOCAL_RANK"] == "0":
             print(f"\033[38;5;120m{e}\033[0m")
@@ -678,6 +697,11 @@ def main(args):
             seed=args.seed,
         )
 
+    assert (
+        not args.use_multipack_v2
+        or (args.use_multipack_v2 and args.sampler) == "multipack_v2"
+    ), "multipack_v2 was enabled but is not selected"
+
     if args.local_rank == 0:
         metric_logger.log_sync(
             {
@@ -721,6 +745,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # TODO(osilkin): add a check here for multpackv2 and a padding transformers
     check_valid_train_args(train_args)
 
     # switch out generic tmpl for legacy tmpl if requested
@@ -845,11 +870,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     # FSDP Options
     if train_args.fsdp_options.cpu_offload_params:
-        command.extend(
-            [
-                "--cpu_offload_params_fsdp",
-            ]
-        )
+        command.append("--cpu_offload_params_fsdp")
+
+    if train_args.use_multipack_v2:
+        command += ["--use_multipack_v2"]
 
     # specify the sharding strategy
     command.append(
@@ -1048,6 +1072,11 @@ if __name__ == "__main__":
         "--use_liger",
         action="store_true",
         help="Use Liger kernels for training.",
+    )
+    parser.add_argument(
+        "--use_multipack_v2",
+        action="store_true",
+        help="Use the MultipackV2 algorithm for packing batches. This is more optimal but does not support Transformers which require Padding.",
     )
     args = parser.parse_args()
     set_random_seed(args.seed)
