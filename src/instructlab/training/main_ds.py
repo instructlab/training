@@ -946,7 +946,7 @@ if __name__ == "__main__":
         "--fsdp_sharding_strategy",
         type=str,
         # choices=[e.name for e in ShardingStrategy],
-        default="SHARD_GRAD_OP",
+        default="HYBRID_SHARD",
         help="Sharding strategy to be used for FSDP distributed training.",
     )
     parser.add_argument("--use_dolomite", action="store_true")
