@@ -185,6 +185,7 @@ class TrainingArgs(BaseModel):
 
     mock_data: Optional[bool] = False
     mock_data_len: int = 0
+    mock_num_samples: int = 0
 
     deepspeed_options: DeepSpeedOptions = Field(
         default_factory=lambda: DeepSpeedOptions(

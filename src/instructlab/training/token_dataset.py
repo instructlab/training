@@ -47,12 +47,12 @@ class TokenDataset(Dataset):
 
 
 class MockDataset(Dataset):
-    def __init__(self, data_path, max_seq_len=4600):
+    def __init__(self, data_path, max_seq_len=4600, num_samples=92_000):
         self.input_ids = np.random.randint(
-            0, 10000, size=(92000, max_seq_len), dtype=np.int16
+            0, 10000, size=(num_samples, max_seq_len), dtype=np.int16
         )
         self.labels = np.random.randint(
-            0, 10000, size=(92000, max_seq_len), dtype=np.int16
+            0, 10000, size=(num_samples, max_seq_len), dtype=np.int16
         )
 
     def __len__(self):

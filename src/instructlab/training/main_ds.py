@@ -748,6 +748,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append("--mock_data")
         if train_args.mock_data_len:
             command.append(f"--mock_len={train_args.mock_data_len}")
+        if train_args.mock_num_samples:
+            command.append(f"--mock_num_samples={train_args.mock_num_samples}")
 
     if train_args.use_dolomite:
         command.append("--use_dolomite")
@@ -933,6 +935,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
+    parser.add_argument("--mock_num_samples", type=int, default=92_000)
     parser.add_argument(
         "--distributed_training_framework",
         type=str,
