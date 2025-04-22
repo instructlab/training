@@ -90,12 +90,14 @@ def train(
                     "num_loss_counted_tokens": metrics.num_loss_counted_tokens,
                     "batch_size": batch_size,
                     "total_loss": metrics.total_loss,
-                    "samples_seen": samples_seen,
+                    "samples_seen": metrics.samples_seen,
                     "gradnorm": metrics.global_grad_norm,
                     "total_samples": len(accelerator.train_loader.dataset),
                     # "weight_norm": weight_norm,
                 }
             )
+            # we need this below
+            samples_seen = metrics.samples_seen
 
     if save_last:
         checkpointer.checkpoint(
