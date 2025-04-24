@@ -191,6 +191,14 @@ jobs:
           # install with Torch and build dependencies installed
           python3.11 -m pip install packaging wheel setuptools-scm
           python3.11 -m pip install .[cuda] -r requirements-vllm-cuda.txt
+          # Below is a temporary solution to unblock this job. See issue:
+          # https://github.com/instructlab/training/issues/494
+          # <---- START TEMPORARY SOLUTION --->
+          python3.11 -m pip uninstall -y flash-attn
+          python3.11 -m pip cache purge
+          python3.11 -m pip install ninja
+          MAX_JOBS=8 python3.11 -m pip install flash-attn --no-build-isolation
+          # <---- END TEMPORARY SOLUTION --->
 
       - name: Update instructlab-training library
         working-directory: ./training
