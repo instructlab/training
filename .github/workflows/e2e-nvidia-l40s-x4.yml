@@ -190,14 +190,14 @@ jobs:
           # https://github.com/instructlab/instructlab/issues/1821
           # install with Torch and build dependencies installed
           python3.11 -m pip install packaging wheel setuptools-scm
-          python3.11 -m pip install .[cuda] -r requirements-vllm-cuda.txt
+          python3.11 -m pip install -v .[cuda] -r requirements-vllm-cuda.txt -c constraints-dev.txt
 
       - name: Update instructlab-training library
         working-directory: ./training
         run: |
           . ../instructlab/venv/bin/activate
-          pip install .
-          pip install .[cuda]
+          python3.11 -m pip install .
+          python3.11 -m pip install .[cuda]
 
       - name: Check disk before tests
         run: |
