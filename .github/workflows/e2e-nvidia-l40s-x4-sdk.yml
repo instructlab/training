@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+
+name: E2E (NVIDIA L40S x4) SDK Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_or_branch:
+        description: 'pull request number or branch name'
+        required: true
+        default: 'main'
+jobs:
