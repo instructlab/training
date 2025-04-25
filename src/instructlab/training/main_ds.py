@@ -51,10 +51,10 @@ import torch.distributed
 
 # First Party
 from instructlab.training import config
-from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
 from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
+from instructlab.training.logger import setup_metric_logger
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -463,7 +463,7 @@ def train(
                 # )
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_sync(
+                metric_logger.log_dict(
                     {
                         "epoch": epoch,
                         "step": global_step,
@@ -479,7 +479,8 @@ def train(
                         "gradnorm": global_grad_norm,
                         "total_samples": len(train_loader.dataset),
                         # "weight_norm": weight_norm,
-                    }
+                    },
+                    step=global_step,
                 )
 
             if args.save_samples > 0 and (
@@ -551,13 +552,12 @@ def main(args):
             "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
         )
 
-    metric_logger = AsyncStructuredLogger(
-        args.output_dir
-        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
+    metric_logger = setup_metric_logger(
+        args.logger_type, args.run_name, args.output_dir
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_sync({"script_params": vars(args)})
+        metric_logger.log_dict({"script_params": vars(args)}, step=None)
 
     setup_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
@@ -647,7 +647,7 @@ def main(args):
         )
 
     if args.local_rank == 0:
-        metric_logger.log_sync(
+        metric_logger.log_dict(
             {
                 "num_gpus": torch.distributed.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
@@ -659,7 +659,8 @@ def main(args):
                 "avg_samples_per_batch": len(dataset) / len(train_loader),
                 "samples_per_gpu": args.samples_per_gpu,
                 "total_samples": len(dataset),  # emit the total number of samples
-            }
+            },
+            step=None,
         )
 
     model, lr_scheduler, optimizer, accelerator = setup_model(
@@ -936,6 +937,8 @@ if __name__ == "__main__":
         help="Save full model state using Accelerate after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
+    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--logger_type", type=str, default="async")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
