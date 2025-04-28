@@ -47,6 +47,11 @@ class BaseLogger:
             # default template
             run_name = "{time}_rank{rank}"
 
+        self.run_name = self.substitute_placeholders(run_name)
+        self.log_dir = log_dir
+
+    @staticmethod
+    def substitute_placeholders(run_name: str):
         substitutions = {
             "{time}": datetime.now().isoformat(),
             "{rank}": os.environ.get("RANK", 0),
@@ -55,17 +60,16 @@ class BaseLogger:
         for placeholder_pat, value in substitutions.items():
             run_name = run_name.replace(placeholder_pat, str(value))
 
-        self.run_name = run_name
-        self.log_dir = log_dir
+        return run_name
 
     def setup(self):
-        pass
+        raise NotImplementedError
 
     def log_dict(self, d: dict, step: int | None = None):
-        pass
+        raise NotImplementedError
 
-    def teardown(self, exit_code: int = 0):
-        pass
+    def teardown(self, **_kwargs):
+        raise NotImplementedError
 
 
 class FileLogger(BaseLogger):
@@ -81,7 +85,7 @@ class FileLogger(BaseLogger):
 
         self.file.write(json.dumps(d, indent=None) + "\n")
 
-    def teardown(self, exit_code: int = 0):
+    def teardown(self, **_kwargs):
         self.file.close()
 
 
@@ -101,7 +105,7 @@ class AsyncStructuredLogger(BaseLogger):
     def log_dict(self, d: dict, step: int | None = None):
         self.struct_logger.log_sync(d)
 
-    def teardown(self, exit_code: int = 0):
+    def teardown(self, **_kwargs):
         pass
 
 
@@ -111,8 +115,8 @@ class WandbLogger(BaseLogger):
 
         if wandb is None:
             msg = (
-                "Could not initialize WandbLogger because package wandb could not be imported. \
-                \nPlease ensure it is installed by running 'pip install wandb'"
+                "Could not initialize WandbLogger because package wandb could not be imported.\n"
+                "Please ensure it is installed by running 'pip install wandb'"
             )
             raise RuntimeError(msg)
 
@@ -124,8 +128,8 @@ class WandbLogger(BaseLogger):
     def log_dict(self, d: dict, step: int | None = None):
         self._run.log(d, step=step)
 
-    def teardown(self, exit_code: int = 0):
-        self._run.finish(exit_code=exit_code)
+    def teardown(self, **kwargs):
+        self._run.finish(exit_code=kwargs.get("exit_code", 0))
 
 
 class TensorBoardLogger(BaseLogger):
@@ -134,8 +138,8 @@ class TensorBoardLogger(BaseLogger):
 
         if SummaryWriter is None:
             msg = (
-                "Could not initialize TensorBoardLogger because package tensorboard could not be imported. \
-                \nPlease ensure it is installed by running 'pip install tensorboard'"
+                "Could not initialize TensorBoardLogger because package tensorboard could not be imported.\n"
+                "Please ensure it is installed by running 'pip install tensorboard'"
             )
             raise RuntimeError(msg)
 
@@ -149,9 +153,16 @@ class TensorBoardLogger(BaseLogger):
         flat_dict = flatten_dict(d, sep="/")
 
         for k, v in flat_dict.items():
-            self.writer.add_scalar(k, v, global_step=step)
+            try:
+                # Check that `v` can be converted to float
+                float(v)
+            except ValueError:
+                # Occurs for strings that can do not represent floats (e.g. "3.2.3") and aren't "inf" or "nan"
+                self.writer.add_text(k, v, global_step=step)
+            else:
+                self.writer.add_scalar(k, v, global_step=step)
 
-    def teardown(self, exit_code: int = 0):
+    def teardown(self, **_kwargs):
         self.writer.close()
 
 

@@ -683,6 +683,7 @@ def main(args):
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
+    metric_logger.teardown(exit_code=0)
 
 
 # public API
