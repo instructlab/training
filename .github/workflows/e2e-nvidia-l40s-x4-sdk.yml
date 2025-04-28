@@ -10,3 +10,8 @@ on:
         required: true
         default: 'main'
 jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: No-op
+        run: 'true'
