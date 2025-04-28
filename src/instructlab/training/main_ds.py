@@ -557,7 +557,7 @@ def main(args):
     )
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_dict({"script_params": vars(args)}, step=None)
+        metric_logger.log_hparams({"script_params": vars(args)})
 
     setup_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
@@ -647,7 +647,7 @@ def main(args):
         )
 
     if args.local_rank == 0:
-        metric_logger.log_dict(
+        metric_logger.log_hparams(
             {
                 "num_gpus": torch.distributed.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
@@ -659,8 +659,7 @@ def main(args):
                 "avg_samples_per_batch": len(dataset) / len(train_loader),
                 "samples_per_gpu": args.samples_per_gpu,
                 "total_samples": len(dataset),  # emit the total number of samples
-            },
-            step=None,
+            }
         )
 
     model, lr_scheduler, optimizer, accelerator = setup_model(

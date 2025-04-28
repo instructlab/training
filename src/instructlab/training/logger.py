@@ -68,6 +68,9 @@ class BaseLogger:
     def log_dict(self, d: dict, step: int | None = None):
         raise NotImplementedError
 
+    def log_hparams(self, hparam_dict: dict, step: int | None = None):
+        return self.log_dict(hparam_dict, step)
+
     def teardown(self, **_kwargs):
         raise NotImplementedError
 
@@ -123,10 +126,15 @@ class WandbLogger(BaseLogger):
         self._run = None
 
     def setup(self):
-        self._run = wandb.init(name=self.run_name, dir=self.log_dir)
+        self._run = wandb.init(name=self.run_name, dir=self.log_dir, config={})
 
     def log_dict(self, d: dict, step: int | None = None):
-        self._run.log(d, step=step)
+        flat_dict = flatten_dict(d, sep="/")
+        self._run.log(flat_dict, step=step)
+
+    def log_hparams(self, hparam_dict, step=None):
+        for k, v in flatten_dict(hparam_dict, sep="/").items():
+            self._run.config[k] = v
 
     def teardown(self, **kwargs):
         self._run.finish(exit_code=kwargs.get("exit_code", 0))
@@ -161,6 +169,10 @@ class TensorBoardLogger(BaseLogger):
                 self.writer.add_text(k, v, global_step=step)
             else:
                 self.writer.add_scalar(k, v, global_step=step)
+
+    def log_hparams(self, hparam_dict, step=None):
+        flat_dict = flatten_dict(hparam_dict, sep="/")
+        self.writer.add_hparams(flat_dict, {}, run_name=".", global_step=step)
 
     def teardown(self, **_kwargs):
         self.writer.close()
