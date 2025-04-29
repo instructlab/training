@@ -143,10 +143,23 @@ jobs:
       # setup.py depends on importing the module, so it should have been listed
       # in build_requires. Alas.
       # See: https://github.com/Dao-AILab/flash-attention/pull/958
-      - name: "Install torch before other dependencies"
+      - name: "Install torch and other unlisted build dependencies for flash-attn"
         run: |
           source venv/bin/activate
-          pip install torch
+          # The list is taken from the pull request linked above
+          pip install torch packaging setuptools wheel psutil ninja
+
+      - name: "Install tox-current-env to reuse the venv with pre-installed build dependencies"
+        run: |
+          source venv/bin/activate
+          pip install tox-current-env
+
+      - name: "Install dependencies from tox.ini in the current venv, using current venv installed deps"
+        run: |
+          source venv/bin/activate
+          tox -e py3-smoke --print-deps-to-file=./deps.txt
+          pip install -r ./deps.txt --no-build-isolation
+          pip install .
 
       - name: "Show disk utilization BEFORE tests"
         run: |
@@ -155,7 +168,7 @@ jobs:
       - name: "Run smoke tests with Tox and Pytest"
         run: |
           source venv/bin/activate
-          tox -e py3-smoke
+          tox --current-env -e py3-smoke
 
       - name: "Show disk utilization AFTER tests"
         run: |
