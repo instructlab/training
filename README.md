@@ -370,3 +370,9 @@ run_training(
     train_args=training_args,
 )
 ```
+
+## Environment variables
+
+Below is a list of custom environment variables users can set in the training library.
+
+1. `INSTRUCTLAB_NCCL_TIMEOUT_MS`, this environment variable controls the NCCL timeout in milliseconds. Consider increasing if seeing FSDP related NCCL errors.
