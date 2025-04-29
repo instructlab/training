@@ -3,8 +3,10 @@
 # Standard
 from copy import deepcopy
 from pathlib import Path
+from typing import Union
 import argparse
 import datetime
+import gc
 import math
 import os
 import re
@@ -537,102 +539,98 @@ def main(args):
     # Third Party
     import yaml
 
-    if args.distributed_training_framework == "deepspeed" and not FusedAdam:
-        raise ImportError(
-            "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
-        )
-
-    if (
-        args.distributed_training_framework == "deepspeed"
-        and args.cpu_offload_optimizer
-        and not DeepSpeedCPUAdam
-    ):
-        raise ImportError(
-            "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
-        )
-
-    metric_logger = AsyncStructuredLogger(
-        args.output_dir
-        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
-    )
-    if os.environ["LOCAL_RANK"] == "0":
-        print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_sync({"script_params": vars(args)})
-
-    setup_logger(args.log_level)
-    tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
-    # device = torch.device("cuda", args.local_rank)
-
-    model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
-    args.model_type = model_conf.model_type
-
-    # solution discovered from torchtune https://github.com/pytorch/torchtune/issues/2093
-    # gets converted to a timedelta of 1:40:00 if the default is kept
-    nccl_timeout = int(os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS", "6000000"))
-    #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    args.local_rank = int(os.environ["LOCAL_RANK"])
-    torch.distributed.init_process_group(
-        "nccl", timeout=datetime.timedelta(milliseconds=nccl_timeout)
-    )
-    args.global_rank = torch.distributed.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
-    torch.distributed.all_reduce(tensor)
-    torch.distributed.barrier()
-
-    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
-
-    dataset = setup_dataset(
-        args.data_path,
-        mock=args.mock_data,
-        mock_len=args.mock_len,
-    )
+    try:
+        cached_nccl_blocking_wait: Union[str, None] = os.environ[
+            "TORCH_NCCL_BLOCKING_WAIT"
+        ]
+    except KeyError:
+        cached_nccl_blocking_wait = None
+    finally:
+        os.environ["TORCH_NCCL_BLOCKING_WAIT"] = "1"
 
     try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
-            dataset=dataset,
-            seed=args.seed,
+        if args.distributed_training_framework == "deepspeed" and not FusedAdam:
+            raise ImportError(
+                "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
+            )
+
+        if (
+            args.distributed_training_framework == "deepspeed"
+            and args.cpu_offload_optimizer
+            and not DeepSpeedCPUAdam
+        ):
+            raise ImportError(
+                "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
+            )
+
+        metric_logger = AsyncStructuredLogger(
+            args.output_dir
+            + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
         )
-        args.sampler = "multipack"
-    except RuntimeError as e:
         if os.environ["LOCAL_RANK"] == "0":
-            print(f"\033[38;5;120m{e}\033[0m")
+            print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
+            metric_logger.log_sync({"script_params": vars(args)})
 
-        # fallback to grad accum = 1
-        # NOTE: packing max batch len will not be used
-        packing_max_batch_len = None
-        grad_accum = 1
-        args.sampler = "distributed"
+        setup_logger(args.log_level)
+        tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
+        # device = torch.device("cuda", args.local_rank)
 
-    args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
-    )
+        model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
+        args.model_type = model_conf.model_type
 
-    train_loader = setup_dataloader(
-        dataset,
-        tokenizer.pad_token_id,
-        num_workers=8,
-        use_dolomite=args.use_dolomite,
-        flash_enabled=flash_enabled,
-        max_batch_len=args.max_batch_len,
-        packing_max_batch_len=packing_max_batch_len,
-        samples_per_gpu=args.samples_per_gpu,
-        sampler=args.sampler,
-        seed=args.seed,
-    )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        print(
-            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        # solution discovered from torchtune https://github.com/pytorch/torchtune/issues/2093
+        # gets converted to a timedelta of 1:40:00 if the default is kept
+        nccl_timeout = int(os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS", "6000000"))
+        #### distributed init #####
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+        args.local_rank = int(os.environ["LOCAL_RANK"])
+        torch.distributed.init_process_group(
+            "nccl", timeout=datetime.timedelta(milliseconds=nccl_timeout)
         )
-        args.sampler = "distributed"
+        args.global_rank = torch.distributed.get_rank()
+        tensor = torch.ByteTensor([False]).cuda()
+        torch.distributed.all_reduce(tensor)
+        torch.distributed.barrier()
+
+        flash_enabled = check_flash_attn_enabled(
+            args.disable_flash_attn, args.use_dolomite
+        )
+
+        dataset = setup_dataset(
+            args.data_path,
+            mock=args.mock_data,
+            mock_len=args.mock_len,
+        )
+
+        try:
+            packing_max_batch_len, grad_accum = (
+                find_packing_max_batch_len_and_grad_accum(
+                    num_gpus=torch.distributed.get_world_size(),
+                    avg_sample_len=dataset.get_lengths().mean(),
+                    effective_batch_size=args.effective_batch_size,
+                    max_batch_len_per_gpu=args.max_batch_len,
+                    is_padding=not (args.use_dolomite or flash_enabled),
+                    dataset=dataset,
+                    seed=args.seed,
+                )
+            )
+            args.sampler = "multipack"
+        except RuntimeError as e:
+            if os.environ["LOCAL_RANK"] == "0":
+                print(f"\033[38;5;120m{e}\033[0m")
+
+            # fallback to grad accum = 1
+            # NOTE: packing max batch len will not be used
+            packing_max_batch_len = None
+            grad_accum = 1
+            args.sampler = "distributed"
+
+        args.samples_per_gpu = (
+            args.effective_batch_size
+            // grad_accum
+            // torch.distributed.get_world_size()
+        )
+
         train_loader = setup_dataloader(
             dataset,
             tokenizer.pad_token_id,
@@ -645,43 +643,70 @@ def main(args):
             sampler=args.sampler,
             seed=args.seed,
         )
+        if len(train_loader) == 0:
+            # this happens sometimes when we have more GPUs than data to process. In this case
+            # we should either alert the user to switch samplers, or do it automatically and
+            # warn them about it happening
+            print(
+                "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+            )
+            args.sampler = "distributed"
+            train_loader = setup_dataloader(
+                dataset,
+                tokenizer.pad_token_id,
+                num_workers=8,
+                use_dolomite=args.use_dolomite,
+                flash_enabled=flash_enabled,
+                max_batch_len=args.max_batch_len,
+                packing_max_batch_len=packing_max_batch_len,
+                samples_per_gpu=args.samples_per_gpu,
+                sampler=args.sampler,
+                seed=args.seed,
+            )
 
-    if args.local_rank == 0:
-        metric_logger.log_sync(
-            {
-                "num_gpus": torch.distributed.get_world_size(),
-                "avg_sample_len": dataset.get_lengths().mean(),
-                "effective_batch_size": args.effective_batch_size,
-                "max_batch_len_per_gpu": args.max_batch_len,
-                "packing_max_batch_len": packing_max_batch_len,
-                "grad_accum": grad_accum,
-                "num_batches": len(train_loader),
-                "avg_samples_per_batch": len(dataset) / len(train_loader),
-                "samples_per_gpu": args.samples_per_gpu,
-                "total_samples": len(dataset),  # emit the total number of samples
-            }
+        if args.local_rank == 0:
+            metric_logger.log_sync(
+                {
+                    "num_gpus": torch.distributed.get_world_size(),
+                    "avg_sample_len": dataset.get_lengths().mean(),
+                    "effective_batch_size": args.effective_batch_size,
+                    "max_batch_len_per_gpu": args.max_batch_len,
+                    "packing_max_batch_len": packing_max_batch_len,
+                    "grad_accum": grad_accum,
+                    "num_batches": len(train_loader),
+                    "avg_samples_per_batch": len(dataset) / len(train_loader),
+                    "samples_per_gpu": args.samples_per_gpu,
+                    "total_samples": len(dataset),  # emit the total number of samples
+                }
+            )
+
+        model, lr_scheduler, optimizer, accelerator = setup_model(
+            args, tokenizer, train_loader, grad_accum, flash_enabled
         )
 
-    model, lr_scheduler, optimizer, accelerator = setup_model(
-        args, tokenizer, train_loader, grad_accum, flash_enabled
-    )
+        load_latest_full_state(args=args, accelerator=accelerator)
 
-    load_latest_full_state(args=args, accelerator=accelerator)
+        train(
+            args,
+            model,
+            optimizer,
+            lr_scheduler,
+            accelerator,
+            tokenizer,
+            train_loader,
+            grad_accum,
+            metric_logger,
+        )
 
-    train(
-        args,
-        model,
-        optimizer,
-        lr_scheduler,
-        accelerator,
-        tokenizer,
-        train_loader,
-        grad_accum,
-        metric_logger,
-    )
-
-    torch.distributed.barrier()
-    torch.distributed.destroy_process_group()
+        torch.distributed.barrier()
+        torch.distributed.destroy_process_group()
+    finally:
+        if cached_nccl_blocking_wait is None:
+            del os.environ["TORCH_NCCL_BLOCKING_WAIT"]
+        else:
+            os.environ["TORCH_NCCL_BLOCKING_WAIT"] = cached_nccl_blocking_wait
+        torch.cuda.empty_cache()
+        gc.collect()
 
 
 # public API
