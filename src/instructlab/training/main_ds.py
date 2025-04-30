@@ -2,6 +2,7 @@
 
 # Standard
 from copy import deepcopy
+import logging
 from pathlib import Path
 import argparse
 import datetime
@@ -463,7 +464,7 @@ def train(
                 # )
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_dict(
+                metric_logger.info(
                     {
                         "epoch": epoch,
                         "step": global_step,
@@ -480,7 +481,7 @@ def train(
                         "total_samples": len(train_loader.dataset),
                         # "weight_norm": weight_norm,
                     },
-                    step=global_step,
+                    extra={"step": global_step},
                 )
 
             if args.save_samples > 0 and (
@@ -552,12 +553,11 @@ def main(args):
             "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
         )
 
-    metric_logger = setup_metric_logger(
-        args.logger_type, args.run_name, args.output_dir
-    )
+    setup_metric_logger(args.logger_type, args.run_name, args.output_dir)
+    metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_hparams({"script_params": vars(args)})
+        metric_logger.info(vars(args), extra={"hparams": True})
 
     setup_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
@@ -647,7 +647,7 @@ def main(args):
         )
 
     if args.local_rank == 0:
-        metric_logger.log_hparams(
+        metric_logger.info(
             {
                 "num_gpus": torch.distributed.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
@@ -659,7 +659,8 @@ def main(args):
                 "avg_samples_per_batch": len(dataset) / len(train_loader),
                 "samples_per_gpu": args.samples_per_gpu,
                 "total_samples": len(dataset),  # emit the total number of samples
-            }
+            },
+            extra={"hparams": True},
         )
 
     model, lr_scheduler, optimizer, accelerator = setup_model(
@@ -682,7 +683,6 @@ def main(args):
 
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()
-    metric_logger.teardown(exit_code=0)
 
 
 # public API
