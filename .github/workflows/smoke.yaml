@@ -162,6 +162,7 @@ jobs:
           pip install .
 
       - name: "Show disk utilization BEFORE tests"
+        if: always()
         run: |
           df -h
 
@@ -171,6 +172,7 @@ jobs:
           tox --current-env -e py3-smoke
 
       - name: "Show disk utilization AFTER tests"
+        if: always()
         run: |
           df -h
 
