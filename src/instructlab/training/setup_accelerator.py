@@ -122,7 +122,7 @@ def setup_accelerator(args, model: PreTrainedModel, grad_accum):
     elif args.distributed_training_framework == "fsdp":
         accel_args = {
             "fsdp_plugin": get_fsdp_config(args, model),
-            "mixed_precision": "bf16",
+            # "mixed_precision": "bf16",
         }
     else:
         raise ValueError(
