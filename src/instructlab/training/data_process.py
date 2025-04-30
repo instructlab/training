@@ -723,7 +723,9 @@ def pretraining_is_using_legacy_granite_chat_template(ds: Dataset) -> bool:
         return False
 
 
-def ensure_dataset_is_compatible_with_legacy_format(batch: t.Dict[str, t.List[t.Any]]) -> t.Dict[str, t.List[t.Any]]:
+def ensure_dataset_is_compatible_with_legacy_format(
+    batch: t.Dict[str, t.List[t.Any]],
+) -> t.Dict[str, t.List[t.Any]]:
     """
     Given a batch of samples using the legacy pre-training format, unroll the samples into ones with
     the original messages contents.
@@ -731,7 +733,9 @@ def ensure_dataset_is_compatible_with_legacy_format(batch: t.Dict[str, t.List[t.
     processed_messages = []
     unmask_flags = []
 
-    for messages, unmask_flag in zip(batch["messages"], batch.get("unmask", [False] * len(batch["messages"]))):
+    for messages, unmask_flag in zip(
+        batch["messages"], batch.get("unmask", [False] * len(batch["messages"]))
+    ):
         new_messages = []
         unmask = unmask_flag
 
@@ -739,7 +743,9 @@ def ensure_dataset_is_compatible_with_legacy_format(batch: t.Dict[str, t.List[t.
             if msg["role"] != "pretraining":
                 new_messages.append(msg)
             else:
-                new_messages.extend(extract_messages_from_pretraining_text(msg["content"]))
+                new_messages.extend(
+                    extract_messages_from_pretraining_text(msg["content"])
+                )
                 unmask = True  # if any pretraining message is found, set unmask to True
 
         processed_messages.append(new_messages)
