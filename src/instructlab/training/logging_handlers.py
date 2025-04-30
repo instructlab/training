@@ -18,7 +18,9 @@ except ImportError:
     wandb = None
 
 
-def substitute_placeholders(run_name: str) -> str:
+def _substitute_placeholders(
+    run_name: str | None, default_template: str = "{time}_rank{rank}"
+) -> str:
     """Replace placeholders in the run name with actual values.
 
     Supported placeholders:
@@ -27,11 +29,15 @@ def substitute_placeholders(run_name: str) -> str:
         - {local_rank}: Local process rank from LOCAL_RANK environment variable
 
     Args:
-        run_name: String containing placeholders to be replaced
+        run_name: String containing placeholders to be replaced. If None, uses default_template
+        default_template: Default template to use if run_name is None
 
     Returns:
         String with all placeholders replaced by their values
     """
+    if run_name is None:
+        run_name = default_template
+
     substitutions = {
         "{time}": datetime.now().isoformat(),
         "{rank}": os.environ.get("RANK", 0),
@@ -43,69 +49,72 @@ def substitute_placeholders(run_name: str) -> str:
     return run_name
 
 
-def flatten_dict(
-    d: Mapping,
-    sep: str = ".",
-    prefix: str = "",
-    _flattened: dict | None = None,
-) -> dict:
+def _flatten_dict(d: Mapping, sep: str = "/", prefix: str = "") -> dict:
     """Flatten a nested dictionary into a single-level dictionary.
+
+    This function recursively traverses a nested dictionary and creates a new
+    dictionary with keys that represent the path to each value in the original
+    dictionary.
 
     Args:
         d: The dictionary to flatten
         sep: Separator to use between nested keys
         prefix: Prefix to add to all keys
-        _flattened: Internal parameter for recursion, should not be set by caller
 
     Returns:
         A flattened dictionary with keys joined by the separator
     """
-    if _flattened is None:
-        _flattened = {}
+    flattened = {}
 
     for k, v in d.items():
         if isinstance(v, Mapping):
-            flatten_dict(v, sep=sep, prefix=f"{prefix}{k}{sep}", _flattened=_flattened)
+            flattened |= _flatten_dict(v, sep=sep, prefix=f"{prefix}{k}{sep}")
         else:
-            _flattened[prefix + k] = v
+            flattened[prefix + k] = v
 
-    return _flattened
+    return flattened
 
 
 class TensorBoardHandler(logging.Handler):
-    """Logger that writes metrics to TensorBoard."""
+    """Logger that writes metrics to TensorBoard.
+
+    This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
+    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
+    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method and set `extra={"hparams": True}` (e.g. `logger.info({"lr": 0.001, "batch_size": 128}, extra={"hparams": True})`).
+    """
 
     def __init__(
         self,
         level: int = logging.INFO,
         run_name: str | None = None,
-        log_dir: str | Path = "logs",
+        log_dir: str | os.PathLike = "logs",
     ):
         """Initialize the TensorBoard logger and check for required dependencies.
 
         Args:
-            run_name: Name of the run
+            level: The logging level for this handler
+            run_name: Name of the run, can contain placeholders
             log_dir: Directory where TensorBoard logs should be stored
+        """
+        super().__init__(level)
+        self.run_name = _substitute_placeholders(run_name)
+        self.log_dir = Path(log_dir)
+        self._tboard_writer = None
+
+    def _setup(self):
+        """Create the TensorBoard log directory and initialize the writer.
 
         Raises:
             RuntimeError: If tensorboard package is not installed
         """
-        super().__init__(level)
-        self.run_name = run_name
-        self.log_dir = log_dir
-
         if SummaryWriter is None:
             msg = (
-                "Could not initialize TensorBoardLogger because package tensorboard could not be imported.\n"
+                "Could not initialize TensorBoardHandler because package tensorboard could not be imported.\n"
                 "Please ensure it is installed by running 'pip install tensorboard'"
             )
             raise RuntimeError(msg)
 
-        self._tboard_writer = None
-
-    def setup(self):
-        """Create the TensorBoard log directory and initialize the writer."""
-        log_dir = Path(self.log_dir) / self.run_name
+        log_dir = self.log_dir / self.run_name
         os.makedirs(log_dir, exist_ok=True)
 
         self._tboard_writer = SummaryWriter(log_dir=str(log_dir))
@@ -113,16 +122,16 @@ class TensorBoardHandler(logging.Handler):
     def emit(self, record: logging.LogRecord):
         """Emit a log record to TensorBoard.
 
+        This method handles both scalar metrics and text logs, automatically
+        detecting the type of data being logged.
+
         Args:
             record: The log record to emit
         """
         if self._tboard_writer is None:
-            self.setup()
+            self._setup()
 
-        if record.levelno < self.level:
-            return
-
-        flat_dict = flatten_dict(record.msg, sep="/")
+        flat_dict = _flatten_dict(record.msg)
         step = getattr(record, "step", None)
         if getattr(record, "hparams", None):
             self._tboard_writer.add_hparams(
@@ -135,8 +144,12 @@ class TensorBoardHandler(logging.Handler):
                 # Check that `v` can be converted to float
                 float(v)
             except ValueError:
-                # Occurs for strings that can do not represent floats (e.g. "3.2.3") and aren't "inf" or "nan"
+                # Occurs for strings that cannot be converted to floats (e.g. "3.2.3") and aren't "inf" or "nan"
                 self._tboard_writer.add_text(k, v, global_step=step)
+            except TypeError:
+                warnings.warn(
+                    f"TensorBoardHandler expected a scalar or text, got {type(v)}. Skipping log. Please ensure metric logger is only called with mappings containing scalar values or text."
+                )
             else:
                 self._tboard_writer.add_scalar(k, v, global_step=step)
 
@@ -146,7 +159,7 @@ class TensorBoardHandler(logging.Handler):
             self._tboard_writer.flush()
 
     def close(self):
-        """Close the TensorBoard writer."""
+        """Close the TensorBoard writer and cleanup resources."""
         if self._tboard_writer is not None:
             self._tboard_writer.close()
             self._tboard_writer = None
@@ -154,38 +167,42 @@ class TensorBoardHandler(logging.Handler):
 
 
 class WandbHandler(logging.Handler):
-    """Logger that sends metrics to Weights & Biases (wandb)."""
+    """Logger that sends metrics to Weights & Biases (wandb).
+
+    This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
+    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
+    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method and set `extra={"hparams": True}` (e.g. `logger.info({"lr": 0.001, "batch_size": 128}, extra={"hparams": True})`).
+    """
 
     def __init__(
         self,
         level: int = logging.INFO,
         run_name: str | None = None,
-        log_dir: str | Path = "logs",
+        log_dir: str | os.PathLike = "logs",
     ):
         """Initialize the wandb logger and check for required dependencies.
 
         Args:
-            run_name: Name of the run
+            level: The logging level for this handler
+            run_name: Name of the run, can contain placeholders
             log_dir: Directory where wandb logs should be stored
 
         Raises:
             RuntimeError: If wandb package is not installed
         """
         super().__init__(level)
-        self.run_name = run_name
-        self.log_dir = log_dir
+        self.run_name = _substitute_placeholders(run_name)
+        self.log_dir = Path(log_dir)
+        self._wandb_run = None
 
+    def _setup(self):
+        """Initialize the wandb run with the configured settings."""
         if wandb is None:
             msg = (
                 "Could not initialize WandbLogger because package wandb could not be imported.\n"
                 "Please ensure it is installed by running 'pip install wandb'"
             )
             raise RuntimeError(msg)
-
-        self._wandb_run = None
-
-    def setup(self):
-        """Initialize the wandb run."""
         self._wandb_run = wandb.init(name=self.run_name, dir=self.log_dir, config={})
 
     def emit(self, record: logging.LogRecord):
@@ -195,9 +212,9 @@ class WandbHandler(logging.Handler):
             record: The log record to emit
         """
         if self._wandb_run is None:
-            self.setup()
+            self._setup()
 
-        flat_dict = flatten_dict(record.msg, sep="/")
+        flat_dict = _flatten_dict(record.msg)
         step = getattr(record, "step", None)
         if getattr(record, "hparams", None):
             for k, v in flat_dict.items():
@@ -208,32 +225,35 @@ class WandbHandler(logging.Handler):
 
 
 class AsyncStructuredHandler(logging.Handler):
-    """Logger that asynchronously writes data to a JSONL file."""
+    """Logger that asynchronously writes data to a JSONL file.
+
+    This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
+    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
+    """
 
     def __init__(
         self,
         level: int = logging.INFO,
         run_name: str | None = None,
-        log_dir: str | Path = "logs",
+        log_dir: str | os.PathLike = "logs",
     ):
         """Initialize the async logger.
 
         Args:
-            level: The logging level
-            run_name: The name of the run
-            log_dir: The directory where the logs should be stored
+            level: The logging level for this handler
+            run_name: Name of the run, can contain placeholders
+            log_dir: Directory where the logs should be stored
         """
         super().__init__(level)
-        if run_name is None:
-            # Async custom template for backwards compat
-            run_name = "training_params_and_metrics_global{rank}"
-        self.run_name = substitute_placeholders(run_name)
-        self.log_dir = log_dir
+        self.run_name = _substitute_placeholders(
+            run_name, default_template="training_params_and_metrics_global{rank}"
+        )
+        self.log_dir = Path(log_dir)
         self._struct_logger = None
 
-    def setup(self):
+    def _setup(self):
         """Initialize the async logger and create the log file."""
-        filename = Path(self.log_dir) / f"{self.run_name}.jsonl"
+        filename = self.log_dir / f"{self.run_name}.jsonl"
         os.makedirs(filename.parent, exist_ok=True)
         self._struct_logger = async_logger.AsyncStructuredLogger(filename)
 
@@ -241,10 +261,20 @@ class AsyncStructuredHandler(logging.Handler):
         """Log a dictionary synchronously using the async logger.
 
         Args:
-            d: Dictionary to log
-            step: Optional step number
+            record: The log record containing the dictionary to log
         """
         if self._struct_logger is None:
-            self.setup()
-        flat_dict = flatten_dict(record.msg, sep="/")
+            self._setup()
+
+        if not isinstance(record.msg, Mapping):
+            warnings.warn(
+                f"AsyncStructuredHandler expected a mapping, got {type(record.msg)}. Skipping log. Please ensure the handler is configured correctly to filter out non-mapping objects."
+            )
+            return
+
+        flat_dict = _flatten_dict(record.msg)
+        step = getattr(record, "step", None)
+        if step:
+            flat_dict.setdefault("step", step)
+
         self._struct_logger.log_sync(flat_dict)
