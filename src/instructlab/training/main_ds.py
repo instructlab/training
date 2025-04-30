@@ -5,7 +5,6 @@ from copy import deepcopy
 from pathlib import Path
 import argparse
 import datetime
-import functools
 import logging
 import math
 import os
@@ -599,11 +598,10 @@ def main(args):
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
-    init = functools.partial(torch.distributed.init_process_group, "nccl")
     if timeout is not None:
-        init(timeout=timeout)
+        torch.distributed.init_process_group(timeout=timeout)
     else:
-        init()
+        torch.distributed.init_process_group()
 
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
