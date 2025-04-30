@@ -75,6 +75,7 @@ jobs:
           pip install tox
 
       - name: "Show disk utilization BEFORE tests"
+        if: always()
         run: |
           df -h
 
@@ -84,5 +85,6 @@ jobs:
           tox -e py3-unit
 
       - name: "Show disk utilization AFTER tests"
+        if: always()
         run: |
           df -h

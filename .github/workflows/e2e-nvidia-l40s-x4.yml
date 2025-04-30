@@ -200,6 +200,7 @@ jobs:
           pip install .[cuda]
 
       - name: Check disk before tests
+        if: always()
         run: |
           df -h
 
@@ -225,6 +226,7 @@ jobs:
           done
 
       - name: Check disk after tests
+        if: always()
         run: |
           df -h
 
