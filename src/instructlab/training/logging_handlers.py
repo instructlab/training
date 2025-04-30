@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from collections.abc import Mapping
 from instructlab.training import async_logger
+import warnings
 
 try:
     # Third Party
@@ -131,6 +132,12 @@ class TensorBoardHandler(logging.Handler):
         if self._tboard_writer is None:
             self._setup()
 
+        if not isinstance(record.msg, Mapping):
+            warnings.warn(
+                f"TensorBoardHandler expected a mapping, got {type(record.msg)}. Skipping log. Please ensure the handler is configured correctly to filter out non-mapping objects."
+            )
+            return
+
         flat_dict = _flatten_dict(record.msg)
         step = getattr(record, "step", None)
         if getattr(record, "hparams", None):
@@ -213,6 +220,12 @@ class WandbHandler(logging.Handler):
         """
         if self._wandb_run is None:
             self._setup()
+
+        if not isinstance(record.msg, Mapping):
+            warnings.warn(
+                f"WandbHandler expected a mapping, got {type(record.msg)}. Skipping log. Please ensure the handler is configured correctly to filter out non-mapping objects."
+            )
+            return
 
         flat_dict = _flatten_dict(record.msg)
         step = getattr(record, "step", None)
