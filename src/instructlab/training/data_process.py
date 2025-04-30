@@ -589,7 +589,7 @@ def unmask_messages(
     )
 
 
-def unmask_sample(
+def unmask_sample_single(
     sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer
 ) -> ProcessedMessagesData:
     """
@@ -616,6 +616,25 @@ def unmask_sample(
 
     unmask_roles = list(unmask_roles_set)
     return unmask_messages(sample["messages"], tokenizer, unmask_roles)
+
+
+def unmask_sample(
+    batch: t.Dict[str, t.List[t.Any]], tokenizer: PreTrainedTokenizer
+) -> t.Dict[str, t.List[t.Any]]:
+    input_ids_list = []
+    labels_list = []
+
+    for i in range(len(batch["messages"])):
+        sample = {key: batch[key][i] for key in batch}
+        result = unmask_sample_single(sample, tokenizer)
+
+        input_ids_list.append(result["input_ids"])
+        labels_list.append(result["labels"])
+
+    return {
+        "input_ids": input_ids_list,
+        "labels": labels_list,
+    }
 
 
 def extract_messages_from_pretraining_text(text: str) -> t.List[Message]:
@@ -925,6 +944,8 @@ def process_samples(
     # Process the dataset
     processed_data = data.map(
         process_sample_fn,
+        batched=True,
+        batch_size=1000,
         num_proc=num_cpu_procs,
         desc="Converting samples into input_ids and labels...",
         load_from_cache_file=False,
