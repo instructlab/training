@@ -52,6 +52,8 @@ from instructlab.training.config import (
     TrainingArgs,
 )
 
+logger = logging.getLogger("instructlab.training")
+
 
 def check_valid_train_args(train_args: TrainingArgs):
     # early validation logic here
@@ -888,12 +890,6 @@ def apply_gradient_checkpointing(
     block_checkpointing(model, **kwargs)
 
 
-def setup_logger(level="DEBUG"):
-    logging.basicConfig(
-        level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
-    )
-
-
 def get_caller(num_frames=1):
     frame = inspect.currentframe().f_back
     for _ in range(num_frames - 1):
@@ -912,7 +908,7 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         if to_print:
             print(msg)
         else:
-            logging.info(msg)
+            logger.info(msg)
         # print(msg)
 
 

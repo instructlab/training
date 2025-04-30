@@ -55,7 +55,7 @@ from instructlab.training import config
 
 # pylint: disable=no-name-in-module
 from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
-from instructlab.training.logger import setup_metric_logger
+from instructlab.training.logger import setup_metric_logger, setup_root_logger
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -77,7 +77,6 @@ from instructlab.training.utils import (
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
-    setup_logger,
 )
 import instructlab.training.data_process as dp
 
@@ -559,7 +558,7 @@ def main(args):
         print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
         metric_logger.info(vars(args), extra={"hparams": True})
 
-    setup_logger(args.log_level)
+    setup_root_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 

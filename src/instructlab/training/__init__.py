@@ -26,6 +26,8 @@ from .config import (
     TrainingArgs,
 )
 
+import instructlab.training.logger  # Disable package logging by default
+
 
 # defer import of main_ds
 def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:

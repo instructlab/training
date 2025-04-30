@@ -3,7 +3,13 @@
 # Standard
 from logging.config import dictConfig
 from collections.abc import Mapping
+from rich.logging import RichHandler
 import logging
+
+# Disable package logging by default
+package_logger = logging.getLogger("instructlab.training")
+package_logger.addHandler(logging.NullHandler())
+package_logger.propagate = False
 
 
 class IsMappingFilter(logging.Filter):
@@ -11,7 +17,24 @@ class IsMappingFilter(logging.Filter):
         return isinstance(record.msg, Mapping)
 
 
+def propagate_package_logs():
+    """Enable instructlab.training package logs to be propagated to the root logger."""
+    package_logger.propagate = True
+
+
+def setup_root_logger(level="DEBUG"):
+    # Enable package logging
+    propagate_package_logs()
+
+    logging.basicConfig(
+        level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
+    )
+
+
 def setup_metric_logger(loggers, run_name, output_dir):
+    # Enable package logging
+    propagate_package_logs()
+
     if isinstance(loggers, str):
         loggers = [loggers]
 
@@ -26,21 +49,18 @@ def setup_metric_logger(loggers, run_name, output_dir):
         "handlers": {
             "async": {
                 "class": "instructlab.training.logging_handlers.AsyncStructuredHandler",
-                "level": "INFO",
                 "log_dir": output_dir,
                 "run_name": run_name,
                 "filters": ["is_mapping"],
             },
             "tensorboard": {
                 "class": "instructlab.training.logging_handlers.TensorBoardHandler",
-                "level": "INFO",
                 "log_dir": output_dir,
                 "run_name": run_name,
                 "filters": ["is_mapping"],
             },
             "wandb": {
                 "class": "instructlab.training.logging_handlers.WandbHandler",
-                "level": "INFO",
                 "log_dir": output_dir,
                 "run_name": run_name,
                 "filters": ["is_mapping"],

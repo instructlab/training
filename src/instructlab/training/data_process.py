@@ -17,7 +17,8 @@ import regex as re
 from instructlab.training.config import DataProcessArgs
 from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
-from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
+from instructlab.training.utils import log_rank_0, retrieve_chat_template
+from instructlab.training.logger import setup_root_logger
 
 # Constants
 MASK_TOKEN = "<|MASK|>"
@@ -1156,7 +1157,7 @@ if __name__ == "__main__":
         help="Number of cpu processes for data processing",
     )
     args = parser.parse_args()
-    setup_logger(args.logging_level)
+    setup_root_logger(args.logging_level)
     if args.chat_tmpl_path:
         data_process_args = DataProcessArgs(
             data_output_path=args.data_output_path,
