@@ -573,7 +573,7 @@ def main(args):
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
     torch.distributed.init_process_group(
-        "nccl", timeout=datetime.timedelta(milliseconds=nccl_timeout)
+        timeout=datetime.timedelta(milliseconds=nccl_timeout)
     )
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
