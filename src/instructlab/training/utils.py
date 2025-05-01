@@ -78,8 +78,9 @@ def check_valid_train_args(train_args: TrainingArgs):
         )
 
     if train_args.is_padding_free:
-        print(
-            "\033[33m WARNING: is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.\033[0m"
+        warnings.warn(
+            "is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.",
+            DeprecationWarning,
         )
 
     if (
@@ -481,8 +482,8 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
     # ensure we select only the modules that exist in the model
     proj_layers = get_projection_layer_names(model)
     if not args.lora_target_modules:
-        print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+        warnings.warn(
+            "lora_target_modules was not specified, defaulting to all of the model's projection modules"
         )
         if not proj_layers:
             raise RuntimeError("could not find any projection layers in the model")
@@ -497,8 +498,10 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
                 f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
             )
         if diff:
-            print(
-                f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
+            warnings.warn(
+                "the following modules were targeted for LoRA but are not present in the model: %s. Applying LoRA only to %s modules.",
+                list(diff),
+                list(layers_to_target),
             )
         args.__dict__["lora_target_modules"] = list(layers_to_target)
 
@@ -893,7 +896,6 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
             print(msg)
         else:
             logger.info(msg)
-        # print(msg)
 
 
 def _copy_no_lora_dict(state_dict):
