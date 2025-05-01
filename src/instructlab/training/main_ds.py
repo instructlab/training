@@ -40,7 +40,7 @@ except ImportError:
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm.rich import tqdm
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -347,13 +347,15 @@ def train(
     tokenizer: PreTrainedTokenizer,
     train_loader: DataLoader,
     grad_accum,
-    metric_logger,
 ):
     model.train()
 
     global_step = 1
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
+
+    metric_logger = logging.getLogger("instructlab.training.metrics")
+    base_logger = logging.getLogger("instructlab.training")
 
     batch_size = args.effective_batch_size // grad_accum
     samples_seen = 0
@@ -405,6 +407,7 @@ def train(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
+            total_length = float(torch.tensor([batch.pop("total_length")]))
             if not args.use_dolomite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
@@ -432,7 +435,7 @@ def train(
             loss = (
                 loss / num_loss_counted_tokens * world_size
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            print(
+            base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
             accelerator.backward(loss)
@@ -473,6 +476,7 @@ def train(
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
                         "total_loss": float(log_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
@@ -486,6 +490,7 @@ def train(
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
+                base_logger.debug(f"Saving checkpoint at step {global_step}")
                 save_checkpoint(
                     args=args,
                     accelerator=accelerator,
@@ -511,6 +516,7 @@ def train(
                 inner_pb.update(1)
             torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
+            base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
                 args=args,
                 accelerator=accelerator,
@@ -522,6 +528,8 @@ def train(
                 hf_format=True,
                 epoch=epoch,
             )
+        if local_rank == 0:
+            inner_pb.close()
 
     if args.save_last:
         save_hf_format_accelerate(
@@ -677,7 +685,6 @@ def main(args):
         tokenizer,
         train_loader,
         grad_accum,
-        metric_logger,
     )
 
     torch.distributed.barrier()

@@ -239,7 +239,6 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
 def make_collate_fn(
     pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
 ):
-    rank = int(os.environ["RANK"])
     if use_dolomite:
 
         def pad_collate_fn(batch):
@@ -256,16 +255,10 @@ def make_collate_fn(
                 [(x["labels"] != -100).sum().item() for x in batch]
             )
 
-            print(
-                f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
-                f"num samples {len(batch)} - rank: {rank} "
-                f"max len: {lens.max()} min len: {lens.min()} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
-
             return {
                 "input_ids": input_ids,
                 "labels": labels,
+                "total_length": total_len,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
                 "num_samples": len(batch),
             }
@@ -292,17 +285,12 @@ def make_collate_fn(
                     total_len += item_len
                     num_loss_counted_tokens += (item["labels"] != -100).sum().item()
 
-                print(
-                    f"\033[96m total length: {total_len} "
-                    f"num samples {len(batch)} - rank: {rank} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
                 return {
                     "input_ids": torch.tensor([input_ids], dtype=torch.long),
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "total_length": total_len,
                     "num_samples": num_samples + 1,  # pylint: disable=W0631
                 }
 
@@ -347,15 +335,11 @@ def make_collate_fn(
                         for item in batch
                     ]
                 )
-                print(
-                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
 
                 return {
                     "input_ids": input_ids,
                     "labels": labels,
+                    "total_length": max_len * len(batch),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
                     "attention_mask": attention_mask,
                     "num_samples": len(batch),

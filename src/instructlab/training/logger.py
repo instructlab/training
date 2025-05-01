@@ -63,11 +63,14 @@ def setup_root_logger(level="DEBUG"):
 
 
 def setup_metric_logger(loggers, run_name, output_dir):
+    if not loggers:
+        return
+
     # Enable package logging
     propagate_package_logs()
 
     if isinstance(loggers, str):
-        loggers = [loggers]
+        loggers = loggers.split(",")
 
     async_filters = ["is_mapping"]
     if run_name is not None and "{rank}" not in run_name:
