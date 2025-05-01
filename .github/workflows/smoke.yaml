@@ -23,7 +23,6 @@ on:
       - "pyproject.toml"
       - "requirements-dev.txt"
       - "requirements-cuda.txt"
-      - ".github/workflows/smoke.yaml" # This workflow
 
 permissions:
   contents: read
