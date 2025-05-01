@@ -185,6 +185,7 @@ class TrainingArgs(BaseModel):
 
     mock_data: Optional[bool] = False
     mock_data_len: int = 0
+    mock_num_samples: int = 0
 
     deepspeed_options: DeepSpeedOptions = Field(
         default_factory=lambda: DeepSpeedOptions(
@@ -227,4 +228,10 @@ class TrainingArgs(BaseModel):
     use_liger: bool = Field(
         default=False,
         description="Whether to use Liger kernels for training.",
+    )
+
+    # TODO(osilkin): Create a better API for this, should not merge into library this way
+    use_multipack_v2: bool = Field(
+        default=False,
+        description="Use the MultipackV2 sampler which balances batches based on computational cost. Does not support Padding transformers.",
     )

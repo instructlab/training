@@ -413,6 +413,7 @@ class MultipackDistributedBatchSampler(Sampler):
 
         return batches
 
+    # TODO(osilkin): cache the length here
     def __iter__(self):
         batches = self.generate_batches(set_stats=True)
         return iter(batches)

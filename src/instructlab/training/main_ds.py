@@ -58,6 +58,9 @@ from instructlab.training.config import DistributedBackend, TorchrunArgs, Traini
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
+from instructlab.training.multipack_sampler_v2 import (
+    find_packing_max_batch_len_and_grad_accum as find_packing_max_batch_len_and_grad_accum_v2,
+)
 from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
@@ -380,9 +383,15 @@ def train(
             else None
         )
 
+    # variables for tracking statistics
     global_grad_norm = None
+    stats_momentum = 0.999  # average strength is effectively 1/1000
+    avg_throughput = 0.0
+    avg_time_per_step = 0.0
+    num_batches = None
+
     for epoch in range(args.current_epoch, args.num_epochs):
-        if args.sampler in ("multipack"):
+        if args.sampler in ("multipack", "multipack_v2"):
             train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
             train_loader.sampler.set_epoch(epoch)
@@ -394,6 +403,9 @@ def train(
 
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
+            if not num_batches:
+                num_batches = len(train_loader)
+
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
                 global_step += 1
@@ -446,6 +458,28 @@ def train(
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
+
+                # moving averages
+                avg_throughput = (
+                    stats_momentum * avg_throughput
+                    + (1 - stats_momentum) * overall_throughput
+                )
+                avg_time_per_step = (
+                    stats_momentum * avg_time_per_step
+                    + (1 - stats_momentum) * elapsed_time
+                )
+
+                # bias-correction so initial values dont tend towards 0
+                corrected_avg_throughput = avg_throughput / (
+                    1 - (stats_momentum**global_step)
+                )
+                corrected_avg_time_per_step = avg_time_per_step / (
+                    1 - (stats_momentum**global_step)
+                )
+
+                # now we can estimate the estimated epoch length
+                length_per_epoch = corrected_avg_time_per_step * num_batches
+
                 current_lr = lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
@@ -469,6 +503,13 @@ def train(
                         "step": global_step,
                         "rank": torch.distributed.get_rank(),
                         "overall_throughput": overall_throughput,
+                        "avg_overall_throughput": avg_throughput,
+                        "corrected_avg_overall_throughput": corrected_avg_throughput,
+                        "elapsed_time": elapsed_time,
+                        "avg_elapsed_time": avg_time_per_step,
+                        "corrected_avg_elapsed_time": corrected_avg_time_per_step,
+                        "length_per_epoch": length_per_epoch / 3600,
+                        "num_batches": num_batches,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
@@ -586,19 +627,35 @@ def main(args):
         args.data_path,
         mock=args.mock_data,
         mock_len=args.mock_len,
+        mock_num_samples=args.mock_num_samples,
     )
 
     try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
-            dataset=dataset,
-            seed=args.seed,
-        )
-        args.sampler = "multipack"
+        if args.use_multipack_v2:
+            packing_max_batch_len, grad_accum = (
+                find_packing_max_batch_len_and_grad_accum_v2(
+                    num_gpus=torch.distributed.get_world_size(),
+                    avg_sample_len=dataset.get_lengths().mean(),
+                    effective_batch_size=args.effective_batch_size,
+                    max_batch_len_per_gpu=args.max_batch_len,
+                    dataset=dataset,
+                    seed=args.seed,
+                )
+            )
+            args.sampler = "multipack_v2"
+        else:
+            packing_max_batch_len, grad_accum = (
+                find_packing_max_batch_len_and_grad_accum(
+                    num_gpus=torch.distributed.get_world_size(),
+                    avg_sample_len=dataset.get_lengths().mean(),
+                    effective_batch_size=args.effective_batch_size,
+                    max_batch_len_per_gpu=args.max_batch_len,
+                    is_padding=not (args.use_dolomite or flash_enabled),
+                    dataset=dataset,
+                    seed=args.seed,
+                )
+            )
+            args.sampler = "multipack"
     except RuntimeError as e:
         if os.environ["LOCAL_RANK"] == "0":
             print(f"\033[38;5;120m{e}\033[0m")
@@ -646,6 +703,11 @@ def main(args):
             seed=args.seed,
         )
 
+    assert (
+        not args.use_multipack_v2
+        or (args.use_multipack_v2 and args.sampler) == "multipack_v2"
+    ), "multipack_v2 was enabled but is not selected"
+
     if args.local_rank == 0:
         metric_logger.log_sync(
             {
@@ -689,6 +751,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # TODO(osilkin): add a check here for multpackv2 and a padding transformers
     check_valid_train_args(train_args)
 
     # switch out generic tmpl for legacy tmpl if requested
@@ -752,8 +815,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.mock_data:
         command.append("--mock_data")
-        if train_args.mock_len:
-            command.append(f"--mock_len={train_args.mock_len}")
+        if train_args.mock_data_len:
+            command.append(f"--mock_len={train_args.mock_data_len}")
+        if train_args.mock_num_samples:
+            command.append(f"--mock_num_samples={train_args.mock_num_samples}")
 
     if train_args.use_dolomite:
         command.append("--use_dolomite")
@@ -811,11 +876,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     # FSDP Options
     if train_args.fsdp_options.cpu_offload_params:
-        command.extend(
-            [
-                "--cpu_offload_params_fsdp",
-            ]
-        )
+        command.append("--cpu_offload_params_fsdp")
+
+    if train_args.use_multipack_v2:
+        command += ["--use_multipack_v2"]
 
     # specify the sharding strategy
     command.append(
@@ -939,6 +1003,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
+    parser.add_argument("--mock_num_samples", type=int, default=92_000)
     parser.add_argument(
         "--distributed_training_framework",
         type=str,
@@ -1013,6 +1078,11 @@ if __name__ == "__main__":
         "--use_liger",
         action="store_true",
         help="Use Liger kernels for training.",
+    )
+    parser.add_argument(
+        "--use_multipack_v2",
+        action="store_true",
+        help="Use the MultipackV2 algorithm for packing batches. This is more optimal but does not support Transformers which require Padding.",
     )
     args = parser.parse_args()
     set_random_seed(args.seed)
