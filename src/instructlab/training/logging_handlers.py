@@ -89,6 +89,7 @@ class TensorBoardHandler(logging.Handler):
         level: int = logging.INFO,
         run_name: str | None = None,
         log_dir: str | os.PathLike = "logs",
+        **tboard_init_kwargs: Any,
     ):
         """Initialize the TensorBoard logger and check for required dependencies.
 
@@ -98,8 +99,12 @@ class TensorBoardHandler(logging.Handler):
             log_dir: Directory where TensorBoard logs should be stored
         """
         super().__init__(level)
-        self.run_name = _substitute_placeholders(run_name)
-        self.log_dir = Path(log_dir)
+
+        self.tboard_init_kwargs = tboard_init_kwargs.copy()
+        self.tboard_init_kwargs.setdefault(
+            "log_dir", Path(log_dir) / _substitute_placeholders(run_name)
+        )
+
         self._tboard_writer = None
 
     def _setup(self):
@@ -114,11 +119,8 @@ class TensorBoardHandler(logging.Handler):
                 "Please ensure it is installed by running 'pip install tensorboard'"
             )
             raise RuntimeError(msg)
-
-        log_dir = self.log_dir / self.run_name
-        os.makedirs(log_dir, exist_ok=True)
-
-        self._tboard_writer = SummaryWriter(log_dir=str(log_dir))
+        os.makedirs(self.tboard_init_kwargs["log_dir"], exist_ok=True)
+        self._tboard_writer = SummaryWriter(**self.tboard_init_kwargs)
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record to TensorBoard.
@@ -186,6 +188,7 @@ class WandbHandler(logging.Handler):
         level: int = logging.INFO,
         run_name: str | None = None,
         log_dir: str | os.PathLike = "logs",
+        **wandb_init_kwargs: Any,
     ):
         """Initialize the wandb logger and check for required dependencies.
 
@@ -198,8 +201,12 @@ class WandbHandler(logging.Handler):
             RuntimeError: If wandb package is not installed
         """
         super().__init__(level)
-        self.run_name = _substitute_placeholders(run_name)
-        self.log_dir = Path(log_dir)
+
+        self.wandb_init_kwargs = wandb_init_kwargs.copy()
+        self.wandb_init_kwargs.setdefault("dir", Path(log_dir))
+        self.wandb_init_kwargs.setdefault("name", _substitute_placeholders(run_name))
+        self.wandb_init_kwargs.setdefault("config", {})
+
         self._wandb_run = None
 
     def _setup(self):
@@ -210,7 +217,7 @@ class WandbHandler(logging.Handler):
                 "Please ensure it is installed by running 'pip install wandb'"
             )
             raise RuntimeError(msg)
-        self._wandb_run = wandb.init(name=self.run_name, dir=self.log_dir, config={})
+        self._wandb_run = wandb.init(**self.wandb_init_kwargs)
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record to wandb.
@@ -249,6 +256,7 @@ class AsyncStructuredHandler(logging.Handler):
         level: int = logging.INFO,
         run_name: str | None = None,
         log_dir: str | os.PathLike = "logs",
+        **struct_init_kwargs: Any,
     ):
         """Initialize the async logger.
 
@@ -258,16 +266,17 @@ class AsyncStructuredHandler(logging.Handler):
             log_dir: Directory where the logs should be stored
         """
         super().__init__(level)
-        self.run_name = _substitute_placeholders(
-            run_name, default_template="training_params_and_metrics_global{rank}"
+
+        self.struct_init_kwargs = struct_init_kwargs.copy()
+        maybe_file_name = Path(log_dir) / _substitute_placeholders(
+            run_name, default_template="training_params_and_metrics_global{rank}.jsonl"
         )
-        self.log_dir = Path(log_dir)
+        self.struct_init_kwargs.setdefault("file_name", maybe_file_name)
         self._struct_logger = None
 
     def _setup(self):
         """Initialize the async logger and create the log file."""
-        filename = self.log_dir / f"{self.run_name}.jsonl"
-        os.makedirs(filename.parent, exist_ok=True)
+        os.makedirs(Path(self.struct_init_kwargs["file_name"]).parent, exist_ok=True)
         self._struct_logger = async_logger.AsyncStructuredLogger(filename)
 
     def emit(self, record: logging.LogRecord):
