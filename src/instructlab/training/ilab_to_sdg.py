@@ -3,9 +3,9 @@
 # Standard
 import glob
 import json
+import logging
 import os
 import sys
-import logging
 
 # First Party
 from instructlab.training.logger import setup_root_logger

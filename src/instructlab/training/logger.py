@@ -1,30 +1,33 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-import os
-from logging.config import dictConfig
 from collections.abc import Mapping
-import logging
-from pathlib import Path
 from datetime import datetime
-from collections.abc import Mapping
-from instructlab.training import async_logger
-import warnings
+from logging.config import dictConfig
+from pathlib import Path
 from typing import Any
+import logging
+import os
+import warnings
 
-# Third Party
+# First Party
+from instructlab.training import async_logger
+
 try:
+    # Third Party
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     SummaryWriter = None
 
 try:
+    # First Party
     import wandb
 except ImportError:
-    wandb = None
+    wandb = None  # type: ignore
 
-import torch
+# Third Party
 from rich.logging import RichHandler
+import torch
 
 # Disable package logging by default
 package_logger = logging.getLogger("instructlab.training")

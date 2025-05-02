@@ -28,7 +28,6 @@ from instructlab.dolomite.hf_models import (
     export_to_huggingface,
     import_from_huggingface,
 )
-from rich.logging import RichHandler
 from torch import distributed as dist
 from torch import nn
 from torch.distributed import get_rank, is_initialized

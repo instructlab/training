@@ -2,16 +2,16 @@
 
 # Standard
 from copy import deepcopy
-import logging
 from pathlib import Path
 import argparse
 import datetime
+import logging
 import math
 import os
 import re
-import warnings
 import subprocess
 import time
+import warnings
 
 # Third Party
 from accelerate import Accelerator
@@ -545,9 +545,6 @@ def train(
 
 
 def main(args):
-    # Third Party
-    import yaml
-
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
             "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
