@@ -568,7 +568,7 @@ def main(args):
 
     # solution discovered from torchtune https://github.com/pytorch/torchtune/issues/2093
     # gets converted to a timedelta of 1:40:00 if the default is kept
-    nccl_timeout = int(os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS", "6000000"))
+    nccl_timeout = int(os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS", "1"))
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
