@@ -128,6 +128,36 @@ class IsRank0Filter(logging.Filter):
         return self._get_rank(record) == 0
 
 
+class FormatDictFilter(logging.Filter):
+    """Reformats msg data if it is a dictionary for prettier printing.
+
+    Note: This is not a true filter, but a processing step as described here:
+    https://docs.python.org/3/howto/logging-cookbook.html#using-filters-to-impart-contextual-information
+    """
+
+    @staticmethod
+    def _format_value(v):
+        if isinstance(v, float):
+            if abs(v) < 0.001 or abs(v) > 999:
+                return f"{v:.2e}"
+            return f"{v:.3f}"
+        elif isinstance(v, int):
+            return f"{v:d}"
+        else:
+            return repr(v)
+
+    def filter(self, record):
+        if not isinstance(record.msg, Mapping):
+            return True
+        flat_dict = _flatten_dict(record.msg)
+
+        record.msg = ", ".join(
+            f"{k}={self._format_value(v)}" for k, v in flat_dict.items()
+        )
+
+        return True
+
+
 ### Handlers
 class TensorBoardHandler(logging.Handler):
     """Logger that writes metrics to TensorBoard.
@@ -372,8 +402,10 @@ def setup_root_logger(level="DEBUG"):
     # Enable package logging
     propagate_package_logs()
 
+    handler = RichHandler()
+    handler.addFilter(FormatDictFilter())
     logging.basicConfig(
-        level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
+        level=level, format="%(message)s", datefmt="[%X]", handlers=[handler]
     )
 
 
@@ -431,7 +463,6 @@ def setup_metric_logger(loggers, run_name, output_dir):
                 "propagate": True,
             },
             "instructlab.training": {
-                "filters": ["is_rank0"],
                 "level": "INFO",
                 "propagate": True,
             },

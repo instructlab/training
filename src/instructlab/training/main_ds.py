@@ -393,8 +393,9 @@ def train(
         else:
             raise NotADirectoryError
 
+        num_epoch_steps = len(train_loader)
         if local_rank == 0:
-            inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
+            inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
@@ -484,6 +485,7 @@ def train(
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(train_loader.dataset),
+                        "num_epoch_steps": num_epoch_steps,
                         # "weight_norm": weight_norm,
                     },
                     extra={"step": global_step},
