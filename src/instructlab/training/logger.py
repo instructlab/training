@@ -1,3 +1,58 @@
+"""Logging utilities for the InstructLab training module.
+
+This module provides a comprehensive logging system for training machine learning models,
+supporting multiple logging backends including TensorBoard, Weights & Biases (wandb),
+and structured JSONL logging. It includes utilities for handling distributed training
+scenarios and formatting metrics for different logging systems.
+
+Key Features:
+- Multiple logging backends (TensorBoard, wandb, JSONL)
+- Support for distributed training logging
+- Structured logging with nested dictionary support
+- Automatic metric formatting and flattening
+
+Example Usage:
+    ```python
+    from instructlab.training.logger import setup_metric_logger
+
+    # Setup logging with TensorBoard and wandb
+    setup_metric_logger(
+        loggers=["tensorboard", "wandb"],
+        run_name="my_training_run",
+        output_dir="logs"
+    )
+
+    # Log metrics
+    import logging
+    logger = logging.getLogger("instructlab.training.metrics")
+
+    # Log a simple metric
+    logger.info({"loss": 0.5, "accuracy": 0.95}, extra={"step": 100})
+
+    # Log nested metrics
+    logger.info({
+        "training": {
+            "loss": 0.5,
+            "accuracy": 0.95
+        },
+        "validation": {
+            "loss": 0.6,
+            "accuracy": 0.92
+        }
+    }, extra={"step": 100})
+
+    # Log hyperparameters
+    logger.info({
+        "learning_rate": 0.001,
+        "batch_size": 32,
+        "model": {
+            "hidden_size": 512,
+            "num_layers": 6
+        }
+    }, extra={"hparams": True})
+    ```
+"""
+
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
@@ -45,9 +100,14 @@ def _substitute_placeholders(
 ) -> str:
     """Replace placeholders in the run name with actual values.
 
+    This function supports dynamic run name generation by replacing placeholders
+    with actual values from the environment or current time. This is particularly
+    useful for distributed training scenarios where you want unique run names
+    for each process.
+
     Supported placeholders:
         - {time}: Current local timestamp in ISO format
-        - {utc_time}: Current utc timestamp in ISO format
+        - {utc_time}: Current UTC timestamp in ISO format
         - {rank}: Process rank from RANK environment variable
         - {local_rank}: Local process rank from LOCAL_RANK environment variable
 
@@ -57,6 +117,17 @@ def _substitute_placeholders(
 
     Returns:
         String with all placeholders replaced by their values
+
+    Example:
+        ```python
+        # With default template
+        name = _substitute_placeholders(None)
+        # Result: "2024-03-14T10:30:00_rank0"
+
+        # With custom template
+        name = _substitute_placeholders("experiment_{time}_rank{rank}")
+        # Result: "experiment_2024-03-14T10:30:00_rank0"
+        ```
     """
     if run_name is None:
         run_name = default_template
@@ -101,11 +172,85 @@ def _flatten_dict(d: LogDict, sep: str = "/", prefix: str = "") -> dict:
 
 ### Filters
 class IsMappingFilter(logging.Filter):
+    """Filter that only allows log records with dictionary messages.
+
+    This filter ensures that only log records containing dictionary messages
+    are processed by the handler. This is useful for metric logging where
+    we want to ensure all logged messages are structured data.
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import IsMappingFilter
+
+        # Create filter
+        mapping_filter = IsMappingFilter()
+
+        # Create handler and add filter
+        handler = logging.StreamHandler()
+        handler.addFilter(mapping_filter)
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+
+        # This will be filtered out (not a dictionary)
+        logger.info("Some text message")
+
+        # This will pass through (is a dictionary)
+        logger.info({"loss": 0.5})
+        ```
+    """
+
     def filter(self, record):
+        """Check if the log record's message is a dictionary.
+
+        Args:
+            record: The log record to check
+
+        Returns:
+            bool: True if the message is a dictionary, False otherwise
+        """
         return isinstance(record.msg, Mapping)
 
 
 class IsRank0Filter(logging.Filter):
+    """Filter that only allows log records from rank 0 in distributed training.
+
+    This filter is useful in distributed training scenarios where you want to
+    ensure that only the main process (rank 0) logs metrics to avoid duplicate
+    logging. The rank can be determined from various sources in order of precedence:
+    1. Explicitly provided rank value
+    2. Record's rank attribute
+    3. Record's message dictionary
+    4. Environment variables
+    5. PyTorch distributed rank
+
+    Args:
+        rank_val: Optional explicit rank value to use
+        local_rank: If True, use local_rank instead of global rank
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import IsRank0Filter
+
+        # Create filter
+        rank_filter = IsRank0Filter()
+
+        # Create handler and add filter
+        handler = logging.StreamHandler()
+        handler.addFilter(rank_filter)
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+
+        # Only rank 0 will log this
+        logger.info({"loss": 0.5})
+        ```
+    """
+
     def __init__(self, rank_val: int | None = None, local_rank: bool = False):
         self.rank_val = rank_val
         if local_rank:
@@ -134,10 +279,41 @@ class IsRank0Filter(logging.Filter):
 
 
 class FormatDictFilter(logging.Filter):
-    """Reformats msg data if it is a dictionary for prettier printing.
+    """Reformats dictionary messages for prettier printing.
 
-    Note: This is not a true filter, but a processing step as described here:
-    https://docs.python.org/3/howto/logging-cookbook.html#using-filters-to-impart-contextual-information
+    This filter processes dictionary messages to create a more readable string
+    representation. It handles different types of values appropriately:
+    - Floats are formatted with 3 decimal places or scientific notation
+    - Integers are formatted as decimal numbers
+    - Other types are converted to their string representation
+
+    Note: This is not a true filter, but a processing step as described in the
+    Python logging cookbook: https://docs.python.org/3/howto/logging-cookbook.html#using-filters-to-impart-contextual-information
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import FormatDictFilter
+
+        # Create filter
+        format_filter = FormatDictFilter()
+
+        # Create handler and add filter
+        handler = logging.StreamHandler()
+        handler.addFilter(format_filter)
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+
+        # This will be formatted as:
+        # "loss=0.500, accuracy=0.950, steps=1000"
+        logger.info({
+            "loss": 0.5,
+            "accuracy": 0.95,
+            "steps": 1000
+        })
+        ```
     """
 
     @staticmethod
@@ -168,8 +344,54 @@ class TensorBoardHandler(logging.Handler):
     """Logger that writes metrics to TensorBoard.
 
     This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
-    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
-    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method and set `extra={"hparams": True}` (e.g. `logger.info({"lr": 0.001, "batch_size": 128}, extra={"hparams": True})`).
+    A step can be specified by passing `extra={"step": <step>}` to the logging method.
+    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method
+    and set `extra={"hparams": True}`.
+
+    Features:
+        - Automatic flattening of nested metric dictionaries
+        - Support for scalar metrics and text logging
+        - Hyperparameter logging
+        - Automatic directory creation
+        - Lazy initialization of TensorBoard writer
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import TensorBoardHandler
+
+        # Create handler
+        handler = TensorBoardHandler(
+            level=logging.INFO,
+            run_name="experiment_{time}",
+            log_dir="logs"
+        )
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        # Log metrics
+        logger.info(
+            {
+                "training": {
+                    "loss": 0.5,
+                    "accuracy": 0.95
+                }
+            },
+            extra={"step": 100}
+        )
+
+        # Log hyperparameters
+        logger.info(
+            {
+                "learning_rate": 0.001,
+                "batch_size": 32
+            },
+            extra={"hparams": True}
+        )
+        ```
     """
 
     def __init__(
@@ -267,8 +489,56 @@ class WandbHandler(logging.Handler):
     """Logger that sends metrics to Weights & Biases (wandb).
 
     This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
-    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
-    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method and set `extra={"hparams": True}` (e.g. `logger.info({"lr": 0.001, "batch_size": 128}, extra={"hparams": True})`).
+    A step can be specified by passing `extra={"step": <step>}` to the logging method.
+    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method
+    and set `extra={"hparams": True}`.
+
+    Features:
+        - Automatic flattening of nested metric dictionaries
+        - Support for hyperparameter logging
+        - Integration with wandb's experiment tracking
+        - Lazy initialization of wandb run
+        - Automatic directory creation
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import WandbHandler
+
+        # Create handler
+        handler = WandbHandler(
+            level=logging.INFO,
+            run_name="experiment_{time}",
+            log_dir="logs",
+            project="my_project",
+            entity="my_team"
+        )
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        # Log metrics
+        logger.info(
+            {
+                "training": {
+                    "loss": 0.5,
+                    "accuracy": 0.95
+                }
+            },
+            extra={"step": 100}
+        )
+
+        # Log hyperparameters
+        logger.info(
+            {
+                "learning_rate": 0.001,
+                "batch_size": 32
+            },
+            extra={"hparams": True}
+        )
+        ```
     """
 
     def __init__(
@@ -336,7 +606,47 @@ class AsyncStructuredHandler(logging.Handler):
     """Logger that asynchronously writes data to a JSONL file.
 
     This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
-    A step can be specified by passing `extra={"step": <step>}` to the logging method (e.g. `logger.info(..., extra={"step": 10)}`).
+    A step can be specified by passing `extra={"step": <step>}` to the logging method.
+    The handler writes each log entry as a JSON line in the specified file.
+
+    Features:
+        - Asynchronous logging to reduce I/O overhead
+        - JSONL format for easy parsing and analysis
+        - Automatic flattening of nested dictionaries
+        - Support for distributed training logging
+        - Automatic directory creation
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import AsyncStructuredHandler
+
+        # Create handler
+        handler = AsyncStructuredHandler(
+            level=logging.INFO,
+            run_name="experiment_{time}",
+            log_dir="logs"
+        )
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        # Log metrics
+        logger.info(
+            {
+                "training": {
+                    "loss": 0.5,
+                    "accuracy": 0.95
+                }
+            },
+            extra={"step": 100}
+        )
+
+        # The metrics will be written to a JSONL file like:
+        # {"training/loss": 0.5, "training/accuracy": 0.95, "step": 100}
+        ```
     """
 
     def __init__(
@@ -399,11 +709,24 @@ class AsyncStructuredHandler(logging.Handler):
 
 
 def propagate_package_logs(enabled: bool = True):
-    """Enable instructlab.training package logs to be propagated to the root logger."""
+    """Enable or disable propagation of instructlab.training package logs to the root logger.
+
+    By default, package logs are not propagated to avoid cluttering the root logger.
+    This function allows enabling propagation when needed.
+
+    Args:
+        enabled: Whether to enable log propagation
+    """
     package_logger.propagate = enabled
 
 
 def setup_root_logger(level="DEBUG"):
+    """Configure the root logger with rich formatting.
+
+    This function sets up the root logger with a RichHandler for
+    console output and adds the FormatDictFilter for better dictionary message
+    formatting.
+    """
     # Enable package logging
     propagate_package_logs()
 
@@ -415,6 +738,36 @@ def setup_root_logger(level="DEBUG"):
 
 
 def setup_metric_logger(loggers, run_name, output_dir):
+    """Configure the metric logging system with specified backends.
+
+    This function sets up a comprehensive logging configuration that supports
+    multiple logging backends simultaneously. It configures filters, handlers,
+    and loggers for structured metric logging.
+
+    Args:
+        loggers: A string or list of strings specifying which logging backends to use.
+                Supported values: "tensorboard", "wandb", "async"
+        run_name: Name for the current training run. Can include placeholders like
+                 {time}, {rank}, {utc_time}, {local_rank}.
+        output_dir: Directory where log files will be stored
+
+    Example:
+        ```python
+        # Setup logging with multiple backends
+        setup_metric_logger(
+            loggers=["tensorboard", "wandb", "async"],
+            run_name="experiment_{time}",
+            output_dir="logs"
+        )
+
+        # Setup logging with a single backend
+        setup_metric_logger(
+            loggers="tensorboard",
+            run_name="my_run",
+            output_dir="logs"
+        )
+        ```
+    """
     if not loggers:
         return
 
