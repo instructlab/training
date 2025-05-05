@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from logging.config import dictConfig
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 import logging
 import os
 import warnings
@@ -20,7 +20,7 @@ except ImportError:
     SummaryWriter = None
 
 try:
-    # First Party
+    # Third Party
     import wandb
 except ImportError:
     wandb = None  # type: ignore
@@ -37,7 +37,7 @@ if not os.getenv("INSTRUCT_TRAINING_LOGS"):
 
 ### Helper functions
 
-LogDict = Mapping[str, str | int | float | "LogDict"]
+LogDict = Mapping[str, Union[str, int, float, "LogDict"]]
 
 
 def _substitute_placeholders(
