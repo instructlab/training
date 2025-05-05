@@ -45,7 +45,7 @@ except ImportError:
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
-from tqdm.rich import tqdm
+from tqdm import tqdm
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -532,8 +532,6 @@ def train(
                 hf_format=True,
                 epoch=epoch,
             )
-        if local_rank == 0:
-            inner_pb.close()
 
     if args.save_last:
         save_hf_format_accelerate(

@@ -2,7 +2,7 @@
 
 # Standard
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.config import dictConfig
 from pathlib import Path
 from typing import Any
@@ -29,12 +29,15 @@ except ImportError:
 from rich.logging import RichHandler
 import torch
 
-# Disable package logging by default
-package_logger = logging.getLogger("instructlab.training")
-package_logger.addHandler(logging.NullHandler())
-package_logger.propagate = False
+if not os.getenv("INSTRUCT_TRAINING_LOGS"):
+    # Disable package logging by default
+    package_logger = logging.getLogger("instructlab.training")
+    package_logger.addHandler(logging.NullHandler())
+    package_logger.propagate = False
 
 ### Helper functions
+
+LogDict = Mapping[str, str | int | float | "LogDict"]
 
 
 def _substitute_placeholders(
@@ -43,7 +46,8 @@ def _substitute_placeholders(
     """Replace placeholders in the run name with actual values.
 
     Supported placeholders:
-        - {time}: Current timestamp in ISO format
+        - {time}: Current local timestamp in ISO format
+        - {utc_time}: Current utc timestamp in ISO format
         - {rank}: Process rank from RANK environment variable
         - {local_rank}: Local process rank from LOCAL_RANK environment variable
 
@@ -59,6 +63,7 @@ def _substitute_placeholders(
 
     substitutions = {
         "{time}": datetime.now().isoformat(),
+        "{utc_time}": datetime.now(timezone.utc),
         "{rank}": os.environ.get("RANK", 0),
         "{local_rank}": os.environ.get("LOCAL_RANK", 0),
     }
@@ -68,7 +73,7 @@ def _substitute_placeholders(
     return run_name
 
 
-def _flatten_dict(d: Mapping, sep: str = "/", prefix: str = "") -> dict:
+def _flatten_dict(d: LogDict, sep: str = "/", prefix: str = "") -> dict:
     """Flatten a nested dictionary into a single-level dictionary.
 
     This function recursively traverses a nested dictionary and creates a new
@@ -393,9 +398,9 @@ class AsyncStructuredHandler(logging.Handler):
 ### Main functions
 
 
-def propagate_package_logs():
+def propagate_package_logs(enabled: bool = True):
     """Enable instructlab.training package logs to be propagated to the root logger."""
-    package_logger.propagate = True
+    package_logger.propagate = enabled
 
 
 def setup_root_logger(level="DEBUG"):

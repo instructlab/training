@@ -331,7 +331,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     lens = np.array(data_with_input_ids["len"])
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        logger.info("quantile %dth: %d", 90 + i * 1, q)
+        logger.info("quantile %dth: %d", 90 + i, q)
 
     num_dropped_samples = np.sum(lens > args.max_seq_len)
     logger.info(
@@ -403,7 +403,6 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     )
 
     logger.info("Samples Previews...")
-    logger.info("")
     print_masked_samples(
         data_with_labels,
         tokenizer,
