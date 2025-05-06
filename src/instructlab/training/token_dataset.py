@@ -47,7 +47,7 @@ class TokenDataset(Dataset):
 
 
 class MockDataset(Dataset):
-    def __init__(self, data_path, max_seq_len=4600):
+    def __init__(self, max_seq_len=4600):
         self.input_ids = np.random.randint(
             0, 10000, size=(92000, max_seq_len), dtype=np.int16
         )
@@ -80,7 +80,7 @@ def setup_dataset(
 ) -> Dataset:
     if mock:
         log_rank_0("Using a mock dataset.")
-        dataset = MockDataset(data_path, max_seq_len=mock_len)
+        dataset = MockDataset(max_seq_len=mock_len)
     else:
         dataset = TokenDataset(data_path)
     return dataset

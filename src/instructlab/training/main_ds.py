@@ -250,7 +250,7 @@ def setup_model(
 
         if args.lora_r > 0:
 
-            def make_inputs_require_grad(module, input, output):
+            def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
                 output.requires_grad_(True)
 
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)

@@ -34,6 +34,7 @@ def check_valid_sample(
     eos_tk: list[int],
     max_len: int = 1024,
 ):
+    # pylint: disable=unused-argument
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
@@ -924,7 +925,9 @@ def process_samples(
 
 
 def analyze_dataset_statistics(
-    data: Dataset, max_seq_len: int, num_cpu_procs: int
+    data: Dataset,
+    max_seq_len: int,
+    num_cpu_procs: int,  # pylint: disable=unused-argument
 ) -> None:
     """
     Analyze and print dataset statistics.

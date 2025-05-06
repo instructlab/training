@@ -412,7 +412,7 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-            **deprecated_arguments,
+            **_deprecated_arguments,
         ):
             output = model.__original_forward__(
                 input_ids=input_ids,
@@ -636,7 +636,7 @@ def prepare_peft_model(
                 model.enable_input_require_grads()
             else:
 
-                def make_inputs_require_grad(module, input, output):
+                def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
                     output.requires_grad_(True)
 
                 model.get_input_embeddings().register_forward_hook(
@@ -1073,7 +1073,7 @@ def save_hf_format_accelerate(
 def save_model_ds_native(
     args,
     model,
-    tokenizer,
+    tokenizer,  # pylint: disable=unused-argument
     samples_seen,
 ):
     # to get a statedict from a zero checkpoint, all you need to do is
