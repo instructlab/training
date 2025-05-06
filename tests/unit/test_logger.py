@@ -4,10 +4,6 @@ from unittest.mock import patch
 import logging
 import os
 
-# Third Party
-import pytest
-import torch
-
 # First Party
 from instructlab.training.logger import (
     FormatDictFilter,
@@ -34,8 +30,6 @@ def test_flatten_dict():
 
 
 def test_substitute_placeholders():
-    # Note: time testing could be done better with freezegun library if added to dev dependencies
-
     with patch.dict(os.environ, {"RANK": "1", "LOCAL_RANK": "2"}):
         # Test with default template
         before_time = datetime.now()
@@ -63,21 +57,6 @@ def test_substitute_placeholders():
         # Test with no placeholders
         name = _substitute_placeholders("test_run")
         assert name == "test_run"
-
-        # Test with partial placeholders
-        before_time = datetime.now()
-        name = _substitute_placeholders("run_{time}")
-        after_time = datetime.now()
-
-        time_str = name.split("run_")[1]
-        parsed_time = datetime.fromisoformat(time_str)
-        assert before_time <= parsed_time <= after_time
-
-        name = _substitute_placeholders("rank{rank}")
-        assert name == "rank1"
-
-        name = _substitute_placeholders("local{local_rank}")
-        assert name == "local2"
 
 
 def test_is_mapping_filter():

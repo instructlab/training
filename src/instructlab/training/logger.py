@@ -1,15 +1,8 @@
 """Logging utilities for the InstructLab training module.
 
-This module provides a comprehensive logging system for training machine learning models,
-supporting multiple logging backends including TensorBoard, Weights & Biases (wandb),
-and structured JSONL logging. It includes utilities for handling distributed training
-scenarios and formatting metrics for different logging systems.
-
-Key Features:
-- Multiple logging backends (TensorBoard, wandb, JSONL)
-- Support for distributed training logging
-- Structured logging with nested dictionary support
-- Automatic metric formatting and flattening
+This module provides a logging system for training machine learning models,
+supporting multiple logging backends including TensorBoard (tensorboard), Weights & Biases (wandb),
+and structured JSONL logging (async).
 
 Example Usage:
     ```python
@@ -348,13 +341,6 @@ class TensorBoardHandler(logging.Handler):
     To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method
     and set `extra={"hparams": True}`.
 
-    Features:
-        - Automatic flattening of nested metric dictionaries
-        - Support for scalar metrics and text logging
-        - Hyperparameter logging
-        - Automatic directory creation
-        - Lazy initialization of TensorBoard writer
-
     Example:
         ```python
         import logging
@@ -493,13 +479,6 @@ class WandbHandler(logging.Handler):
     To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method
     and set `extra={"hparams": True}`.
 
-    Features:
-        - Automatic flattening of nested metric dictionaries
-        - Support for hyperparameter logging
-        - Integration with wandb's experiment tracking
-        - Lazy initialization of wandb run
-        - Automatic directory creation
-
     Example:
         ```python
         import logging
@@ -608,13 +587,6 @@ class AsyncStructuredHandler(logging.Handler):
     This handler expects a (nested) dictionary of metrics or text to be logged with string keys.
     A step can be specified by passing `extra={"step": <step>}` to the logging method.
     The handler writes each log entry as a JSON line in the specified file.
-
-    Features:
-        - Asynchronous logging to reduce I/O overhead
-        - JSONL format for easy parsing and analysis
-        - Automatic flattening of nested dictionaries
-        - Support for distributed training logging
-        - Automatic directory creation
 
     Example:
         ```python
