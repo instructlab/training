@@ -1,0 +1,81 @@
+name: 'Run smoke tests'
+description: 'Runs smoke tests'
+inputs:
+  python-version:
+    required: true
+    description: >-
+      Python version to use. Must be in the form of "3.xx".
+runs:
+  using: "composite"
+  steps:
+    - name: "Harden runner"
+      uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0 # v2.10.1
+      with:
+        egress-policy: audit
+
+    - name: "Install packages"
+      shell: bash
+      run: |
+        cat /etc/os-release
+        sudo dnf install -y gcc gcc-c++ make git-core python${{ inputs.python-version }} python${{ inputs.python-version }}-devel
+
+    - name: "Verify cuda environment is setup"
+      shell: bash
+      run: |
+        export CUDA_HOME="/usr/local/cuda"
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:${CUDA_HOME}/lib64:${CUDA_HOME}/extras/CUPTI/lib64"
+        export PATH="${PATH}:${CUDA_HOME}/bin"
+        nvidia-smi
+
+    # installs in $GITHUB_WORKSPACE/venv.
+    # only has to install Tox because Tox will do the other virtual environment management.
+    - name: "Setup Python virtual environment"
+      shell: bash
+      run: |
+        python${{ inputs.python-version }} -m venv --upgrade-deps venv
+        . venv/bin/activate
+        pip install tox
+
+    # flash-attn has a bug in the setup.py that causes pip to attempt
+    # installing it before torch is installed. This is a bug because their
+    # setup.py depends on importing the module, so it should have been listed
+    # in build_requires. Alas. See:
+    # https://github.com/Dao-AILab/flash-attention/pull/958
+    - name: "Install torch and other unlisted build dependencies for flash-attn"
+      shell: bash
+      run: |
+        source venv/bin/activate
+        # The list is taken from the pull request linked above
+        pip install torch packaging setuptools wheel psutil ninja
+
+    - name: "Install tox-current-env to reuse the venv with pre-installed build dependencies"
+      shell: bash
+      run: |
+        source venv/bin/activate
+        pip install tox-current-env
+
+    - name: "Install dependencies from tox.ini in the current venv, using current venv installed deps"
+      shell: bash
+      run: |
+        source venv/bin/activate
+        tox -e py3-smoke --print-deps-to-file=./deps.txt
+        pip install -r ./deps.txt --no-build-isolation
+        pip install .
+
+    - name: "Show disk utilization BEFORE tests"
+      shell: bash
+      if: always()
+      run: |
+        df -h
+
+    - name: "Run smoke tests with Tox and Pytest"
+      shell: bash
+      run: |
+        source venv/bin/activate
+        tox --current-env -e py3-smoke
+
+    - name: "Show disk utilization AFTER tests"
+      shell: bash
+      if: always()
+      run: |
+        df -h
