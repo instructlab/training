@@ -61,6 +61,7 @@ from instructlab.training import config
 
 # pylint: disable=no-name-in-module
 from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
+from instructlab.training.const import INSTRUCTLAB_PROCESS_GROUP_TIMEOUT_MS
 from instructlab.training.logger import (
     propagate_package_logs,
     setup_metric_logger,
@@ -558,7 +559,7 @@ def train(
 # time of writing) default: to cover the unlikely event torch decides to tweak
 # the default.
 def _get_collective_timeout() -> datetime.timedelta | None:
-    timeout_var = os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS")
+    timeout_var = os.getenv(INSTRUCTLAB_PROCESS_GROUP_TIMEOUT_MS)
     if timeout_var is None:
         return None
 
@@ -569,7 +570,7 @@ def _get_collective_timeout() -> datetime.timedelta | None:
 
     if timeout <= 0:
         raise ValueError(
-            f"Invalid value for INSTRUCTLAB_NCCL_TIMEOUT_MS: {timeout_var}. Must be a positive integer."
+            f"Invalid value for {INSTRUCTLAB_PROCESS_GROUP_TIMEOUT_MS}: {timeout_var}. Must be a positive integer."
         )
 
     return datetime.timedelta(milliseconds=timeout)
