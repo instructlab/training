@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: "Run smoke tests via Tox::pytest (python 3.11)"
+name: "Run smoke tests via Tox::pytest (python 3.12)"
 # These tests will be long running and require accelerated hardware.
 
 on:
@@ -115,7 +115,7 @@ jobs:
       - name: Run smoke tests
         uses: ./.github/actions/run-smoke
         with:
-          python-version: 3.11
+          python-version: 3.12
 
   stop-large-ec2-runner:
     needs:
@@ -130,14 +130,14 @@ jobs:
           egress-policy: audit
 
       - name: "Configure AWS credentials"
-        uses: "aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df" # v4.2.1
+        uses: "aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722" # v4.1.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-region }}
 
       - name: "Stop EC2 runner"
-        uses: machulav/ec2-github-runner@8b37f736c69ba6af391e437447d3c07548478d78 # v2.4.0
+        uses: machulav/ec2-github-runner@a8c20fc0876503410b2b966c124abc2311984ce2 # v2.3.9
         with:
           mode: stop
           github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
