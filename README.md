@@ -38,7 +38,7 @@ Install the library:
 pip install instructlab-training 
 ```
 
-You can then install the library for development:
+You can also install the library for development:
 
 ```bash
 pip install -e ./training
@@ -47,19 +47,28 @@ pip install -e ./training
 ### Additional NVIDIA packages
 
 This library uses the `flash-attn` package as well as other packages, which rely on NVIDIA-specific CUDA tooling to be installed.
-If you are using NVIDIA hardware with CUDA, you need to install the following additional dependencies.
+If you are using NVIDIA hardware with CUDA, you need to install the `cuda` extra dependencies.
 
-Basic install
+Basic install:
 
 ```bash
 pip install .[cuda]
 ```
 
-Editable install (development)
+Editable install for development:
 
 ```bash
-pip install -e .[cuda]
+pip install -e ".[cuda]"
 ```
+
+When installing `flash-attn` it is recommended to enable high build parallelism. The `ninja` build system will be installed with the
+standard requirements. Parallelism is configurable with the environment variable `MAX_JOBS`. 
+On an AWS `g6.16xlarge` system, a reasonable build command would be:
+
+```bash
+MAX_JOBS=24 pip install -e ".[cuda]"
+```
+
 
 ## Using the library
 
