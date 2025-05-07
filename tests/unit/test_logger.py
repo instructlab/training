@@ -3,12 +3,19 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 import logging
 import os
+import time
+
+# Third Party
+import pytest
 
 # First Party
 from instructlab.training.logger import (
+    AsyncStructuredHandler,
     FormatDictFilter,
     IsMappingFilter,
     IsRank0Filter,
+    TensorBoardHandler,
+    WandbHandler,
     _flatten_dict,
     _substitute_placeholders,
 )
@@ -115,3 +122,57 @@ def test_format_dict_filter():
     record = logging.LogRecord("test", logging.INFO, "", 0, "not a dict", None, None)
     filter_obj.filter(record)
     assert record.msg == "not a dict"
+
+
+def _setup_logger_and_handler(logger_name, handler_cls, tmp_path):
+    logger = logging.getLogger(logger_name)
+
+    # Remove all existing handlers
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    time.sleep(0.01)  # Wait for Async Handler
+
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    handler = handler_cls(log_dir=tmp_path, run_name="test_run")
+    handler.addFilter(IsMappingFilter())
+    logger.addHandler(handler)
+
+    return logger
+
+
+@pytest.mark.parametrize(
+    "handler_cls", [TensorBoardHandler, WandbHandler, AsyncStructuredHandler]
+)
+def test_handlers(handler_cls, tmp_path):
+    os.environ["WANDB_MODE"] = "offline"  # Don't publish logs to wandb
+    logger_name = "instructlab.training.test_logger"
+    logger = _setup_logger_and_handler(logger_name, handler_cls, tmp_path)
+
+    def get_log_files():
+        return [
+            p
+            for p in tmp_path.iterdir()
+            if p.name.startswith("test_run") or p.name.startswith("wandb")
+        ]
+
+    # Test non-mapping content gets filtered and file/folder isn't created
+    logger.info("test non-mapping content")
+    time.sleep(0.01)  # Wait for Async Handler
+    assert len(get_log_files()) == 0, "Expected no log files in tmp_path"
+
+    # Test mapping content creates a file/folder
+    logger.info({"test": 3, "test2": 3.7})
+    time.sleep(0.01)  # Wait for Async Handler
+    assert len(get_log_files()) == 1, "Expected test_run file/folder found in tmp_path"
+
+    # Test call with step
+    for i in range(10):
+        logger.info({"test": 3, "test2": 3.7}, extra={"step": i})
+
+    # Test call with hparams
+    logger.info({"epoch": 2, "lr": 0.001}, extra={"hparams": True})
+    time.sleep(0.01)  # Wait for Async Handler
+    assert len(get_log_files()) == 1, "Expected test_run file/folder found in tmp_path"
