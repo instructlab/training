@@ -2,9 +2,9 @@
 
 # Standard
 from datetime import datetime
+from pathlib import Path
 import asyncio
 import json
-from pathlib import Path
 import threading
 
 # Third Party

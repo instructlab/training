@@ -1,7 +1,7 @@
 # Standard
-import asyncio
 from datetime import datetime, timezone
 from unittest.mock import patch
+import asyncio
 import logging
 import os
 import time
@@ -148,7 +148,6 @@ def logger_with_handler(request, tmp_path):
 
 @patch.dict(os.environ, {"WANDB_MODE": "offline"})
 def test_handlers(logger_with_handler, tmp_path):
-
     def get_log_files():
         if isinstance(logger_with_handler.handlers[0], AsyncStructuredHandler):
             time.sleep(0.1)
