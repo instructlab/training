@@ -648,8 +648,7 @@ class AsyncStructuredHandler(logging.Handler):
         self._struct_logger = None
 
     def _setup(self):
-        """Initialize the async logger and create the log file."""
-        os.makedirs(Path(self.struct_init_kwargs["file_name"]).parent, exist_ok=True)
+        """Initialize the async logger"""
         self._struct_logger = async_logger.AsyncStructuredLogger(
             **self.struct_init_kwargs
         )

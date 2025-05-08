@@ -4,10 +4,12 @@
 from datetime import datetime
 import asyncio
 import json
+from pathlib import Path
 import threading
 
 # Third Party
 import aiofiles
+import aiofiles.os
 
 
 class AsyncStructuredLogger:
@@ -27,14 +29,11 @@ class AsyncStructuredLogger:
 
     async def _initialize_log_file(self):
         self.logs = []
-        try:
+        if aiofiles.path.exists(self.file_name):
             async with aiofiles.open(self.file_name, "r") as f:
                 async for line in f:
                     if line.strip():  # Avoid empty lines
                         self.logs.append(json.loads(line.strip()))
-        except FileNotFoundError:
-            # File does not exist but the first log will create it.
-            pass
 
     async def log(self, data):
         """logs a dictionary as a new line in a jsonl file with a timestamp"""
@@ -46,8 +45,14 @@ class AsyncStructuredLogger:
 
     async def _write_logs_to_file(self, data):
         """appends to the log instead of writing the whole log each time"""
-        async with aiofiles.open(self.file_name, "a") as f:
-            await f.write(json.dumps(data, indent=None) + "\n")
+        try:
+            async with aiofiles.open(self.file_name, "a") as f:
+                await f.write(json.dumps(data, indent=None) + "\n")
+        except FileNotFoundError:
+            # Could fail if the parent directory doesn't exist, so create dir and try again
+            await aiofiles.os.makedirs(Path(self.file_name).parent, exist_ok=True)
+            async with aiofiles.open(self.file_name, "a") as f:
+                await f.write(json.dumps(data, indent=None) + "\n")
 
     def log_sync(self, data: dict):
         """runs the log coroutine non-blocking"""
