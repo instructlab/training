@@ -77,7 +77,7 @@ except ImportError:
 from rich.logging import RichHandler
 import torch
 
-if not os.getenv("INSTRUCT_TRAINING_LOGS"):
+if not os.getenv("INSTRUCTLAB_TRAINING_LOGS"):
     # Disable package logging by default
     package_logger = logging.getLogger("instructlab.training")
     package_logger.addHandler(logging.NullHandler())
@@ -137,7 +137,7 @@ def _substitute_placeholders(
     return run_name
 
 
-def _flatten_dict(d: LogDict, sep: str = "/", prefix: str = "") -> dict:
+def _flatten_dict(log_dict: LogDict, sep: str = "/", prefix: str = "") -> dict:
     """Flatten a nested dictionary into a single-level dictionary.
 
     This function recursively traverses a nested dictionary and creates a new
@@ -154,7 +154,7 @@ def _flatten_dict(d: LogDict, sep: str = "/", prefix: str = "") -> dict:
     """
     flattened = {}
 
-    for k, v in d.items():
+    for k, v in log_dict.items():
         if isinstance(v, Mapping):
             flattened |= _flatten_dict(v, sep=sep, prefix=f"{prefix}{k}{sep}")
         else:

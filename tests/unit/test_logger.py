@@ -1,4 +1,5 @@
 # Standard
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import patch
 import logging
@@ -124,55 +125,55 @@ def test_format_dict_filter():
     assert record.msg == "not a dict"
 
 
-def _setup_logger_and_handler(logger_name, handler_cls, tmp_path):
+@pytest.fixture(params=[TensorBoardHandler, WandbHandler, AsyncStructuredHandler])
+def logger_with_handler(request, tmp_path):
+    logger_name = "instructlab.training.test_logger"
     logger = logging.getLogger(logger_name)
-
-    # Remove all existing handlers
-    for handler in list(logger.handlers):
-        logger.removeHandler(handler)
-        handler.close()
-    time.sleep(0.01)  # Wait for Async Handler
 
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
+    handler_cls = request.param
     handler = handler_cls(log_dir=tmp_path, run_name="test_run")
     handler.addFilter(IsMappingFilter())
     logger.addHandler(handler)
 
-    return logger
+    yield logger
+
+    # Remove all handlers
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
 
 
-@pytest.mark.parametrize(
-    "handler_cls", [TensorBoardHandler, WandbHandler, AsyncStructuredHandler]
-)
-def test_handlers(handler_cls, tmp_path):
-    os.environ["WANDB_MODE"] = "offline"  # Don't publish logs to wandb
-    logger_name = "instructlab.training.test_logger"
-    logger = _setup_logger_and_handler(logger_name, handler_cls, tmp_path)
+@patch.dict(os.environ, {"WANDB_MODE": "offline"})
+def test_handlers(logger_with_handler, tmp_path):
 
     def get_log_files():
+        if isinstance(logger_with_handler.handlers[0], AsyncStructuredHandler):
+            time.sleep(0.1)
         return [
             p
             for p in tmp_path.iterdir()
             if p.name.startswith("test_run") or p.name.startswith("wandb")
         ]
 
-    # Test non-mapping content gets filtered and file/folder isn't created
-    logger.info("test non-mapping content")
-    time.sleep(0.01)  # Wait for Async Handler
+    # Test non-mapping content gets filtered and file/directory isn't created
+    logger_with_handler.info("test non-mapping content")
     assert len(get_log_files()) == 0, "Expected no log files in tmp_path"
 
-    # Test mapping content creates a file/folder
-    logger.info({"test": 3, "test2": 3.7})
-    time.sleep(0.01)  # Wait for Async Handler
-    assert len(get_log_files()) == 1, "Expected test_run file/folder found in tmp_path"
+    # Test mapping content creates a file/directory
+    logger_with_handler.info({"test": 3, "test2": 3.7})
+    assert (
+        len(get_log_files()) == 1
+    ), "Expected test_run file/directory found in tmp_path"
 
     # Test call with step
     for i in range(10):
-        logger.info({"test": 3, "test2": 3.7}, extra={"step": i})
+        logger_with_handler.info({"test": 3, "test2": 3.7}, extra={"step": i})
 
     # Test call with hparams
-    logger.info({"epoch": 2, "lr": 0.001}, extra={"hparams": True})
-    time.sleep(0.01)  # Wait for Async Handler
-    assert len(get_log_files()) == 1, "Expected test_run file/folder found in tmp_path"
+    logger_with_handler.info({"epoch": 2, "lr": 0.001}, extra={"hparams": True})
+    assert (
+        len(get_log_files()) == 1
+    ), "Expected test_run file/directory found in tmp_path"
