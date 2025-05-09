@@ -12,6 +12,9 @@ __all__ = (
     "DistributedBackend",
 )
 
+# First Party
+import instructlab.training.logger  # Disable package logging by default
+
 # Local
 from .config import (
     DataProcessArgs,

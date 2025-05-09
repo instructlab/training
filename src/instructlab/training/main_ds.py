@@ -5,11 +5,13 @@ from copy import deepcopy
 from pathlib import Path
 import argparse
 import datetime
+import logging
 import math
 import os
 import re
 import subprocess
 import time
+import warnings
 
 # Third Party
 from accelerate import Accelerator
@@ -21,8 +23,9 @@ except ImportError:
     DeepSpeedCPUAdam = None
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
-        print(
-            "DeepSpeed CPU Optimizer is not available. Some features may be unavailable."
+        warnings.warn(
+            "DeepSpeed CPU Optimizer is not available. Some features may be unavailable.",
+            UserWarning,
         )
 
 try:
@@ -34,7 +37,10 @@ except ImportError:
     ZeRORuntimeException = None
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
-        print("DeepSpeed is not available. Some features may be unavailable.")
+        warnings.warn(
+            "DeepSpeed is not available. Some features may be unavailable.",
+            UserWarning,
+        )
 
 # Third Party
 from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
@@ -51,10 +57,10 @@ import torch.distributed
 
 # First Party
 from instructlab.training import config
-from instructlab.training.async_logger import AsyncStructuredLogger
 
 # pylint: disable=no-name-in-module
 from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
+from instructlab.training.logger import setup_metric_logger, setup_root_logger
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -76,13 +82,15 @@ from instructlab.training.utils import (
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
-    setup_logger,
 )
 import instructlab.training.data_process as dp
+
+logger = logging.getLogger("instructlab.training")
 
 
 def setup_optimizer(args, model):
     if args.distributed_training_framework == DistributedBackend.FSDP.value:
+        logger.info("Using AdamW optimizer")
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=args.learning_rate,
@@ -92,13 +100,12 @@ def setup_optimizer(args, model):
     elif args.distributed_training_framework == DistributedBackend.DEEPSPEED.value:
         # need to use this only when the CPU offload optimizer is enabled
         if args.cpu_offload_optimizer:
-            print(
-                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-            )
+            logger.info("!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!")
             optimizer = DeepSpeedCPUAdam(
                 model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
             )
         else:
+            logger.info("Using FusedAdam optimizer")
             optimizer = FusedAdam(
                 model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
             )
@@ -170,8 +177,10 @@ def setup_model(
     args.base_model_args = base_model_args
 
     if len(tokenizer) > model.config.vocab_size:
-        print(
-            f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
+        logger.warning(
+            "tokenizer has %d tokens but model has %d vocab size",
+            len(tokenizer),
+            model.config.vocab_size,
         )
         model.resize_token_embeddings(
             int(8 * math.ceil(len(tokenizer) / 8.0))
@@ -183,8 +192,10 @@ def setup_model(
         and tokenizer.pad_token_id is not None
         and model.config.pad_token_id != tokenizer.pad_token_id
     ):
-        print(
-            f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
+        logger.warning(
+            "There is a mismatch between pad token id of model (%d) and tokenizer(%d). Fixing model pad token id to be same as tokenizer's pad token id",
+            model.config.pad_token_id,
+            tokenizer.pad_token_id,
         )
         model.config.pad_token_id = tokenizer.pad_token_id
     if (
@@ -192,8 +203,10 @@ def setup_model(
         and tokenizer.bos_token_id is not None
         and model.config.bos_token_id != tokenizer.bos_token_id
     ):
-        print(
-            f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
+        logger.warning(
+            "There is a mismatch between bos token id of model(%d) and tokenizer(%d). Fixing model bos token id to be same as tokenizer's bos token id",
+            model.config.bos_token_id,
+            tokenizer.bos_token_id,
         )
         model.config.bos_token_id = tokenizer.bos_token_id
     if (
@@ -201,8 +214,10 @@ def setup_model(
         and tokenizer.eos_token_id
         and model.config.eos_token_id != tokenizer.eos_token_id
     ):
-        print(
-            f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
+        logger.warning(
+            "There is a mismatch between eos token id of model(%d) and tokenizer(%d). Fixing model eos token id to be same as tokenizer's eos token id",
+            model.config.eos_token_id,
+            tokenizer.eos_token_id,
         )
         model.config.eos_token_id = tokenizer.eos_token_id
 
@@ -326,11 +341,8 @@ def maybe_resume_training(args, model):
 
             last_step = samples_seen // args.effective_batch_size
             args.__dict__["last_step"] = last_step
-        (
-            print(f"\033[93mStarting from: {last_step}\033[0m")
-            if local_rank == 0
-            else None
-        )
+        if local_rank == 0:
+            logger.info("Found checkpoint at %d, resuming training", last_step)
     except FileNotFoundError:
         pass
 
@@ -347,7 +359,6 @@ def train(
     tokenizer: PreTrainedTokenizer,
     train_loader: DataLoader,
     grad_accum,
-    metric_logger,
 ):
     model.train()
 
@@ -355,30 +366,23 @@ def train(
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
+    metric_logger = logging.getLogger("instructlab.training.metrics")
+    base_logger = logging.getLogger("instructlab.training")
+
     batch_size = args.effective_batch_size // grad_accum
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
-        print(f"\033[93mUpdating 'samples_seen' {args.samples_seen}\033[0m")
+        logger.info("Updating 'samples_seen' %d", args.samples_seen)
         samples_seen = args.samples_seen
 
     if args.save_samples > 0:
         args.save_samples = (args.save_samples // batch_size) * batch_size
-        (
-            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-            if local_rank == 0
-            else None
-        )
+        logger.info("Number of samples per save: %d", args.save_samples)
 
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
-        (
-            print(
-                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
-            )
-            if local_rank == 0
-            else None
-        )
+        logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
     for epoch in range(args.current_epoch, args.num_epochs):
@@ -389,8 +393,9 @@ def train(
         else:
             raise NotADirectoryError
 
+        num_epoch_steps = len(train_loader)
         if local_rank == 0:
-            inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
+            inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
@@ -405,6 +410,7 @@ def train(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
+            total_length = float(torch.tensor([batch.pop("total_length")]))
             if not args.use_dolomite:
                 for k in batch:
                     batch[k] = batch[k].to(local_rank)
@@ -432,7 +438,7 @@ def train(
             loss = (
                 loss / num_loss_counted_tokens * world_size
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            print(
+            base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
             accelerator.backward(loss)
@@ -463,7 +469,7 @@ def train(
                 # )
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_sync(
+                metric_logger.info(
                     {
                         "epoch": epoch,
                         "step": global_step,
@@ -473,18 +479,22 @@ def train(
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
                         "total_loss": float(log_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(train_loader.dataset),
+                        "num_epoch_steps": num_epoch_steps,
                         # "weight_norm": weight_norm,
-                    }
+                    },
+                    extra={"step": global_step},
                 )
 
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
+                base_logger.debug(f"Saving checkpoint at step {global_step}")
                 save_checkpoint(
                     args=args,
                     accelerator=accelerator,
@@ -510,6 +520,7 @@ def train(
                 inner_pb.update(1)
             torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
+            base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
                 args=args,
                 accelerator=accelerator,
@@ -534,9 +545,6 @@ def train(
 
 
 def main(args):
-    # Third Party
-    import yaml
-
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
             "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
@@ -551,15 +559,12 @@ def main(args):
             "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
         )
 
-    metric_logger = AsyncStructuredLogger(
-        args.output_dir
-        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
-    )
+    setup_metric_logger(args.logger_type, args.run_name, args.output_dir)
+    metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
-        print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_sync({"script_params": vars(args)})
+        metric_logger.info(vars(args), extra={"hparams": True})
 
-    setup_logger(args.log_level)
+    setup_root_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
@@ -600,8 +605,7 @@ def main(args):
         )
         args.sampler = "multipack"
     except RuntimeError as e:
-        if os.environ["LOCAL_RANK"] == "0":
-            print(f"\033[38;5;120m{e}\033[0m")
+        logger.error(e)
 
         # fallback to grad accum = 1
         # NOTE: packing max batch len will not be used
@@ -629,8 +633,8 @@ def main(args):
         # this happens sometimes when we have more GPUs than data to process. In this case
         # we should either alert the user to switch samplers, or do it automatically and
         # warn them about it happening
-        print(
-            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        logger.warning(
+            "The dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!"
         )
         args.sampler = "distributed"
         train_loader = setup_dataloader(
@@ -647,7 +651,7 @@ def main(args):
         )
 
     if args.local_rank == 0:
-        metric_logger.log_sync(
+        metric_logger.info(
             {
                 "num_gpus": torch.distributed.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
@@ -659,7 +663,8 @@ def main(args):
                 "avg_samples_per_batch": len(dataset) / len(train_loader),
                 "samples_per_gpu": args.samples_per_gpu,
                 "total_samples": len(dataset),  # emit the total number of samples
-            }
+            },
+            extra={"hparams": True},
         )
 
     model, lr_scheduler, optimizer, accelerator = setup_model(
@@ -677,7 +682,6 @@ def main(args):
         tokenizer,
         train_loader,
         grad_accum,
-        metric_logger,
     )
 
     torch.distributed.barrier()
@@ -825,7 +829,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
 
-    print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
+    logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
     interrupt: KeyboardInterrupt | Exception | None = None
     failure = False
@@ -836,10 +840,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
         process.listen()
     except KeyboardInterrupt as e:
-        print("Training subprocess interrupted by user.")
+        logger.info("Training subprocess interrupted by user.")
         interrupt = e
     except Exception as e:
-        print("Unexpected exception received during distributed training")
+        logger.error(
+            "Unexpected exception received during distributed training", exc_info=e
+        )
         interrupt = e
     finally:
         if "process" not in locals() or process is None:
@@ -847,19 +853,17 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
         failure = process.poll() != 0
         if not failure:
-            print("\033[92mOperation completed successfully! 🎉\033[0m")
+            logger.info("Operation completed successfully! 🎉")
         else:
-            print(
-                "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
-            )
+            logger.error("Training subprocess has not exited yet. Sending SIGTERM.")
 
         process.terminate()
         try:
-            print("Waiting for process to exit, 60s...")
+            logger.info("Waiting for process to exit, 60s...")
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            print(
-                "\033[91mTraining subprocess did not terminate before timeout, sending SIGKILL.\033[0m"
+            logger.error(
+                "Training subprocess did not terminate before timeout, sending SIGKILL."
             )
             process.kill()
 
@@ -936,6 +940,8 @@ if __name__ == "__main__":
         help="Save full model state using Accelerate after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
+    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--logger_type", type=str, default="async")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)

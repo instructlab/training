@@ -25,6 +25,7 @@ taken from https://github.com/imoneoi/multipack_sampler
 
 # Standard
 from typing import List, Optional
+import warnings
 
 # Third Party
 from torch.utils.data import Sampler
@@ -388,8 +389,9 @@ class MultipackDistributedBatchSampler(Sampler):
         # remove indices where the entries are longer than batch max length
         indices = indices[self.lengths[indices] <= self.batch_max_length]
         if len(indices) < len(self.lengths):
-            print(
-                f"\033[33mDropping {len(self.lengths) - len(indices)} samples longer than batch_max_length. Ensure that the right max_batch_length is used during data processing.\033[0m"
+            warnings.warn(
+                "Dropping %d samples longer than batch_max_length. Ensure that the right max_batch_length is used during data processing.",
+                len(self.lengths) - len(indices),
             )
 
         lengths = self.lengths[indices]

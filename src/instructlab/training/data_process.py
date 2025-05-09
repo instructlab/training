@@ -3,9 +3,11 @@
 # Standard
 from functools import partial
 from pathlib import Path
+import logging
 import os
 import time
 import typing as t
+import warnings
 
 # Third Party
 from datasets import Dataset, load_dataset
@@ -15,14 +17,17 @@ import regex as re
 
 # First Party
 from instructlab.training.config import DataProcessArgs
+from instructlab.training.logger import setup_root_logger
 from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
-from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
+from instructlab.training.utils import log_rank_0, retrieve_chat_template
 
 # Constants
 MASK_TOKEN = "<|MASK|>"
 UNMASK_BEGIN_TOKEN = "<|UNMASK_BEGIN|>"
 UNMASK_END_TOKEN = "<|UNMASK_END|>"
+
+logger = logging.getLogger("instructlab.training")
 
 
 def check_valid_sample(
@@ -228,9 +233,11 @@ def print_masked_samples(data, tokenizer, unmask, num_proc):
         filtered_data = filtered_data.shuffle()
         for i, sample in enumerate(filtered_data):
             text, orig_text = get_masked_and_orig_text(sample)
-            print(f"\033[35mOriginal Input: {orig_text}\n\033[0m")
-            print(
-                f"\033[33m{'Pretraining' if unmask else 'Instruction'} ex sample {i + 1}: {text}\033[0m"
+            logger.debug("Original Input: %s", orig_text)
+            logger.debug(
+                "Pretraining" if unmask else "Instruction" + " ex sample %d: %s",
+                i + 1,
+                text,
             )
             if i > 1:
                 break
@@ -239,8 +246,7 @@ def print_masked_samples(data, tokenizer, unmask, num_proc):
 def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     if not os.path.exists(args.data_output_path):
         os.makedirs(args.data_output_path, exist_ok=True)
-    print("\033[92m data arguments are:\033[0m")
-    print("\033[36m" + args.model_dump_json() + "\033[0m")
+    logger.info("Data arguments are: %s", args.model_dump_json())
     NUM_PROC = args.num_cpu_procs
 
     _, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
@@ -305,7 +311,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
             "The provided dataset is empty, please make sure that your dataset contains samples and try again."
         )
 
-    print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
+    logger.info("Tokenizing the dataset with %s tokenizer...", args.model_path)
     data_with_input_ids = data.map(
         lambda x: {
             "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True),
@@ -315,7 +321,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         desc="Tokenizing the dataset",
     )
 
-    print("\033[38;2;255;165;0mten largest length percentiles:")
+    logger.info("Calculating length of tokenized samples")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
             "len": len(x["input_ids"]),
@@ -326,14 +332,15 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     lens = np.array(data_with_input_ids["len"])
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90 + i * 1}th: {q}")
-    print("\033[0m")
+        logger.info("quantile %dth: %d", 90 + i, q)
 
     num_dropped_samples = np.sum(lens > args.max_seq_len)
-    print(
-        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at %d max sequence length, the number of samples to be dropped is %d",
+        args.max_seq_len,
+        num_dropped_samples,
     )
-    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    logger.info("({:.2f}% of total)", ((num_dropped_samples / len(lens)) * 100))
     if num_dropped_samples == len(data):
         raise RuntimeError(
             f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
@@ -341,13 +348,14 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
-        print(f"quantile {i}th: {q}")
+        logger.info("quantile %dth: %d", i, q)
     num_dropped_samples = np.sum(lens < 20)
-    print(
-        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at 20 min sequence length, the number of samples to be dropped is %d",
+        num_dropped_samples,
     )
     # from ipdb import set_trace; set_trace()
-    print("\033[92mchecking the validity of the samples...\033[0m")
+    logger.info("checking the validity of the samples...")
     data_with_input_ids = data_with_input_ids.filter(
         lambda x: check_valid_sample(
             tokenizer,
@@ -362,10 +370,12 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         desc="Checking the validity of the samples",
     )
     log_rank_0(
-        f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
+        "number of dropped samples: %d -- out of %d",
+        len(data) - len(data_with_input_ids),
+        len(data),
     )
 
-    print("\033[92mCategorizing training data type...\033[0m")
+    logger.info("Categorizing training data type...")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
             "unmask": (
@@ -386,15 +396,14 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>")[0],
         tool_resp_tokens=tool_resp_tk,
     )
-    print("\033[92munmasking the appropriate message content...\033[0m")
+    logger.info("Unmasking the appropriate message content...")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
         num_proc=NUM_PROC,
         desc="Unmasking the appropriate message content",
     )
 
-    print("\033[92m Samples Previews...\033[0m")
-    print("\033[92m \n \033[0m")
+    logger.info("Samples Previews...")
     print_masked_samples(
         data_with_labels,
         tokenizer,
@@ -419,8 +428,10 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     # Dropping samples that could break training due to oob ids
     if len(final_valid_data) < len(data_with_labels):
         dropped_samples = len(data_with_labels) - len(final_valid_data)
-        print(
-            f"\033[93mWarning: {dropped_samples} samples were dropped because they contained token IDs greater than or equal to {max_id}.\033[0m"
+        logger.warning(
+            "Warning: %d samples were dropped because they contained token IDs greater than or equal to %d.",
+            dropped_samples,
+            max_id,
         )
     # use path to get the stem of the file
     final_valid_data.to_json(
@@ -672,10 +683,10 @@ def is_pretraining_format(ds: Dataset) -> bool:
 
     # TODO(osilkin): deprecate this eventually
     t1 = time.time()
-    print("Checking if the dataset contains any legacy pretraining samples.")
+    logger.info("Checking if the dataset contains any legacy pretraining samples.")
     has_pretrain_roles = "pretraining" in set(ds.flatten()["messages.role"])
     t2 = time.time()
-    print(f"Done, took {t2 - t1} seconds")
+    logger.info("Done, took %d seconds", t2 - t1)
     return has_pretrain_roles
 
 
@@ -940,18 +951,19 @@ def analyze_dataset_statistics(
     lens = np.array(data["len"])
 
     # Print largest length percentiles
-    print("\033[38;2;255;165;0mten largest length percentiles:")
+    logger.info("ten largest length percentiles:")
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90 + i * 1}th: {q}")
-    print("\033[0m")
+        logger.info("quantile %dth: %d", 90 + i * 1, q)
 
     # Check for samples exceeding max sequence length
     num_dropped_samples = np.sum(lens > max_seq_len)
-    print(
-        f"\033[36mat {max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at %d max sequence length, the number of samples to be dropped is %d",
+        max_seq_len,
+        num_dropped_samples,
     )
-    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    logger.info("(%.2f of total)", (float(num_dropped_samples) / len(lens)) * 100)
 
     if num_dropped_samples == len(data):
         raise RuntimeError(
@@ -962,12 +974,13 @@ def analyze_dataset_statistics(
     # Print smallest length percentiles
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
-        print(f"quantile {i}th: {q}")
+        logger.info("quantile %dth: %d", i, q)
 
     # Check for very short samples
     num_dropped_samples = np.sum(lens < 20)
-    print(
-        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at 20 min sequence length, the number of samples to be dropped is %d",
+        num_dropped_samples,
     )
 
 
@@ -975,8 +988,7 @@ def preview_samples(
     data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
 ) -> None:
     """Preview samples from the dataset."""
-    print("\033[92m Samples Previews...\033[0m")
-    print("\033[92m \n \033[0m")
+    logger.info("Samples Previews...")
 
     # Print pretraining samples
     print_masked_samples(
@@ -1078,9 +1090,10 @@ def process_data(
             Path to the chat template and special tokens. When this argument is used, the legacy data processing method will be used. Otherwise, the new data processing method will be used.
     """
     if chat_tmpl_path:
-        print(
-            "\033[93mWarning: The legacy data processing method will eventually be deprecated. "
-            "Please update your workflow to use the new processing method.\033[0m"
+        warnings.warn(
+            "The legacy data processing method will eventually be deprecated. "
+            "Please update your workflow to use the new processing method.",
+            DeprecationWarning,
         )
         args = DataProcessArgs(
             data_output_path=data_output_path,
@@ -1159,7 +1172,7 @@ if __name__ == "__main__":
         help="Number of cpu processes for data processing",
     )
     args = parser.parse_args()
-    setup_logger(args.logging_level)
+    setup_root_logger(args.logging_level)
     if args.chat_tmpl_path:
         data_process_args = DataProcessArgs(
             data_output_path=args.data_output_path,

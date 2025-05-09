@@ -3,8 +3,14 @@
 # Standard
 import glob
 import json
+import logging
 import os
 import sys
+
+# First Party
+from instructlab.training.logger import setup_root_logger
+
+logger = logging.getLogger("instructlab.training")
 
 
 def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
@@ -25,9 +31,9 @@ def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
         files.sort(reverse=True)
         latest_train_file = files[0]
     except IndexError:
-        print("IndexError: no matching files found")
+        logger.error("IndexError: no matching files found", exc_info=True)
         return
-    print("Converting", latest_train_file)
+    logger.info("Converting %s", latest_train_file)
     with open(latest_train_file, "r") as file:
         # Read each line (which represents a JSON object)
         for line in file:
@@ -51,11 +57,12 @@ def ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy_path):
 
 
 if __name__ == "__main__":
+    setup_root_logger()
     if len(sys.argv) > 1:
         ilab_train_data_dir = sys.argv[1]
         prefix = sys.argv[2]
         taxonomy = sys.argv[3]
     else:
-        print("provide ilab train data dir as an argument")
+        logger.critical("provide ilab train data dir as an argument")
         sys.exit(1)
     ilab_to_sdb(ilab_train_data_dir, prefix, taxonomy)
