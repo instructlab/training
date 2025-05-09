@@ -17,6 +17,7 @@ class AsyncStructuredLogger:
         self.file_name = file_name
         self.logs = []
         self.loop = asyncio.new_event_loop()
+        self._first_log = True
         t = threading.Thread(
             target=self._run_event_loop, args=(self.loop,), daemon=True
         )
@@ -45,14 +46,12 @@ class AsyncStructuredLogger:
 
     async def _write_logs_to_file(self, data):
         """appends to the log instead of writing the whole log each time"""
-        try:
-            async with aiofiles.open(self.file_name, "a") as f:
-                await f.write(json.dumps(data, indent=None) + "\n")
-        except FileNotFoundError:
-            # Could fail if the parent directory doesn't exist, so create dir and try again
+        if self._first_log:
             await aiofiles.os.makedirs(Path(self.file_name).parent, exist_ok=True)
-            async with aiofiles.open(self.file_name, "a") as f:
-                await f.write(json.dumps(data, indent=None) + "\n")
+            self._first_log = False
+
+        async with aiofiles.open(self.file_name, "a") as f:
+            await f.write(json.dumps(data, indent=None) + "\n")
 
     def log_sync(self, data: dict):
         """runs the log coroutine non-blocking"""
