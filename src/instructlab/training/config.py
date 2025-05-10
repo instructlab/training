@@ -28,6 +28,20 @@ class DeepSpeedOffloadStrategy(Enum):
 
 
 # public API
+class Optimizers(Enum):
+    ADAMW = "Adamw"
+    CPUAdam = "CPUAdam"
+    FusedAdam = "FusedAdam"
+
+
+# public API
+class ModelTypes(Enum):
+    LIGER = "Liger"
+    CAUSALLM = "Causallm"
+    DOLOMITE = "Dolomite"
+
+
+# public API
 class DistributedBackend(Enum):
     FSDP = "fsdp"
     DEEPSPEED = "deepspeed"
