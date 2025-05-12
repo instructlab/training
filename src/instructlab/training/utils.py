@@ -28,7 +28,6 @@ from instructlab.dolomite.hf_models import (
     export_to_huggingface,
     import_from_huggingface,
 )
-from rich.logging import RichHandler
 from torch import distributed as dist
 from torch import nn
 from torch.distributed import get_rank, is_initialized
@@ -51,6 +50,8 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
+
+logger = logging.getLogger("instructlab.training")
 
 
 def check_valid_train_args(train_args: TrainingArgs):
@@ -76,8 +77,9 @@ def check_valid_train_args(train_args: TrainingArgs):
         )
 
     if train_args.is_padding_free:
-        print(
-            "\033[33m WARNING: is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.\033[0m"
+        warnings.warn(
+            "is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.",
+            DeprecationWarning,
         )
 
     if (
@@ -237,7 +239,6 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
 def make_collate_fn(
     pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
 ):
-    rank = int(os.environ["RANK"])
     if use_dolomite:
 
         def pad_collate_fn(batch):
@@ -254,16 +255,10 @@ def make_collate_fn(
                 [(x["labels"] != -100).sum().item() for x in batch]
             )
 
-            print(
-                f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
-                f"num samples {len(batch)} - rank: {rank} "
-                f"max len: {lens.max()} min len: {lens.min()} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-            )
-
             return {
                 "input_ids": input_ids,
                 "labels": labels,
+                "total_length": total_len,
                 "num_loss_counted_tokens": num_loss_counted_tokens,
                 "num_samples": len(batch),
             }
@@ -290,17 +285,12 @@ def make_collate_fn(
                     total_len += item_len
                     num_loss_counted_tokens += (item["labels"] != -100).sum().item()
 
-                print(
-                    f"\033[96m total length: {total_len} "
-                    f"num samples {len(batch)} - rank: {rank} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
                 return {
                     "input_ids": torch.tensor([input_ids], dtype=torch.long),
                     "labels": torch.tensor([labels], dtype=torch.long),
                     "position_ids": torch.tensor([position_ids], dtype=torch.long),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
+                    "total_length": total_len,
                     "num_samples": num_samples + 1,  # pylint: disable=W0631
                 }
 
@@ -345,15 +335,11 @@ def make_collate_fn(
                         for item in batch
                     ]
                 )
-                print(
-                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
 
                 return {
                     "input_ids": input_ids,
                     "labels": labels,
+                    "total_length": max_len * len(batch),
                     "num_loss_counted_tokens": num_loss_counted_tokens,
                     "attention_mask": attention_mask,
                     "num_samples": len(batch),
@@ -495,8 +481,8 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
     # ensure we select only the modules that exist in the model
     proj_layers = get_projection_layer_names(model)
     if not args.lora_target_modules:
-        print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
+        warnings.warn(
+            "lora_target_modules was not specified, defaulting to all of the model's projection modules"
         )
         if not proj_layers:
             raise RuntimeError("could not find any projection layers in the model")
@@ -511,8 +497,10 @@ def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraCon
                 f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
             )
         if diff:
-            print(
-                f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
+            warnings.warn(
+                "the following modules were targeted for LoRA but are not present in the model: %s. Applying LoRA only to %s modules.",
+                list(diff),
+                list(layers_to_target),
             )
         args.__dict__["lora_target_modules"] = list(layers_to_target)
 
@@ -888,12 +876,6 @@ def apply_gradient_checkpointing(
     block_checkpointing(model, **kwargs)
 
 
-def setup_logger(level="DEBUG"):
-    logging.basicConfig(
-        level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
-    )
-
-
 def get_caller(num_frames=1):
     frame = inspect.currentframe().f_back
     for _ in range(num_frames - 1):
@@ -912,8 +894,7 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         if to_print:
             print(msg)
         else:
-            logging.info(msg)
-        # print(msg)
+            logger.info(msg)
 
 
 def _copy_no_lora_dict(state_dict):
