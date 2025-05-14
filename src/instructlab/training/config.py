@@ -228,3 +228,8 @@ class TrainingArgs(BaseModel):
         default=False,
         description="Whether to use Liger kernels for training.",
     )
+
+    logger_type: str = Field(
+        default="async",
+        description="The type of logger to use. Can be a comma separated list of loggers. Valid options are 'async', 'tensorboard', 'wandb'",
+    )

@@ -737,6 +737,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--log_level=INFO",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
+        f"--logger_type={train_args.logger_type}",
     ]
 
     if train_args.chat_tmpl_path is not None:

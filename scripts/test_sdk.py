@@ -68,5 +68,6 @@ def run_test(knowledge_data_path, skills_data_path, nnodes, node_rank, nproc_per
             use_dolomite=False,
             distributed_backend="fsdp",
             process_data=True,
+            logger_type="wandb",
         )
         run_training(torch_args, training_args)
