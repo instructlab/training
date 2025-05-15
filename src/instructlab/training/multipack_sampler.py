@@ -34,8 +34,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from instructlab.training.utils import bucket
-
 
 def find_max_pack_len_with_padding(
     dataset,
@@ -213,11 +211,11 @@ def ffd_check_padding(a: np.ndarray, c: int, n: int):
         not_found = True
         for idx in range(n):
             # Calculate the new capacity if size is added to the bin
-            new_capacity = bucket(max(bins_max_lengths[idx], size)) * (
+            new_capacity = max(bins_max_lengths[idx], size) * (
                 bins_num_samples[idx] + 1
             )
             if new_capacity <= c:
-                bins_max_lengths[idx] = bucket(max(bins_max_lengths[idx], size))
+                bins_max_lengths[idx] = max(bins_max_lengths[idx], size)
                 bins_num_samples[idx] += 1
                 not_found = False
                 break
@@ -268,11 +266,11 @@ def ffd_with_result_padding(a: np.ndarray, c: int, start_index: int):
         add_new = True
         for idx in range(len(bins_max_lengths)):
             # Calculate the new capacity if size is added to the bin
-            new_capacity = bucket(max(bins_max_lengths[idx], size)) * (
+            new_capacity = max(bins_max_lengths[idx], size) * (
                 bins_num_samples[idx] + 1
             )
             if new_capacity <= c:
-                bins_max_lengths[idx] = bucket(max(bins_max_lengths[idx], size))
+                bins_max_lengths[idx] = max(bins_max_lengths[idx], size)
                 bins_num_samples[idx] += 1
                 bins_result[idx].append(indices[a_id] + start_index)
                 add_new = False

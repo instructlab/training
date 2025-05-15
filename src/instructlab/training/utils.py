@@ -242,6 +242,28 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
 
 @numba.njit
 def simple_bucket(length):
+    """
+    This bucket algorithm merely relies on the given number instead of based on
+    slicing the known (min, max) range for several reasons:
+        1) Due to the use of the first-fit-decreasing (FFD) algorithm, the
+           (min, max) sequence length of each rank will be much smaller than the
+           (min, max) sequence length of the dataset. Bucketing on the
+           (min, max) sequence length of the dataset is not practical
+        2) The (min, max) sequence length of a given rank is unknown until
+           finishing 1 epoch since the packing is done on the fly
+        3) Due to the shuffling, the (min, max) sequence length of a given rank
+           may vary between ranks. Once the (min, max) sequence length of a
+           given rank changes, the bucketing also needs adjustment
+
+    This bucket algorithm is based on the most significant set bit of the input number.
+    It first check what’s the most significant set bit, assuming it's bit "S",
+    and then slice the range [2 ** S, 2 ** (S+1)] into buckets with the same size.
+    By default the range is divided into 16 buckets, so the bucket size will be
+    2 ** (S - 4)
+    For example, 0b10001 will be padded to 0b10010.
+    This approach can limit the overhead of bucketing (at most 1/16 of the input
+    number) and also prevent recompilation due to a too small bucket size.
+    """
     l = length
     msb = 0
     while l > 0:
@@ -439,7 +461,7 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
-                **deprecated_arguments if is_torch_hpu_available() else None,
+                **_deprecated_arguments if is_torch_hpu_available() else None,
             )
 
             return_dict = isinstance(output, dict)
