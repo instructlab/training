@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: E2E (NVIDIA L40S x4)
+name: E2E (NVIDIA L40S x8)
 
 on:
-### WILL BE UNCOMMENTED BEFORE MERGE
-#   schedule:
-#     - cron: '0 16 * * *' # Runs at 4PM UTC every day
-#   workflow_dispatch:
-#     inputs:
-#       pr_or_branch:
-#         description: 'pull request number or branch name'
-#         required: true
-#         default: 'main'
+  ### WILL BE UNCOMMENTED BEFORE MERGE
+  # schedule:
+  #   - cron: '0 6 * * *' # Runs at 6AM UTC every day
+  # workflow_dispatch:
+  #   inputs:
+  #     pr_or_branch:
+  #       description: 'pull request number or branch name'
+  #       required: true
+  #       default: 'main'
 
   # FOR TESTING ON GITHUB ONLY. WILL BE REMOVED.
   push:
@@ -20,76 +20,62 @@ on:
 
 env:
   TMPDIR: /home/tmp
-  PHASE1_TRAINING_LOG_NAME: "phase-1-training-log-large.jsonl"
-  PHASE2_TRAINING_LOG_NAME: "phase-2-training-log-large.jsonl"
+  PHASE1_TRAINING_LOG_NAME: "phase-1-training-log-xlarge.jsonl"
+  PHASE2_TRAINING_LOG_NAME: "phase-2-training-log-xlarge.jsonl"
 
 jobs:
-  start-large-ec2-runner:
+  start-xlarge-ec2-runner:
     runs-on: ubuntu-latest
     outputs:
-      label: ${{ steps.launch-ec2-instance-with-fallback.outputs.label }}
-      ec2-instance-id: ${{ steps.launch-ec2-instance-with-fallback.outputs.ec2-instance-id }}
-      ec2-instance-region: ${{ steps.launch-ec2-instance-with-fallback.outputs.ec2-instance-region }}
+      label: ${{ steps.start-ec2-runner.outputs.label }}
+      ec2-instance-id: ${{ steps.start-ec2-runner.outputs.ec2-instance-id }}
     steps:
-      - name: Checkout "launch-ec2-runner-with-fallback" in-house CI action
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        with:
+          egress-policy: audit
+
+      - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          repository: instructlab/ci-actions
-          # clone the "ci-actions" repo to a local directory called "ci-actions", instead of overwriting the current WORKDIR contents
-          path: ci-actions
-          ref: release-v0.1
-          sparse-checkout: |
-            actions/launch-ec2-runner-with-fallback
+          # https://github.com/actions/checkout/issues/249
+          fetch-depth: 0
 
-      - name: Launch EC2 Runner with Fallback
-        id: launch-ec2-instance-with-fallback
-        uses: ./ci-actions/actions/launch-ec2-runner-with-fallback
-        env:
-          TMPDIR: "/tmp"
+      # We need to free disk space to avoid the "No space left on device" error on our GH runner
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
-          aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          github_token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          regions_config: >
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Start EC2 runner
+        id: start-ec2-runner
+        uses: machulav/ec2-github-runner@1827d6ca7544d7044ddbd2e9360564651b463da2 # v2.3.7
+        with:
+          mode: start
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          ec2-image-id: ${{ vars.AWS_EC2_AMI }}
+          ec2-instance-type: g6e.48xlarge
+          subnet-id: subnet-024298cefa3bedd61
+          security-group-id: sg-06300447c4a5fbef3
+          iam-role-name: instructlab-ci-runner
+          aws-resource-tags: >
             [
-              {
-                "region": "us-east-2",
-                "subnets": {
-                  "us-east-2a": "${{ vars.SUBNET_US_EAST_2A }}",
-                  "us-east-2b": "${{ vars.SUBNET_US_EAST_2B }}",
-                  "us-east-2c": "${{ vars.SUBNET_US_EAST_2C }}"
-                },
-                "ec2-ami": "${{ vars.AWS_EC2_AMI_US_EAST_2 }}",
-                "security-group-id": "${{ vars.SECURITY_GROUP_ID_US_EAST_2 }}"
-              },
-              {
-                "region": "us-east-1",
-                "subnets": {
-                  "us-east-1a": "${{ vars.SUBNET_US_EAST_1A }}",
-                  "us-east-1b": "${{ vars.SUBNET_US_EAST_1B }}",
-                  "us-east-1c": "${{ vars.SUBNET_US_EAST_1C }}",
-                  "us-east-1d": "${{ vars.SUBNET_US_EAST_1D }}",
-                  "us-east-1e": "${{ vars.SUBNET_US_EAST_1E }}",
-                  "us-east-1f": "${{ vars.SUBNET_US_EAST_1F }}"
-                },
-                "ec2-ami": "${{ vars.AWS_EC2_AMI_US_EAST_1 }}",
-                "security-group-id": "${{ vars.SECURITY_GROUP_ID_US_EAST_1 }}"
-              }
-            ]
-          try_spot_instance_first: false
-          ec2_instance_type: g6e.12xlarge
-          aws_resource_tags: >
-            [
-              {"Key": "Name", "Value": "instructlab-ci-github-large-runner"},
+              {"Key": "Name", "Value": "instructlab-ci-github-xlarge-runner"},
               {"Key": "GitHubRepository", "Value": "${{ github.repository }}"},
               {"Key": "GitHubRef", "Value": "${{ github.ref }}"},
               {"Key": "GitHubPR", "Value": "${{ github.event.number }}"}
             ]
 
-  e2e-large-test:
+  e2e-xlarge-test:
     needs:
-      - start-large-ec2-runner
-    runs-on: ${{ needs.start-large-ec2-runner.outputs.label }}
+      - start-xlarge-ec2-runner
+    runs-on: ${{ needs.start-xlarge-ec2-runner.outputs.label }}
 
     permissions:
       pull-requests: write
@@ -97,9 +83,20 @@ jobs:
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0
+        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
         with:
           egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # https://github.com/actions/checkout/issues/249
+          fetch-depth: 0
+
+      # Remove unused packages that come with CentOS by default
+      - name: Free disk space
+        uses: ./.github/actions/free-disk-space
+
       - name: Install Packages
         run: |
           cat /etc/os-release
@@ -182,6 +179,7 @@ jobs:
         run: |
           git checkout ${{ steps.check_pr.outputs.pr_or_branch }}
 
+
       - name: Install ilab
         working-directory: ./instructlab
         run: |
@@ -193,7 +191,7 @@ jobs:
           nvidia-smi
           python3.11 -m pip cache remove llama_cpp_python
 
-          CMAKE_ARGS="-DLLAMA_CUDA=on" python3.11 -m pip install . -c constraints-dev.txt
+          CMAKE_ARGS="-DLLAMA_CUDA=on" python3.11 -m pip install .
 
           # https://github.com/instructlab/instructlab/issues/1821
           # install with Torch and build dependencies installed
@@ -208,7 +206,6 @@ jobs:
           pip install .[cuda]
 
       - name: Check disk before tests
-        if: always()
         run: |
           df -h
 
@@ -216,12 +213,11 @@ jobs:
         working-directory: ./instructlab
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           . venv/bin/activate
 
           # set preserve to true so we can retain the logs
-          ./scripts/e2e-ci.sh -lp
+          ./scripts/e2e-ci.sh -xp
 
           # we know that the file will be named something like f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl" in python
           # and we know that it will be written into a directory created by `mktemp -d`. 
@@ -234,14 +230,13 @@ jobs:
           done
 
       - name: Check disk after tests
-        if: always()
         run: |
           df -h
 
       - name: Upload training logs Phase 1
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PHASE1_TRAINING_LOG_NAME }}
+          name: phase-1-training-log-xlarge.jsonl
           path: ./instructlab/phase-1-training-log.jsonl
           retention-days: 1
           overwrite: true
@@ -249,7 +244,7 @@ jobs:
       - name: Upload training logs Phase 2
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PHASE2_TRAINING_LOG_NAME }}
+          name: phase-2-training-log-xlarge.jsonl
           path: ./instructlab/phase-2-training-log.jsonl
           retention-days: 1
           overwrite: true
@@ -273,7 +268,7 @@ jobs:
       - name: Post job results to Slack if the workflow failed
         if: failure() && steps.check_pr.outputs.is_pr == 'false'
         id: slack-report-failure
-        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           token: ${{ secrets.SON_OF_JEEVES_TOKEN }}
           method: chat.postMessage
@@ -282,12 +277,12 @@ jobs:
             # See also: https://api.slack.com/methods/chat.postMessage#channels
             # You can pass in multiple channels to post to by providing a comma-delimited list of channel IDs.
             channel: 'e2e-ci-results'
-            text: "*e2e-nvidia-l40s-x4* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *with failures* :meow_sad-rain: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            text: "*e2e-nvidia-l40s-x8* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *with failures* :meow_sad-rain: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Post job results to Slack if the workflow succeeded
         if: success() && steps.check_pr.outputs.is_pr == 'false'
         id: slack-report-success
-        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           token: ${{ secrets.SON_OF_JEEVES_TOKEN }}
           method: chat.postMessage
@@ -296,15 +291,15 @@ jobs:
             # See also: https://api.slack.com/methods/chat.postMessage#channels
             # You can pass in multiple channels to post to by providing a comma-delimited list of channel IDs.
             channel: 'e2e-ci-results'
-            text: "*e2e-nvidia-l40s-x4* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *successfully* :meow_party: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            text: "*e2e-nvidia-l40s-x8* job in *${{ github.repository }}* running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed *successfully* :meow_party: | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Send Discord notification for failure
         if: failure() && steps.check_pr.outputs.is_pr == 'false'
-        uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008 # v1.15.3
+        uses: sarisia/actions-status-discord@65843b6a7d18626c252a055e247ccad1f41b4004 # v1.15.1
         with:
           webhook: ${{ secrets.SON_OF_JEEVES_DISCORD_WEBHOOK }}
           status: ${{ job.status }}
-          title: "e2e-nvidia-l40s-x4"
+          title: "e2e-nvidia-l40s-x8"
           description: |
             Job in **${{ github.repository }}** running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed **with failures** ❌
             Click [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) to view details.
@@ -312,52 +307,58 @@ jobs:
 
       - name: Send Discord notification for success
         if: success() && steps.check_pr.outputs.is_pr == 'false'
-        uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008 # v1.15.3
+        uses: sarisia/actions-status-discord@65843b6a7d18626c252a055e247ccad1f41b4004 # v1.15.1
         with:
           webhook: ${{ secrets.SON_OF_JEEVES_DISCORD_WEBHOOK }}
           status: ${{ job.status }}
-          title: "e2e-nvidia-l40s-x4"
+          title: "e2e-nvidia-l40s-x8"
           description: |
             Job in **${{ github.repository }}** running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed **successfully** ✅
             Click [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) to view details.
           color: 0x28A745 # Green color for success
 
-  stop-large-ec2-runner:
+  stop-xlarge-ec2-runner:
     needs:
-      - start-large-ec2-runner
-      - e2e-large-test
-    runs-on: ubuntu-latest
-    if: ${{ always() }}
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-region }}
-
-      - name: Stop EC2 runner
-        uses: machulav/ec2-github-runner@a8c20fc0876503410b2b966c124abc2311984ce2 # v2.3.9
-        with:
-          mode: stop
-          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
-          label: ${{ needs.start-large-ec2-runner.outputs.label }}
-          ec2-instance-id: ${{ needs.start-large-ec2-runner.outputs.ec2-instance-id }}
-
-  loss-graphs:
-    needs:
-      - stop-large-ec2-runner
+      - start-xlarge-ec2-runner
+      - e2e-xlarge-test
     runs-on: ubuntu-latest
     if: ${{ always() }}
     steps:
       - name: "Harden Runner"
         # v2.10.1
-        uses: step-security/harden-runner@0634a2670c59f64b4a01f0f96f84700a4088b9f0
+        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
         with:
           egress-policy: audit
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Stop EC2 runner
+        uses: machulav/ec2-github-runner@fcfb31a5760dad1314a64a0e172b78ec6fc8a17e # v2.3.6
+        with:
+          mode: stop
+          github-token: ${{ secrets.GH_PERSONAL_ACCESS_TOKEN }}
+          label: ${{ needs.start-xlarge-ec2-runner.outputs.label }}
+          ec2-instance-id: ${{ needs.start-xlarge-ec2-runner.outputs.ec2-instance-id }}
+
+  loss-graphs:
+    needs:
+      - stop-xlarge-ec2-runner
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    steps:
+      - name: "Harden Runner"
+        # v2.10.1
+        uses: step-security/harden-runner@0080882f6c36860b6ba35c610c98ce87d4e2f26f
+        with:
+          egress-policy: audit
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4.0.2
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -395,7 +396,7 @@ jobs:
         continue-on-error: true
         run: |
           python training/scripts/create-loss-graph.py  \
-            --log-file "${{ steps.phase-1-download-logs.outputs.download-path }}/phase-1-training-log-large.jsonl" \
+            --log-file "${{ steps.phase-1-download-logs.outputs.download-path }}/phase-1-training-log-xlarge.jsonl" \
             --output-file "./phase-1-test.md" \
             --phase "1" \
             --aws-region "${{ vars.AWS_REGION }}" \
@@ -410,7 +411,7 @@ jobs:
         continue-on-error: true
         run: |
           python training/scripts/create-loss-graph.py  \
-            --log-file "${{ steps.phase-2-download-logs.outputs.download-path }}/phase-2-training-log-large.jsonl" \
+            --log-file "${{ steps.phase-2-download-logs.outputs.download-path }}/phase-2-training-log-xlarge.jsonl" \
             --output-file "./phase-2-test.md" \
             --phase "2" \
             --aws-region "${{ vars.AWS_REGION }}" \
