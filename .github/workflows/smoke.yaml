@@ -101,6 +101,9 @@ jobs:
     needs:
       - start-large-ec2-runner
     runs-on: ${{needs.start-large-ec2-runner.outputs.label}}
+    strategy:
+      matrix:
+        python-version: [ '3.11', '3.12' ]
     # It is important that this job has no write permissions and has
     # no access to any secrets. This part is where we are running
     # untrusted code from PRs.
@@ -114,7 +117,7 @@ jobs:
       - name: "Install packages"
         run: |
           cat /etc/os-release
-          sudo dnf install -y gcc gcc-c++ make git-core python3.11 python3.11-devel
+          sudo dnf install -y gcc gcc-c++ make git-core python${{ matrix.python-version }} python${{ matrix.python-version }}-devel
 
       - name: "Verify cuda environment is setup"
         run: |
@@ -133,7 +136,7 @@ jobs:
       # only has to install Tox because Tox will do the other virtual environment management.
       - name: "Setup Python virtual environment"
         run: |
-          python3.11 -m venv --upgrade-deps venv
+          python${{ matrix.python-version }} -m venv --upgrade-deps venv
           . venv/bin/activate
           pip install tox
 
