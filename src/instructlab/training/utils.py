@@ -43,6 +43,7 @@ from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokeni
 import numpy as np
 import torch
 import torch.nn.functional as F
+import numba
 
 # First Party
 from instructlab.training.config import (
@@ -50,6 +51,7 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
+from instructlab.training.hpu_utils import is_torch_hpu_available
 
 logger = logging.getLogger("instructlab.training")
 
@@ -209,6 +211,8 @@ class StreamablePopen(subprocess.Popen):
 
 
 def supports_flash_attention(device_id=0):
+    if is_torch_hpu_available():
+        return False
     """Check if a GPU supports FlashAttention."""
     major, minor = torch.cuda.get_device_capability(device_id)
     # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
@@ -234,6 +238,52 @@ def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bo
     else:
         flash_enabled = False
     return flash_enabled
+
+
+@numba.njit
+def simple_bucket(length):
+    """
+    This bucket algorithm merely relies on the given number instead of based on
+    slicing the known (min, max) range for several reasons:
+        1) Due to the use of the first-fit-decreasing (FFD) algorithm, the
+           (min, max) sequence length of each rank will be much smaller than the
+           (min, max) sequence length of the dataset. Bucketing on the
+           (min, max) sequence length of the dataset is not practical
+        2) The (min, max) sequence length of a given rank is unknown until
+           finishing 1 epoch since the packing is done on the fly
+        3) Due to the shuffling, the (min, max) sequence length of a given rank
+           may vary between ranks. Once the (min, max) sequence length of a
+           given rank changes, the bucketing also needs adjustment
+
+    This bucket algorithm is based on the most significant set bit of the input number.
+    It first check what’s the most significant set bit, assuming it's bit "S",
+    and then slice the range [2 ** S, 2 ** (S+1)] into buckets with the same size.
+    By default the range is divided into 16 buckets, so the bucket size will be
+    2 ** (S - 4)
+    For example, 0b10001 will be padded to 0b10010.
+    This approach can limit the overhead of bucketing (at most 1/16 of the input
+    number) and also prevent recompilation due to a too small bucket size.
+    """
+    l = length
+    msb = 0
+    while l > 0:
+        msb += 1
+        l = l // 2
+
+    align = (1 << (msb - 4)) if msb >= 4 else 1
+
+    return (length + align - 1) // align * align
+
+
+torch_hpu_available = is_torch_hpu_available()
+
+@numba.njit
+def bucket(length):
+    global torch_hpu_available
+    if torch_hpu_available:
+        return simple_bucket(length)
+    else:
+        return length
 
 
 def make_collate_fn(
@@ -298,7 +348,7 @@ def make_collate_fn(
 
             def pad_collate_fn(batch):
                 lens = np.array([len(item["input_ids"]) for item in batch])
-                max_len = max(lens)
+                max_len = bucket(max(lens))
 
                 input_ids = torch.stack(
                     [
@@ -411,6 +461,7 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                **_deprecated_arguments if is_torch_hpu_available() else None,
             )
 
             return_dict = isinstance(output, dict)
@@ -1093,7 +1144,10 @@ def set_random_seed(seed):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        if is_torch_hpu_available():
+            torch.hpu.manual_seed_all(seed)
+        else:
+            torch.cuda.manual_seed_all(seed)
 
 
 def save_checkpoint(
