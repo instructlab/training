@@ -618,7 +618,7 @@ def unmask_sample_single(
     return unmask_messages(sample["messages"], tokenizer, unmask_roles)
 
 
-def unmask_sample(
+def unmask_batch(
     batch: t.Dict[str, t.List[t.Any]], tokenizer: PreTrainedTokenizer
 ) -> t.Dict[str, t.List[t.Any]]:
     input_ids_list = []
