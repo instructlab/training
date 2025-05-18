@@ -934,7 +934,10 @@ def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
 
 
 def process_samples(
-    data: Dataset, tokenizer: PreTrainedTokenizer, num_cpu_procs: int
+    data: Dataset,
+    tokenizer: PreTrainedTokenizer,
+    num_cpu_procs: int,
+    batch_size: int = 1000,
 ) -> Dataset:
     """Process samples to generate input_ids and labels."""
 
@@ -945,7 +948,7 @@ def process_samples(
     processed_data = data.map(
         process_sample_fn,
         batched=True,
-        batch_size=1000,
+        batch_size=batch_size,
         num_proc=num_cpu_procs,
         desc="Converting samples into input_ids and labels...",
         load_from_cache_file=False,
