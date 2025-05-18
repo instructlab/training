@@ -24,29 +24,37 @@ def tokenizer():
 
 
 def test_process_samples_outputs_input_ids_and_labels(tokenizer):
+    # Create a dummy dataset of 100 samples
+    messages = [
+        [
+            {"role": "user", "content": f"Hello {i}"},
+            {"role": "assistant", "content": f"Hi there {i}!"},
+            {"role": "pretraining", "content": f"Pretraining text {i}"},
+        ]
+        for i in range(100)
+    ]
+
+    unmask_flags = [True for _ in range(100)]
+
     dummy_data = Dataset.from_dict(
         {
-            "messages": [
-                [
-                    {"role": "user", "content": "Hello"},
-                    {"role": "assistant", "content": "Hi there!"},
-                    {"role": "pretraining", "content": "Some pretraining text"},
-                ]
-            ],
-            "unmask": [True],
+            "messages": messages,
+            "unmask": unmask_flags,
         }
     )
 
-    # Run the function
-    processed = process_samples(dummy_data, tokenizer, num_cpu_procs=1, batch_size=1)
+    # Use realistic batch size
+    processed = process_samples(dummy_data, tokenizer, num_cpu_procs=1, batch_size=8)
 
-    # Check the structure of the output
+    # Check the structure
     assert "input_ids" in processed.column_names
     assert "labels" in processed.column_names
+    assert len(processed) == 100
 
-    # Sanity check one sample
-    sample = processed[0]
-    assert isinstance(sample["input_ids"], list)
-    assert isinstance(sample["labels"], list)
-    assert len(sample["input_ids"]) == len(sample["labels"])
-    assert all(isinstance(x, int) for x in sample["input_ids"])
+    # Check that input_ids and labels exist and match length for a few random samples
+    for i in [0, 25, 50, 99]:
+        sample = processed[i]
+        assert isinstance(sample["input_ids"], list)
+        assert isinstance(sample["labels"], list)
+        assert len(sample["input_ids"]) == len(sample["labels"])
+        assert all(isinstance(x, int) for x in sample["input_ids"])
