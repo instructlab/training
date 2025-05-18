@@ -1,16 +1,20 @@
-import pytest
+# Third Party
 from datasets import Dataset
 from transformers import LlamaTokenizerFast
+import pytest
+
+# First Party
 from instructlab.training.data_process import process_samples
+
 
 @pytest.fixture(scope="module")
 def tokenizer():
     tokenizer = LlamaTokenizerFast.from_pretrained("HuggingFaceH4/zephyr-7b-alpha")
 
     # Ensure UNMASK tokens are treated atomically
-    tokenizer.add_special_tokens({
-        "additional_special_tokens": ["<|UNMASK_BEGIN|>", "<|UNMASK_END|>"]
-    })
+    tokenizer.add_special_tokens(
+        {"additional_special_tokens": ["<|UNMASK_BEGIN|>", "<|UNMASK_END|>"]}
+    )
 
     # Safety: add a pad token if it's missing
     if tokenizer.pad_token is None:
@@ -18,15 +22,20 @@ def tokenizer():
 
     return tokenizer
 
+
 def test_process_samples_outputs_input_ids_and_labels(tokenizer):
-    dummy_data = Dataset.from_dict({
-        "messages": [[
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"},
-            {"role": "pretraining", "content": "Some pretraining text"}
-        ]],
-        "unmask": [True],
-    })
+    dummy_data = Dataset.from_dict(
+        {
+            "messages": [
+                [
+                    {"role": "user", "content": "Hello"},
+                    {"role": "assistant", "content": "Hi there!"},
+                    {"role": "pretraining", "content": "Some pretraining text"},
+                ]
+            ],
+            "unmask": [True],
+        }
+    )
 
     # Run the function
     processed = process_samples(dummy_data, tokenizer, num_cpu_procs=1, batch_size=1)
