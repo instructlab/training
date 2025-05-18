@@ -939,7 +939,7 @@ def process_samples(
     """Process samples to generate input_ids and labels."""
 
     # Create a wrapper function for unmask_sample
-    process_sample_fn = partial(unmask_sample, tokenizer=tokenizer)
+    process_sample_fn = partial(unmask_batch, tokenizer=tokenizer)
 
     # Process the dataset
     processed_data = data.map(
