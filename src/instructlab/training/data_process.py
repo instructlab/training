@@ -601,7 +601,7 @@ def unmask_messages(
     )
 
 
-def unmask_sample(
+def unmask_sample_single(
     sample: t.Dict[str, t.Any], tokenizer: PreTrainedTokenizer
 ) -> ProcessedMessagesData:
     """
@@ -628,6 +628,25 @@ def unmask_sample(
 
     unmask_roles = list(unmask_roles_set)
     return unmask_messages(sample["messages"], tokenizer, unmask_roles)
+
+
+def unmask_batch(
+    batch: t.Dict[str, t.List[t.Any]], tokenizer: PreTrainedTokenizer
+) -> t.Dict[str, t.List[t.Any]]:
+    input_ids_list = []
+    labels_list = []
+
+    for i in range(len(batch["messages"])):
+        sample = {key: batch[key][i] for key in batch}
+        result = unmask_sample_single(sample, tokenizer)
+
+        input_ids_list.append(result["input_ids"])
+        labels_list.append(result["labels"])
+
+    return {
+        "input_ids": input_ids_list,
+        "labels": labels_list,
+    }
 
 
 def extract_messages_from_pretraining_text(text: str) -> t.List[Message]:
@@ -736,29 +755,37 @@ def pretraining_is_using_legacy_granite_chat_template(ds: Dataset) -> bool:
 
 
 def ensure_dataset_is_compatible_with_legacy_format(
-    sample: t.Dict[str, t.Any],
-) -> t.Dict[str, t.Any]:
+    batch: t.Dict[str, t.List[t.Any]],
+) -> t.Dict[str, t.List[t.Any]]:
     """
-    Given a sample that uses the legacy pre-training format, we unroll the samples into ones with the
-    original messages contents.
+    Given a batch of samples using the legacy pre-training format, unroll the samples into ones with
+    the original messages contents.
     """
-    # deepcopy to prevent re-referencing the existing objects
-    new_sample = {
-        "messages": [],
-        "unmask": sample.get("unmask", False),
+    processed_messages = []
+    unmask_flags = []
+
+    for messages, unmask_flag in zip(
+        batch["messages"], batch.get("unmask", [False] * len(batch["messages"]))
+    ):
+        new_messages = []
+        unmask = unmask_flag
+
+        for msg in messages:
+            if msg["role"] != "pretraining":
+                new_messages.append(msg)
+            else:
+                new_messages.extend(
+                    extract_messages_from_pretraining_text(msg["content"])
+                )
+                unmask = True  # if any pretraining message is found, set unmask to True
+
+        processed_messages.append(new_messages)
+        unmask_flags.append(unmask)
+
+    return {
+        "messages": processed_messages,
+        "unmask": unmask_flags,
     }
-    for msg in sample["messages"]:
-        if msg["role"] != "pretraining":
-            new_sample["messages"].append(msg)
-            continue
-
-        # handle unmasking
-        new_sample["messages"].extend(
-            extract_messages_from_pretraining_text(msg["content"])
-        )
-        new_sample["unmask"] = True
-
-    return new_sample
 
 
 def filter_samples_by_length(
@@ -888,6 +915,8 @@ def load_and_validate_dataset(data_path: str, num_procs: int) -> Dataset:
 
     return data.map(
         ensure_dataset_is_compatible_with_legacy_format,
+        batched=True,
+        batch_size=1000,
         num_proc=num_procs,
         desc="Ensuring dataset is compatible with legacy format.",
     )
@@ -917,16 +946,21 @@ def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
 
 
 def process_samples(
-    data: Dataset, tokenizer: PreTrainedTokenizer, num_cpu_procs: int
+    data: Dataset,
+    tokenizer: PreTrainedTokenizer,
+    num_cpu_procs: int,
+    batch_size: int = 1000,
 ) -> Dataset:
     """Process samples to generate input_ids and labels."""
 
     # Create a wrapper function for unmask_sample
-    process_sample_fn = partial(unmask_sample, tokenizer=tokenizer)
+    process_sample_fn = partial(unmask_batch, tokenizer=tokenizer)
 
     # Process the dataset
     processed_data = data.map(
         process_sample_fn,
+        batched=True,
+        batch_size=batch_size,
         num_proc=num_cpu_procs,
         desc="Converting samples into input_ids and labels...",
         load_from_cache_file=False,
