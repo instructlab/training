@@ -72,7 +72,7 @@ jobs:
         run: |
           python -m venv --upgrade-deps venv
           . venv/bin/activate
-          pip install tox
+          pip install tox -c constraints-dev.txt
 
       - name: "Show disk utilization BEFORE tests"
         if: always()

@@ -135,7 +135,7 @@ jobs:
         run: |
           python3.11 -m venv --upgrade-deps venv
           . venv/bin/activate
-          pip install tox
+          pip install tox -c constraints-dev.txt
 
       # flash-attn has a bug in the setup.py that causes pip to attempt
       # installing it before torch is installed. This is a bug because their
@@ -146,19 +146,20 @@ jobs:
         run: |
           source venv/bin/activate
           # The list is taken from the pull request linked above
-          pip install torch packaging setuptools wheel psutil ninja
+          pip install torch packaging setuptools wheel psutil ninja -c constraints-dev.txt
 
       - name: "Install tox-current-env to reuse the venv with pre-installed build dependencies"
         run: |
           source venv/bin/activate
-          pip install tox-current-env
+          pip install tox-current-env -c constraints-dev.txt
 
       - name: "Install dependencies from tox.ini in the current venv, using current venv installed deps"
         run: |
           source venv/bin/activate
           tox -e py3-smoke --print-deps-to-file=./deps.txt
-          pip install -r ./deps.txt --no-build-isolation
-          pip install .
+          pip_install="pip install -c constraints-dev.txt"
+          $pip_install -r ./deps.txt --no-build-isolation
+          $pip_install .
 
       - name: "Show disk utilization BEFORE tests"
         if: always()
