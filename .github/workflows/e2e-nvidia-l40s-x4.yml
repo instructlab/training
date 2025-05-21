@@ -177,7 +177,7 @@ jobs:
       - name: Install ilab
         working-directory: ./instructlab
         run: |
-          ./scripts/install-ilab-with-cuda.sh
+          PYTHON=python3.11 ./scripts/install-ilab-with-cuda.sh
 
       - name: Update instructlab-training library
         working-directory: ./training
