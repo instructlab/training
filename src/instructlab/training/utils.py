@@ -723,12 +723,12 @@ def prepare_universal_checkpoint_from_latest(output_dir):
                 "an empty dictionary."
             )
             ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
-            assert (
-                ds_checkpoint.tp_degree == 1
-            ), "if universal checkpointing info is missing, TP must be absent"
-            assert (
-                ds_checkpoint.pp_degree == 1
-            ), "if universal checkpointing info is missing, PP must be absent"
+            assert ds_checkpoint.tp_degree == 1, (
+                "if universal checkpointing info is missing, TP must be absent"
+            )
+            assert ds_checkpoint.pp_degree == 1, (
+                "if universal checkpointing info is missing, PP must be absent"
+            )
         _check_for_required_state(ds_checkpoint)
 
         slice_shapes = []

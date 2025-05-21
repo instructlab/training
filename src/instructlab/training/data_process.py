@@ -197,9 +197,9 @@ def unmask_message_content(
     for i in range(len(final_sentence_tk)):
         for seq in special_sequences:
             if final_sentence_tk[i : i + len(seq)] == seq:
-                assert all(
-                    final_labels[i + j] == -100 for j in range(len(seq))
-                ), f"Special sequence {seq} is unmasked"
+                assert all(final_labels[i + j] == -100 for j in range(len(seq))), (
+                    f"Special sequence {seq} is unmasked"
+                )
 
     # 2. No pretrain tokens should be in the final sentence_tk
     assert all(
