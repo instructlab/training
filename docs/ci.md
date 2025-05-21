@@ -10,7 +10,7 @@ All unit tests currently live in the `tests/unit` directory and are run with [py
 
 To run the unit tests, you can run `tox -e py3-unit`.
 
-In CI, the tests are run with Python 3.11 - 3.13 on Ubuntu and MacOS runners - you can see the details [here](https://github.com/instructlab/training/blob/main/.github/workflows/unit.yaml)
+In CI, the tests are run with Python 3.11 - 3.13 on Ubuntu and MacOS runners - you can see the details [in the unit tests workflow file](https://github.com/instructlab/training/blob/main/.github/workflows/unit.yaml).
 
 ## Smoke tests
 
@@ -20,7 +20,7 @@ There is also a Shell-based smoke test script that can be found at `tests/smoket
 
 To run the smoke tests, you can run `tox -e py3-smoke`
 
-In CI, the smoke tests are run with Python 3.11 on CentOS runners - you can see the details [here](https://github.com/instructlab/training/blob/main/.github/workflows/smoke.yaml)
+In CI, the smoke tests are run with Python 3.11 on CentOS runners - you can see the details [in the smoke workflow file](https://github.com/instructlab/training/blob/main/.github/workflows/smoke.yaml).
 
 ## End-to-end (E2E) tests
 
