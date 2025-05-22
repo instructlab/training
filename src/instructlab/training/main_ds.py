@@ -505,6 +505,8 @@ def train(
                     is_lora=bool(args.lora_r),
                     hf_format=True,
                 )
+                base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
+                torch.distributed.barrier()
 
             # if (
             #     args.save_samples_ds is not None
@@ -533,6 +535,8 @@ def train(
                 hf_format=True,
                 epoch=epoch,
             )
+            base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
+            torch.distributed.barrier()
 
     if args.save_last:
         save_hf_format_accelerate(
