@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: E2E (NVIDIA L40S x4) (python 3.11)
+name: E2E (NVIDIA L40S x4) (python 3.12)
 
 on:
   schedule:
@@ -98,13 +98,13 @@ jobs:
         with:
           repository: "instructlab/training"
           path: "training"
-          # https://github.com/actions/checkout/issues/249
+            # https://github.com/actions/checkout/issues/249
           fetch-depth: 0
 
       - name: Run e2e tests
         uses: ./training/.github/actions/run-e2e
         with:
-          python-version: 3.11
+          python-version: 3.12
           gh-token: ${{ secrets.GITHUB_TOKEN }}
           hf-token: ${{ secrets.HF_TOKEN }}
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
