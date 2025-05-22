@@ -163,9 +163,9 @@ def test_handlers(logger_with_handler, tmp_path):
 
     # Test mapping content creates a file/directory
     logger_with_handler.info({"test": 3, "test2": 3.7})
-    assert (
-        len(get_log_files()) == 1
-    ), "Expected test_run file/directory found in tmp_path"
+    assert len(get_log_files()) == 1, (
+        "Expected test_run file/directory found in tmp_path"
+    )
 
     # Test call with step
     for i in range(10):
@@ -173,6 +173,6 @@ def test_handlers(logger_with_handler, tmp_path):
 
     # Test call with hparams
     logger_with_handler.info({"epoch": 2, "lr": 0.001}, extra={"hparams": True})
-    assert (
-        len(get_log_files()) == 1
-    ), "Expected test_run file/directory found in tmp_path"
+    assert len(get_log_files()) == 1, (
+        "Expected test_run file/directory found in tmp_path"
+    )
