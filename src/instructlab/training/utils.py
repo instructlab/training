@@ -39,7 +39,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
-from transformers import AutoModelForCausalLM, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -50,7 +50,6 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
-from instructlab.training.model import Model
 from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
 
 logger = logging.getLogger("instructlab.training")
@@ -103,9 +102,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if Model.check_flash_attn_enabled(
-        train_args.disable_flash_attn, train_args.use_dolomite
-    ):
+    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
         # verify that the flash_attn package is actually installed
         try:
             # pylint: disable=unused-import
@@ -210,6 +207,37 @@ class StreamablePopen(subprocess.Popen):
                     full_log_file.write(byte)
                 else:
                     break
+
+
+def supports_flash_attention(device_id=0):
+    if is_torch_hpu_available():
+        return False
+
+    """Check if a GPU supports FlashAttention."""
+    major, minor = torch.cuda.get_device_capability(device_id)
+    # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
+    is_sm8x = major == 8 and minor >= 0
+    is_sm90 = major == 9 and minor == 0
+    dev_name = torch.cuda.get_device_properties(device_id).gcnArchName.split(":")[0]
+    is_compat_amd = dev_name in ("gfx90a", "gfx940", "gfx941", "gfx942")
+    return is_sm8x or is_sm90 or is_compat_amd
+
+
+def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
+    if not disable_flash_attn:
+        if supports_flash_attention():
+            flash_enabled = True
+        else:
+            raise RuntimeError(
+                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
+            )
+    elif use_dolomite:
+        raise RuntimeError(
+            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+        )
+    else:
+        flash_enabled = False
+    return flash_enabled
 
 
 def make_collate_fn(
@@ -453,6 +481,47 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     return False
 
 
+def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
+    # if lora
+    # Third Party
+    from peft import LoraConfig
+
+    # ensure we select only the modules that exist in the model
+    proj_layers = get_projection_layer_names(model)
+    if not args.lora_target_modules:
+        warnings.warn(
+            "lora_target_modules was not specified, defaulting to all of the model's projection modules"
+        )
+        if not proj_layers:
+            raise RuntimeError("could not find any projection layers in the model")
+        args.__dict__["lora_target_modules"] = proj_layers
+    else:
+        # when the user specifies the module, we should verify that they align with what's in the model
+        lora_target_modules_set = set(args.lora_target_modules)
+        diff = lora_target_modules_set - set(proj_layers)
+        layers_to_target = lora_target_modules_set - diff
+        if len(diff) == len(args.lora_target_modules):
+            raise ValueError(
+                f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
+            )
+        if diff:
+            warnings.warn(
+                "the following modules were targeted for LoRA but are not present in the model: %s. Applying LoRA only to %s modules.",
+                list(diff),
+                list(layers_to_target),
+            )
+        args.__dict__["lora_target_modules"] = list(layers_to_target)
+
+    return LoraConfig(
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        r=args.lora_r,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=args.lora_target_modules,
+    )
+
+
 def save_fsdp_lora_model(
     args: Namespace,
     model: FSDP,
@@ -515,6 +584,201 @@ def save_fsdp_lora_model(
             args.base_model_args["device_map"] = old_device_map
 
     dist.barrier()
+
+
+def prepare_peft_model(
+    model: PreTrainedModel,
+    peft_config,
+    distributed_backend: str,
+    gradient_checkpointing=True,
+    gradient_checkpointing_kwargs={"use_reentrant": True},
+    mixed_precision="bf16",
+):
+    # will guard this
+    # Third Party
+    from peft import (
+        LoraModel,
+        PeftConfig,
+        PeftModel,
+        get_peft_model,
+        prepare_model_for_kbit_training,
+    )
+    from trl.trainer.utils import peft_module_casting_to_bf16
+
+    if not isinstance(peft_config, PeftConfig):
+        raise ValueError(
+            "If you want to use the PeftModel, you need to pass a PeftConfig object, "
+            f"and you passed a {type(peft_config)}."
+        )
+
+    if not isinstance(model, PeftModel):
+        if getattr(model, "is_loaded_in_8bit", False) or getattr(
+            model, "is_loaded_in_4bit", False
+        ):
+            preprare_model_kwargs = {
+                "use_gradient_checkpointing": gradient_checkpointing
+            }
+
+            # if _support_gc_kwargs:
+            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
+                gradient_checkpointing_kwargs
+            )
+
+            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
+
+        elif gradient_checkpointing:
+            # For backward compatibility with older versions of transformers
+            if hasattr(model, "enable_input_require_grads"):
+                model.enable_input_require_grads()
+            else:
+
+                def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
+                    output.requires_grad_(True)
+
+                model.get_input_embeddings().register_forward_hook(
+                    make_inputs_require_grad
+                )
+
+        if distributed_backend == DistributedBackend.FSDP.value:
+            # FSDP doesn't like `get_peft_model` as it leads to dtype mismatches
+            model = LoraModel(model, peft_config, "default")
+        else:
+            model = get_peft_model(model, peft_config)
+        if mixed_precision == "bf16" and getattr(model, "is_loaded_in_4bit", False):
+            peft_module_casting_to_bf16(model)
+
+    return model
+
+
+def prepare_universal_checkpoint_from_latest(output_dir):
+    """Populate the universal checkpoint in output_dir/step_folder
+    - 1. read output_dir/latest to get step_folder
+    - 2. populate tmp dir in output_dir/step_folder/tmp
+    - 3. populate zero checkpoints in output_dir/step_folder/zero
+    - 4. create output_dir/latest_universal
+
+    Items 1, 2, 3, 4 are idempotent. There is atomicity in the sense that
+    only after 4 is completed, then the output_dir/latest_universal
+    checkpoint is created in which then the universal checkpoint
+    can be loaded.
+
+    Be aware that this creates an extra dir `zero/` in the checkpoint dir,
+    which doubles the DS checkpoint storage requirement.
+    - DS checkpoints store 3X model parameters in 32bit.
+    - e.g., will be 6X a model parameter-only checkpoint in 16bit.
+
+    Note that this requires a latest version of deepspeed. It kind of works if
+    the model is not saving universal checkpoint info, but only in the
+    the case where advanced features like tensor parallel (TP) and
+    pipeline parallel (PP) are turned off.
+    """
+
+    log_rank_0(
+        f"\033[93mPreparing universal checkpoint in {output_dir}\033[0m", to_print=True
+    )
+    # Third Party
+    from transformers.utils.import_utils import _is_package_available
+
+    _, ds_version = _is_package_available("deepspeed", return_version=True)
+    if ds_version < "0.14.3":
+        raise ValueError("universal checkpoint only supported on deepspeed >= 0.14.3")
+
+    start = time.time()
+    if torch.distributed.get_rank() == 0:
+        try:
+            # Third Party
+            from deepspeed.checkpoint import DeepSpeedCheckpoint
+            from deepspeed.checkpoint.ds_to_universal import (
+                PARAM_SHAPES,
+                UNIVERSAL_CHECKPOINT_INFO,
+                _check_for_required_state,
+                _extract_zero_shard_files,
+                _merge_tp_slice_files,
+                _save_optimizer_state,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "DeepSpeed-specific checkpoints cannot be saved without DeepSpeed>=0.14.3 installed"
+            ) from exc
+
+        # read the latest file to get the step folder
+        latest_file = output_dir / "latest"
+        with open(latest_file) as f:
+            step_folder = f.read()
+
+        # will process the checkpoint in the latest step folder
+        input_folder = os.path.join(output_dir, step_folder)
+
+        # create args for the scripts below
+        class UniversalCheckpointArgs:
+            num_extract_workers: int = 1
+            num_merge_workers: int = 1
+            output_folder: str = input_folder  # just put in same place
+            strict: bool = True  # strict checkpoint
+
+        args = UniversalCheckpointArgs()
+
+        # get the checkpoint
+        ds_checkpoint = DeepSpeedCheckpoint(input_folder)
+
+        # hack, force this to null if we did not properly save
+        # any universal checkpoint information
+        # - this will not support any pipeline replication and other
+        #   replication such as TP, row parallelism, vocab, sub_params
+        if UNIVERSAL_CHECKPOINT_INFO not in ds_checkpoint.global_state:
+            warnings.warn(
+                "Universal checkpoint information not found, setting it to "
+                "an empty dictionary."
+            )
+            ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
+            assert (
+                ds_checkpoint.tp_degree == 1
+            ), "if universal checkpointing info is missing, TP must be absent"
+            assert (
+                ds_checkpoint.pp_degree == 1
+            ), "if universal checkpointing info is missing, PP must be absent"
+        _check_for_required_state(ds_checkpoint)
+
+        slice_shapes = []
+        for mp_rank_file in ds_checkpoint.mp_rank_files:
+            mp_sd = torch.load(mp_rank_file, map_location=torch.device("cpu"))
+            slice_shapes += mp_sd[PARAM_SHAPES]
+
+        # fix back to normal flat dict, merge duplicates for tp>1
+        slice_shapes = dict((k, v) for d in slice_shapes for k, v in d.items())
+        temp_dir = os.path.join(args.output_folder, "tmp")
+
+        log_rank_0(
+            f"\033[93m1. Extracting ZeRO fragments into {temp_dir}\033[0m",
+            to_print=True,
+        )
+        _extract_zero_shard_files(args, ds_checkpoint, temp_dir)
+
+        zero_output_folder = os.path.join(args.output_folder, "zero")
+
+        log_rank_0(
+            f"\033[93m2. Merging slices into {zero_output_folder}\033[0m", to_print=True
+        )
+        _merge_tp_slice_files(args, ds_checkpoint, slice_shapes, temp_dir)
+
+        log_rank_0(
+            f"\033[93m3. Saving common optimizer states into {zero_output_folder}\033[0m",
+            to_print=True,
+        )
+        _save_optimizer_state(args, ds_checkpoint)
+
+        log_rank_0(
+            f"\033[93m4. Removing temp directory {temp_dir}\033[0m", to_print=True
+        )
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+        latest_file = os.path.join(output_dir, "latest_universal")
+        log_rank_0(f"\033[93m5. Creating {latest_file}\033[0m", to_print=True)
+        with open(latest_file, "w") as f:
+            f.write(step_folder)
+
+    dist.barrier()
+    log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
 
 
 @contextmanager
@@ -794,6 +1058,44 @@ def save_hf_format_accelerate(
     accelerator.get_state_dict = get_state_dict_unpatched
 
 
+# this is native deepspeed saving with optimizer, scheduler
+def save_model_ds_native(
+    args,
+    model,
+    tokenizer,  # pylint: disable=unused-argument
+    samples_seen,
+):
+    # to get a statedict from a zero checkpoint, all you need to do is
+    # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
+    # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
+    # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
+
+    log_rank_0(
+        f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
+        to_print=True,
+    )
+    start = time.time()
+    # used to save huggingface format, so we can use it for hf.from_pretrained
+    output_dir = Path(args.output_dir) / "ds_native"
+    tag = f"samples_{samples_seen}"
+    use_lora = args.lora_r > 0
+
+    # NOTE: this is a distributed save
+    # if its lora, we only save the adapters
+    # - so we exclude frozen if use_lora==True
+    model.save_checkpoint(
+        output_dir,
+        exclude_frozen_parameters=use_lora,
+        tag=tag,  # this will create the subdirectory with the correct name
+    )
+
+    # for now we are not saving tokenizer, config, eg..
+    # so it is not totally "HF compatible"
+
+    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
+    log_rank_0(f"saving took {time.time() - start} seconds")
+
+
 def set_random_seed(seed):
     if seed is not None:
         random.seed(seed)
@@ -919,3 +1221,15 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
+
+
+def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
+    """
+    Given a pretrained model, returns all of the projection layers (matching '_proj')
+    """
+    proj_layers = set(
+        name.split(".")[-1]
+        for name, _ in model.named_modules()
+        if name.endswith("_proj")
+    )
+    return list(proj_layers)
