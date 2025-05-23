@@ -34,6 +34,8 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
+
 
 def find_max_pack_len_with_padding(
     dataset,
@@ -395,6 +397,11 @@ class MultipackDistributedBatchSampler(Sampler):
             )
 
         lengths = self.lengths[indices]
+
+        if is_torch_hpu_available():
+            bucket_v = np.vectorize(bucket)
+            lengths = bucket_v(lengths)
+
         lengths_cumsum = np.cumsum(lengths)
 
         batches, total_used, total_slots = allocate(
