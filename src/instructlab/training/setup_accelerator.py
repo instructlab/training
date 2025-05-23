@@ -2,7 +2,6 @@
 from functools import partial
 
 # Third Party
-from accelerate import Accelerator
 from peft.utils.other import fsdp_auto_wrap_policy
 from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
@@ -12,6 +11,12 @@ import torch
 # First Party
 from instructlab.training.config import DeepSpeedOptions
 from instructlab.training.utils import get_module_class_from_name, patch_target_module
+from instructlab.training.hpu_utils import is_torch_hpu_available
+
+if is_torch_hpu_available():
+    from optimum.habana.accelerate import GaudiAccelerator
+else:
+    from accelerate import Accelerator
 
 
 def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions):
@@ -51,7 +56,10 @@ def get_ds_plugin(world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOption
 
 def get_fsdp_config(args, model: PreTrainedModel):
     # Third Party
-    from accelerate.utils import FullyShardedDataParallelPlugin
+    if is_torch_hpu_available():
+        from optimum.habana.accelerate.utils import GaudiFullyShardedDataParallelPlugin
+    else:
+        from accelerate.utils import FullyShardedDataParallelPlugin
     from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 
     is_lora = args.lora_r > 0
@@ -73,7 +81,7 @@ def get_fsdp_config(args, model: PreTrainedModel):
     prefetch_policy = (
         BackwardPrefetch.BACKWARD_POST if is_lora else BackwardPrefetch.BACKWARD_PRE
     )
-    fsdp_plugin = FullyShardedDataParallelPlugin(
+    fsdp_plugin = (GaudiFullyShardedDataParallelPlugin if is_torch_hpu_available() else FullyShardedDataParallelPlugin)(
         auto_wrap_policy=wrap_policy,
         limit_all_gathers=True,
         backward_prefetch=prefetch_policy,
@@ -128,7 +136,7 @@ def setup_accelerator(args, model: PreTrainedModel, grad_accum):
         raise ValueError(
             f"Unknown sharding framework: {args.distributed_training_framework}"
         )
-    accelerator = Accelerator(
+    accelerator = (GaudiAccelerator if is_torch_hpu_available() else Accelerator)(
         **accel_args,
     )
     accelerator.even_batches = False
