@@ -60,7 +60,11 @@ from instructlab.training import config
 
 # pylint: disable=no-name-in-module
 from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
-from instructlab.training.logger import setup_metric_logger, setup_root_logger
+from instructlab.training.logger import (
+    propagate_package_logs,
+    setup_metric_logger,
+    setup_root_logger,
+)
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
@@ -693,6 +697,15 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # Set up logging first before any processing
+    # Enable package logging propagation before setting up loggers
+    propagate_package_logs(True)
+    setup_root_logger(train_args.log_level)
+    setup_metric_logger("async", None, train_args.ckpt_output_dir)
+
+    logger = logging.getLogger("instructlab.training")
+    logger.info("Starting training setup...")
+
     check_valid_train_args(train_args)
 
     # switch out generic tmpl for legacy tmpl if requested
@@ -734,7 +747,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--learning_rate={train_args.learning_rate}",
         f"--num_warmup_steps={train_args.warmup_steps}",
         f"--save_samples={train_args.save_samples}",
-        f"--log_level=INFO",
+        f"--log_level={train_args.log_level}",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
     ]

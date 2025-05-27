@@ -6,7 +6,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -227,4 +227,8 @@ class TrainingArgs(BaseModel):
     use_liger: bool = Field(
         default=False,
         description="Whether to use Liger kernels for training.",
+    )
+
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO"
     )
