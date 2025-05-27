@@ -39,7 +39,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
-from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -50,6 +50,7 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
+from instructlab.training.model import Model
 
 logger = logging.getLogger("instructlab.training")
 
@@ -101,7 +102,9 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
+    if Model.check_flash_attn_enabled(
+        train_args.disable_flash_attn, train_args.use_dolomite
+    ):
         # verify that the flash_attn package is actually installed
         try:
             # pylint: disable=unused-import
@@ -206,34 +209,6 @@ class StreamablePopen(subprocess.Popen):
                     full_log_file.write(byte)
                 else:
                     break
-
-
-def supports_flash_attention(device_id=0):
-    """Check if a GPU supports FlashAttention."""
-    major, minor = torch.cuda.get_device_capability(device_id)
-    # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
-    is_sm8x = major == 8 and minor >= 0
-    is_sm90 = major == 9 and minor == 0
-    dev_name = torch.cuda.get_device_properties(device_id).gcnArchName.split(":")[0]
-    is_compat_amd = dev_name in ("gfx90a", "gfx940", "gfx941", "gfx942")
-    return is_sm8x or is_sm90 or is_compat_amd
-
-
-def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
-    if not disable_flash_attn:
-        if supports_flash_attention():
-            flash_enabled = True
-        else:
-            raise RuntimeError(
-                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
-            )
-    elif use_dolomite:
-        raise RuntimeError(
-            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
-        )
-    else:
-        flash_enabled = False
-    return flash_enabled
 
 
 def make_collate_fn(
@@ -473,47 +448,6 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
     return False
 
 
-def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
-    # if lora
-    # Third Party
-    from peft import LoraConfig
-
-    # ensure we select only the modules that exist in the model
-    proj_layers = get_projection_layer_names(model)
-    if not args.lora_target_modules:
-        warnings.warn(
-            "lora_target_modules was not specified, defaulting to all of the model's projection modules"
-        )
-        if not proj_layers:
-            raise RuntimeError("could not find any projection layers in the model")
-        args.__dict__["lora_target_modules"] = proj_layers
-    else:
-        # when the user specifies the module, we should verify that they align with what's in the model
-        lora_target_modules_set = set(args.lora_target_modules)
-        diff = lora_target_modules_set - set(proj_layers)
-        layers_to_target = lora_target_modules_set - diff
-        if len(diff) == len(args.lora_target_modules):
-            raise ValueError(
-                f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
-            )
-        if diff:
-            warnings.warn(
-                "the following modules were targeted for LoRA but are not present in the model: %s. Applying LoRA only to %s modules.",
-                list(diff),
-                list(layers_to_target),
-            )
-        args.__dict__["lora_target_modules"] = list(layers_to_target)
-
-    return LoraConfig(
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        r=args.lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=args.lora_target_modules,
-    )
-
-
 def save_fsdp_lora_model(
     args: Namespace,
     model: FSDP,
@@ -576,70 +510,6 @@ def save_fsdp_lora_model(
             args.base_model_args["device_map"] = old_device_map
 
     dist.barrier()
-
-
-def prepare_peft_model(
-    model: PreTrainedModel,
-    peft_config,
-    distributed_backend: str,
-    gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": True},
-    mixed_precision="bf16",
-):
-    # will guard this
-    # Third Party
-    from peft import (
-        LoraModel,
-        PeftConfig,
-        PeftModel,
-        get_peft_model,
-        prepare_model_for_kbit_training,
-    )
-    from trl.trainer.utils import peft_module_casting_to_bf16
-
-    if not isinstance(peft_config, PeftConfig):
-        raise ValueError(
-            "If you want to use the PeftModel, you need to pass a PeftConfig object, "
-            f"and you passed a {type(peft_config)}."
-        )
-
-    if not isinstance(model, PeftModel):
-        if getattr(model, "is_loaded_in_8bit", False) or getattr(
-            model, "is_loaded_in_4bit", False
-        ):
-            preprare_model_kwargs = {
-                "use_gradient_checkpointing": gradient_checkpointing
-            }
-
-            # if _support_gc_kwargs:
-            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
-                gradient_checkpointing_kwargs
-            )
-
-            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
-
-        elif gradient_checkpointing:
-            # For backward compatibility with older versions of transformers
-            if hasattr(model, "enable_input_require_grads"):
-                model.enable_input_require_grads()
-            else:
-
-                def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
-                    output.requires_grad_(True)
-
-                model.get_input_embeddings().register_forward_hook(
-                    make_inputs_require_grad
-                )
-
-        if distributed_backend == DistributedBackend.FSDP.value:
-            # FSDP doesn't like `get_peft_model` as it leads to dtype mismatches
-            model = LoraModel(model, peft_config, "default")
-        else:
-            model = get_peft_model(model, peft_config)
-        if mixed_precision == "bf16" and getattr(model, "is_loaded_in_4bit", False):
-            peft_module_casting_to_bf16(model)
-
-    return model
 
 
 @contextmanager
@@ -1041,15 +911,3 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
-
-
-def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
-    """
-    Given a pretrained model, returns all of the projection layers (matching '_proj')
-    """
-    proj_layers = set(
-        name.split(".")[-1]
-        for name, _ in model.named_modules()
-        if name.endswith("_proj")
-    )
-    return list(proj_layers)
