@@ -90,7 +90,7 @@ from instructlab.training.utils import (
 )
 import instructlab.training.data_process as dp
 
-logger = logging.getLogger("instructlab.training")
+logger = logging.getLogger(__name__)
 
 
 def setup_optimizer(args, model):

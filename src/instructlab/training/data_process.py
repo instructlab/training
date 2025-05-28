@@ -27,7 +27,7 @@ MASK_TOKEN = "<|MASK|>"
 UNMASK_BEGIN_TOKEN = "<|UNMASK_BEGIN|>"
 UNMASK_END_TOKEN = "<|UNMASK_END|>"
 
-logger = logging.getLogger("instructlab.training")
+logger = logging.getLogger(__name__)
 
 
 def check_valid_sample(
