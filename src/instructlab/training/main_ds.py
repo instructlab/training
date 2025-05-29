@@ -182,7 +182,7 @@ def setup_model(
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
 
-    if is_torch_hpu_available():
+    if is_torch_hpu_available() and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
         torch._dynamo.config.cache_size_limit = int(1e4)
         torch._dynamo.config.accumulated_cache_size_limit = int(2e4)
         model = torch.compile(model, backend="hpu_backend", dynamic=False)
