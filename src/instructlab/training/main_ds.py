@@ -55,6 +55,7 @@ from transformers import (
 )
 import torch
 import torch.distributed
+from torch.nn import CrossEntropyLoss
 
 # First Party
 from instructlab.training import config
@@ -145,7 +146,6 @@ def setup_model(
         base_model_args["attn_implementation"] = "flash_attention_2"
 
     if args.use_dolomite:
-        from torch.nn import CrossEntropyLoss
         with ensure_loadable_dolomite_checkpoint(
             args.model_name_or_path, args.output_dir
         ) as path:
