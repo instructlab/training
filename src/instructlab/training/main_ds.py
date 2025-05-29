@@ -2,14 +2,12 @@
 
 # Standard
 from copy import deepcopy
-from pathlib import Path
 import argparse
 import datetime
 import functools
 import logging
 import math
 import os
-import re
 import subprocess
 import time
 import warnings
@@ -32,10 +30,8 @@ except ImportError:
 try:
     # Third Party
     from deepspeed.ops.adam import FusedAdam
-    from deepspeed.runtime.zero.utils import ZeRORuntimeException
 except ImportError:
     FusedAdam = None
-    ZeRORuntimeException = None
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
         warnings.warn(
@@ -83,7 +79,6 @@ from instructlab.training.utils import (
     ensure_loadable_dolomite_checkpoint,
     load_latest_full_state,
     prepare_peft_model,
-    prepare_universal_checkpoint_from_latest,
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
@@ -298,63 +293,6 @@ def setup_model(
     return model, lr_scheduler, optimizer, accelerator
 
 
-# this function is to check if the checkpoint provided can be resumed
-def maybe_resume_training(args, model):
-    local_rank = int(os.environ["LOCAL_RANK"])
-
-    # DS's loading function will not raise if fails to reload a checkpoint
-    # - if lora is used, then the checkpoints will only be for the adapters
-    #   so we need to disable load_module_strict
-    # - load checkpoint will find the latest checkpoint
-    # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native"
-
-    try:
-        # attempt to load a regular checkpoint first
-        model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
-    except ZeRORuntimeException as e:
-        if str(e).startswith("The checkpoint being loaded used a DP world size of"):
-            # if it fails with the above exception, then a universal
-            # checkpoint is required
-
-            # prepare the universal checkpoint
-            # - by reading 'latest' to get the resumable checkpoint
-            prepare_universal_checkpoint_from_latest(output_dir)
-
-            # need to do this to trigger the universal checkpoint
-            # loading
-            model._config.load_universal_checkpoint = True
-
-            # then attempt to load again
-            model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
-
-            # reset to regular checkpoint loading
-            model._config.load_universal_checkpoint = False
-        else:
-            raise e  # reraise
-
-    # do this to figure out the last_step
-    latest_file = output_dir / "latest"
-    try:
-        with open(latest_file) as f:
-            # there is some assumption here that the ds_native
-            # checkpoints are tagged as <something>_(samples_seen)
-            step_folder = f.read()
-            (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
-            samples_seen = int(samples_seen)
-
-            last_step = samples_seen // args.effective_batch_size
-            args.__dict__["last_step"] = last_step
-        if local_rank == 0:
-            logger.info("Found checkpoint at %d, resuming training", last_step)
-    except FileNotFoundError:
-        pass
-
-    # we will update the start step here
-    return model
-
-
 def train(
     args,
     model,
@@ -512,16 +450,6 @@ def train(
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
                 torch.distributed.barrier()
 
-            # if (
-            #     args.save_samples_ds is not None
-            #     and global_step * batch_size % args.save_samples_ds == 0
-            # ):
-            #     save_model_ds_native(
-            #         args,
-            #         model,
-            #         tokenizer,
-            #         global_step * args.samples_per_gpu * world_size,
-            #     )
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
