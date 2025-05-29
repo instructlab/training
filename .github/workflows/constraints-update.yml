@@ -21,7 +21,8 @@ jobs:
         with:
           repository: instructlab/ci-actions
           path: ci-actions
-          ref: v0.2.0
+          # no tag that includes https://github.com/instructlab/ci-actions/pull/25, yet
+          ref: release-v0.2
           sparse-checkout: |
             actions/update-constraints
 
