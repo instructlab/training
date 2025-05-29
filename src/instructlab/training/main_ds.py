@@ -17,6 +17,7 @@ import warnings
 # Third Party
 from accelerate import Accelerator
 
+
 try:
     # Third Party
     from deepspeed.ops.adam import DeepSpeedCPUAdam
@@ -145,6 +146,7 @@ def setup_model(
         base_model_args["attn_implementation"] = "flash_attention_2"
 
     if args.use_dolomite:
+        from torch.nn import CrossEntropyLoss
         with ensure_loadable_dolomite_checkpoint(
             args.model_name_or_path, args.output_dir
         ) as path:
@@ -153,6 +155,7 @@ def setup_model(
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
             )
+            model.loss_fct = CrossEntropyLoss(reduction="sum")
     elif args.use_liger:
         # TODO(osilkin): we duplicate some checks here because someone may run this script through
         # torchrun directly and not `run_training`. To fix this, we should eventually move everything
@@ -164,6 +167,7 @@ def setup_model(
         try:
             # Third Party
             from liger_kernel.transformers import AutoLigerKernelForCausalLM
+            from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
         except ImportError as e:
             raise ValueError(
                 "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
@@ -175,8 +179,10 @@ def setup_model(
         model = AutoLigerKernelForCausalLM.from_pretrained(
             **base_model_args, cross_entropy=True, fused_linear_cross_entropy=False
         )
+        model.loss_fct = LigerCrossEntropyLoss(reduction="sum")
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        model.loss_fct = CrossEntropyLoss(reduction="sum")
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
