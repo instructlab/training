@@ -402,11 +402,6 @@ class MultipackDistributedBatchSampler(Sampler):
             )
 
         lengths = self.lengths[indices]
-
-        if is_torch_hpu_available():
-            bucket_v = np.vectorize(bucket)
-            lengths = bucket_v(lengths)
-
         lengths_cumsum = np.cumsum(lengths)
 
         batches, total_used, total_slots = allocate(
