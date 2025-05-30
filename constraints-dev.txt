@@ -1,4 +1,4 @@
-accelerate==1.0.1         # via -r requirements-cuda.txt, -r requirements-rocm.txt, peft, trl
+accelerate==1.7.0         # via -r requirements-cuda.txt, -r requirements-rocm.txt, peft, trl
 aiofiles==24.1.0          # via -r requirements.txt
 aiohappyeyeballs==2.6.1   # via aiohttp
 aiohttp==3.12.2           # via fsspec
