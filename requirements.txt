@@ -9,8 +9,6 @@ transformers>=4.45.2
 
 datasets>=2.15.0
 numba
-# Note: numpy ranges copied from instructlab/instructlab
-#
 numpy>=1.26.4,<2.0.0
 rich
 instructlab-dolomite>=0.2.0

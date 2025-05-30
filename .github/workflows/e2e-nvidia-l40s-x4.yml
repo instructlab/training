@@ -177,27 +177,28 @@ jobs:
       - name: Install ilab
         working-directory: ./instructlab
         run: |
-          export CUDA_HOME="/usr/local/cuda"
-          export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
-          export PATH="$PATH:$CUDA_HOME/bin"
-          python3.11 -m venv --upgrade-deps venv
-          . venv/bin/activate
-          nvidia-smi
-          python3.11 -m pip cache remove llama_cpp_python
-
-          CMAKE_ARGS="-DLLAMA_CUDA=on" python3.11 -m pip install . -c constraints-dev.txt
-
-          # https://github.com/instructlab/instructlab/issues/1821
-          # install with Torch and build dependencies installed
-          python3.11 -m pip install packaging wheel setuptools-scm
-          python3.11 -m pip install .[cuda] -r requirements-vllm-cuda.txt
+          PYTHON=python3.11 ./scripts/install-ilab-with-cuda.sh
 
       - name: Update instructlab-training library
         working-directory: ./training
         run: |
           . ../instructlab/venv/bin/activate
-          pip install .
-          pip install .[cuda]
+          # Patch out our own pin from the ilab repo constraints file
+          ilab_constraints=../instructlab/constraints-dev.txt
+          sed -i '/instructlab-training==/d' $ilab_constraints
+          # Since we reuse the virtual environment prepared using ilab
+          # constraints, we should stick to the same constraints when
+          # installing latest training.
+          #
+          # FIX: this is not ideal; a proper fix would require decoupling the
+          # two repos in CI: either by removing the job completely and relying
+          # on "sdk" (no ilab) test runs; or by preparing a separate
+          # constraints file that would consider both the requirements files
+          # for the training library AND for the ilab - so that they are
+          # consistent.
+          pip_install="pip install -c $ilab_constraints"
+          $pip_install .
+          $pip_install .[cuda]
 
       - name: Check disk before tests
         if: always()
@@ -352,7 +353,7 @@ jobs:
         working-directory: ./training
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements-dev.txt -c constraints-dev.txt
 
       - name: Try to upload Phase 1 to s3
         id: phase-1-upload-s3

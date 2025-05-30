@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# These are synchronized with instructlab repo; we have to keep them in sync at
+# least until we no longer tie training repo CI with ilab repo through e2e jobs.
+torch<2.7.0
+vllm<0.9.0
