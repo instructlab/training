@@ -364,6 +364,8 @@ def train(
     tokenizer: PreTrainedTokenizer,
     train_loader: DataLoader,
     grad_accum,
+    metric_logger,
+    packing_max_batch_len: int,
 ):
     model.train()
 
@@ -402,6 +404,9 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
+        # track the total number of tokens in each minibatch to correctly rescale the loss
+        total_minibatch_loss_tokens_seen = 0
+
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in train_loader:
             if global_step <= args.last_step:
@@ -437,11 +442,28 @@ def train(
                     reduction="sum",
                 ),
             )
+            total_minibatch_loss_tokens_seen += num_loss_counted_tokens
             samples_seen += int(micro_batch_size)
 
             # num_loss_counted_tokens = aggregated_values[0]
+            # loss = (
+            #     loss / num_loss_counted_tokens * world_size
+            # )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
+
+            # XXX(osilkin): Since we are accumulating gradients and sharding across cards, we need to
+            #               ensure that the loss is correctly scaled across the entire mini-batch.
+            #
+            #               To achieve this, we do the following:
+            #               1. Sum up the loss across nodes in a step then scale it by the inverse of
+            #                  the max possible loss tokens we might see (N)
+            #               2. Since the scaling factor is a constant, final gradients will look like: 1/N * g1 + 1/N * g2 + ... + 1/N * gn
+            #                  this means that for a given parameter, we can factor out the scalar: 1/N * (g1 + g2 + ... + gn)
+            #               3. At the end of the batch, we've counted up the true number of loss tokens seen T, so we create the adjusted
+            #                  scalar C = N/T and compute as a single number
+            #               4. Multiply the final gradient by this scalar so everything cancels out correctly:
+            #                  (N/T) * 1/N * (g1 + g2 + ... + gn)
             loss = (
-                loss / num_loss_counted_tokens * world_size
+                loss / packing_max_batch_len
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
@@ -449,10 +471,28 @@ def train(
             accelerator.backward(loss)
 
             if global_step % grad_accum == 0:
+                # XXX(osilkin): we correct the loss by rescaling each gradient by the total
+                #               number of loss tokens seen. Only thing is this that waiting until
+                #               the gradients have been computed already to do this may likely lead to
+                #               to numeric instability
+                #
+                #               Also I'm not sure if this will work with FSDP Full Shard
+                # XXX(osilkin): not sure how this will work when doing full shard
+                corrected_scalar = float(packing_max_batch_len) / float(
+                    total_minibatch_loss_tokens_seen
+                )
+                for p in model.parameters():
+                    grad = p.grad
+                    assert grad is not None
+                    grad.mul_(corrected_scalar)
+
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+
+                # then we just reset the counter
+                total_minibatch_loss_tokens_seen = 0
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
@@ -715,6 +755,8 @@ def main(args):
         tokenizer,
         train_loader,
         grad_accum,
+        metric_logger,
+        packing_max_batch_len,
     )
 
     torch.distributed.barrier()
