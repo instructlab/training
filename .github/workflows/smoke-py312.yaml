@@ -23,6 +23,7 @@ on:
       - "pyproject.toml"
       - "requirements-dev.txt"
       - "requirements-cuda.txt"
+      - "constraints-dev.txt"
 
 permissions:
   contents: read
