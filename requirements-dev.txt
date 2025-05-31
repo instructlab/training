@@ -8,12 +8,20 @@ numpy
 pre-commit>=3.0.4
 pylint>=2.16.2
 pylint-pydantic
+pytest
 ruff
 tox>=4.4.2
 tox-current-env
+
+mypy>=1.10.0
+types-tqdm
+types-PyYAML
 
 ipython
 ipykernel
 jupyter
 
 huggingface_hub
+
+wandb
+tensorboard
