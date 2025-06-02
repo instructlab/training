@@ -9,7 +9,6 @@ datasets>=2.15.0
 numba
 numpy>=1.26.4,<2.0.0
 rich
-instructlab-dolomite>=0.2.0
 trl>=0.9.4
 peft
 pydantic>=2.7.0

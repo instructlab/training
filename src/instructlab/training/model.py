@@ -80,17 +80,7 @@ class Model:
         """Common initialization steps that should happen after model initialization."""
         self.reconcile_tokenizer()
         if self.lora_config:
-            self.model = self.prepare_peft_model(
-                gradient_checkpointing=not isinstance(self, DolomiteModel),
-            )
-            if isinstance(self, DolomiteModel):
-                # pylint: disable=unused-argument
-                def make_inputs_require_grad(module, input, output):
-                    output.requires_grad_(True)
-
-                self.model.get_input_embeddings().register_forward_hook(
-                    make_inputs_require_grad
-                )
+            self.model = self.prepare_peft_model()
 
     def train(self, mode=True):
         """Set the model in training mode.
@@ -164,7 +154,6 @@ class Model:
 
     def prepare_peft_model(
         self,
-        gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": True},
         mixed_precision="bf16",
     ):
@@ -208,19 +197,12 @@ class Model:
         if getattr(self.model, "is_loaded_in_8bit", False) or getattr(
             self.model, "is_loaded_in_4bit", False
         ):
-            prepare_model_kwargs = {
-                "use_gradient_checkpointing": gradient_checkpointing
-            }
-
-            prepare_model_kwargs["gradient_checkpointing_kwargs"] = (
-                gradient_checkpointing_kwargs
-            )
-
             self.model = prepare_model_for_kbit_training(
-                self.model, **prepare_model_kwargs
+                self.model,
+                use_gradient_checkpointing=True,
+                gradient_checkpointing_kwargs=gradient_checkpointing_kwargs,
             )
-
-        elif gradient_checkpointing:
+        else:
 
             def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
                 output.requires_grad_(True)
@@ -328,9 +310,7 @@ class Model:
         # Local
         from .utils import add_noisy_embeddings, convert_loss_to_reduce_sum
 
-        self.model = convert_loss_to_reduce_sum(
-            self.model, use_dolomite=(isinstance(self, DolomiteModel))
-        )
+        self.model = convert_loss_to_reduce_sum(self.model)
         self.model = add_noisy_embeddings(self.model, noise_alpha=self.noise_alpha)
 
     @staticmethod
@@ -345,32 +325,25 @@ class Model:
         return is_sm8x or is_sm90 or is_compat_amd
 
     @staticmethod
-    def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
+    def check_flash_attn_enabled(disable_flash_attn: bool) -> bool:
         """Check if flash attention should be enabled based on configuration.
 
         Args:
             disable_flash_attn: Whether flash attention is explicitly disabled
-            use_dolomite: Whether dolomite padding-free transformer is being used
 
         Returns:
             bool: Whether flash attention should be enabled
 
         Raises:
             RuntimeError: If trying to use flash attention on unsupported hardware
-                         or trying to use dolomite without flash attention
         """
-        if not disable_flash_attn:
-            if Model.supports_flash_attention():
-                return True
-            else:
-                raise RuntimeError(
-                    "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
-                )
-        elif use_dolomite:
-            raise RuntimeError(
-                "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
-            )
-        return False
+        if disable_flash_attn:
+            return False
+        if Model.supports_flash_attention():
+            return True
+        raise RuntimeError(
+            "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
+        )
 
 
 class LigerModel(Model):
@@ -413,48 +386,6 @@ class LigerModel(Model):
         )
         self.model.gradient_checkpointing_enable()
         self._post_model_init()
-
-
-class DolomiteModel(Model):
-    def __init__(
-        self,
-        model_path: str,
-        output_dir: str,
-        distributed_framework: DistributedBackend,
-        noise_alpha: Optional[float],
-        tokenizer: PreTrainedTokenizer,
-        flash_enabled: bool = False,
-        lora_config: Optional[LoraConfig] = None,
-        lora_quant_bits: int = 0,
-    ):
-        super().__init__(
-            model_path=model_path,
-            distributed_framework=distributed_framework,
-            noise_alpha=noise_alpha,
-            tokenizer=tokenizer,
-            flash_enabled=flash_enabled,
-            lora_config=lora_config,
-            lora_quant_bits=lora_quant_bits,
-        )
-        # Third Party
-        from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-
-        # First Party
-        from instructlab.training.utils import (
-            apply_gradient_checkpointing,
-            ensure_loadable_dolomite_checkpoint,
-        )
-
-        with ensure_loadable_dolomite_checkpoint(model_path, output_dir) as path:
-            self.base_model_args["pretrained_model_name_or_path"] = path
-            self.base_model_args["use_padding_free_transformer"] = True
-            self.model = GPTDolomiteForCausalLM.from_pretrained(**self.base_model_args)
-        self._post_model_init()
-        apply_gradient_checkpointing(
-            model=self.model,
-            block_name=self.model._no_split_modules[0],
-            use_reentrant=True,
-        )
 
 
 class CausalLMModel(Model):

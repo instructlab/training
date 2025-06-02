@@ -31,7 +31,6 @@ MINIMAL_TRAINING_ARGS = {
     "learning_rate": 1e-4,
     "warmup_steps": 1,
     "random_seed": 43,
-    "use_dolomite": False,
     "is_padding_free": False,
     "checkpoint_at_epoch": True,
     "accelerate_full_state_at_epoch": True,
