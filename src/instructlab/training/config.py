@@ -178,6 +178,8 @@ class TrainingArgs(BaseModel):
     learning_rate: float
     warmup_steps: int
     random_seed: int = 42
+
+    # (jkunstle) left here for compatibility, but Dolomite is deprecated going forward.
     use_dolomite: bool = False
     is_padding_free: bool = False  # TODO: deprecate
     checkpoint_at_epoch: bool = True

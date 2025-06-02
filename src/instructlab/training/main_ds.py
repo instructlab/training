@@ -40,7 +40,6 @@ except ImportError:
         )
 
 # Third Party
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import (
@@ -71,12 +70,10 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     add_noisy_embeddings,
-    apply_gradient_checkpointing,
     check_flash_attn_enabled,
     check_valid_train_args,
     convert_loss_to_reduce_sum,
     create_lora_config,
-    ensure_loadable_dolomite_checkpoint,
     load_latest_full_state,
     prepare_peft_model,
     save_checkpoint,
@@ -139,16 +136,7 @@ def setup_model(
     if flash_enabled:
         base_model_args["attn_implementation"] = "flash_attention_2"
 
-    if args.use_dolomite:
-        with ensure_loadable_dolomite_checkpoint(
-            args.model_name_or_path, args.output_dir
-        ) as path:
-            base_model_args["pretrained_model_name_or_path"] = path
-            base_model_args["use_padding_free_transformer"] = True
-            model = GPTDolomiteForCausalLM.from_pretrained(
-                **base_model_args,
-            )
-    elif args.use_liger:
+    if args.use_liger:
         # TODO(osilkin): we duplicate some checks here because someone may run this script through
         # torchrun directly and not `run_training`. To fix this, we should eventually move everything
         # to using `torch.multiprocessing` and simplify the CLI.
@@ -234,7 +222,7 @@ def setup_model(
     if tokenizer.eos_token_id is not None and model.config.eos_token_id is None:
         model.config.eos_token_id = tokenizer.eos_token_id
 
-    model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
+    model = convert_loss_to_reduce_sum(model)
     model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
 
     # handling of gradient checkpointing
@@ -247,28 +235,11 @@ def setup_model(
             model,
             lora_config,
             args.distributed_training_framework,
-            gradient_checkpointing=not args.use_dolomite,
+            gradient_checkpointing=True,
         )
         args.lora_config = lora_config
-    elif not args.use_dolomite:
-        model.gradient_checkpointing_enable()
 
-    # granite gradient checkpointing is handled uniformly
-    # for both lora and full here
-    if args.use_dolomite:
-        block_name = model._no_split_modules[0]
-        apply_gradient_checkpointing(
-            model,
-            block_name=block_name,
-            use_reentrant=True,  # this should be the HF default mode
-        )
-
-        if args.lora_r > 0:
-
-            def make_inputs_require_grad(module, input, output):  # pylint: disable=unused-argument
-                output.requires_grad_(True)
-
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    model.gradient_checkpointing_enable()
 
     accelerator = setup_accelerator(args, model, grad_accum)
     if args.distributed_training_framework == DistributedBackend.FSDP.value:
@@ -354,9 +325,8 @@ def train(
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
             total_length = float(torch.tensor([batch.pop("total_length")]))
-            if not args.use_dolomite:
-                for k in batch:
-                    batch[k] = batch[k].to(local_rank)
+            for k in batch:
+                batch[k] = batch[k].to(local_rank)
             output = model(
                 **batch,
                 use_cache=False,
@@ -546,7 +516,7 @@ def main(args):
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
-    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
+    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn)
 
     dataset = setup_dataset(
         args.data_path,
@@ -560,7 +530,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
+            is_padding=not flash_enabled,
             dataset=dataset,
             seed=args.seed,
         )
@@ -582,7 +552,6 @@ def main(args):
         dataset,
         tokenizer.pad_token_id,
         num_workers=8,
-        use_dolomite=args.use_dolomite,
         flash_enabled=flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
@@ -602,7 +571,6 @@ def main(args):
             dataset,
             tokenizer.pad_token_id,
             num_workers=8,
-            use_dolomite=args.use_dolomite,
             flash_enabled=flash_enabled,
             max_batch_len=args.max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
@@ -931,7 +899,11 @@ if __name__ == "__main__":
         default="HYBRID_SHARD",
         help="Sharding strategy to be used for FSDP distributed training.",
     )
-    parser.add_argument("--use_dolomite", action="store_true")
+    parser.add_argument(
+        "--use_dolomite",
+        action="store_true",
+        help="(Deprecated, NoOp) Attempts to use GPTDolomite architecture",
+    )
     parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
@@ -1034,7 +1006,6 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --save_samples=250000 \
 --log_level="INFO" \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
---use_dolomite \
 --max_batch_len 70000 \
 --seed=42
 """
