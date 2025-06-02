@@ -1,0 +1,63 @@
+name: ChatOps
+on: issue_comment # this is used for PRs https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request_review
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+env:
+  MAGIC_COMMENT: "/wandb" # this is a parameter you can change
+
+jobs:
+  see-comment:
+    # this filters for only comments made on a pull request
+    # check if the comment is on a pull request and starts with MAGIC_COMMENT
+    if: github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/wandb')
+    runs-on: ubuntu-latest
+    steps:
+      - name: see payload # this step is for debugging purposes only, so you can see the payload.
+        run: echo "PAYLOAD:\n${PAYLOAD}\n"
+        env:
+          PAYLOAD: ${{ toJSON(github.event) }}
+
+      - name: filter for magic comment
+        id: filter
+        if: contains(github.event.comment.body, env.MAGIC_COMMENT)
+        run: echo "magic comment detected"
+
+      - name: Parse value from the magic command
+        if: steps.filter.outcome == 'success'
+        id: get-magic-value
+        shell: python
+        run: |
+          import re, os
+          comment = os.getenv('PR_COMMENT', '')
+          match = re.search('${{ env.MAGIC_COMMENT }}[\s+](\S+)', comment)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            if match:
+              print(f'VAL_FOUND=true', file=f)
+              print(f'MAGIC_VAL={match.group(1)}', file=f)
+            else:
+              print(f'VAL_FOUND=false', file=f)
+        env:
+          PR_COMMENT: ${{ github.event.comment.body }}
+
+      - name: print value of magic command
+        if: steps.get-magic-value.outcome == 'success' && steps.get-magic-value.outputs.VAL_FOUND == 'true'
+        run: echo "the value is ${{ steps.get-magic-value.outputs.MAGIC_VAL }}"
+
+      - name: Make a comment with the GitHub API
+        uses: actions/github-script@v6
+        if: steps.get-magic-value.outcome == 'success'
+        with:
+          script: |
+            var msg = `👋 Hello!  You commented on this PR with a magic value of \`${process.env.MAGIC_VAL}\``
+            github.rest.issues.createComment({
+               issue_number: context.issue.number,
+               owner: context.repo.owner,
+               repo: context.repo.repo,
+               body: msg
+             })
+        env:
+          MAGIC_VAL: "${{ steps.get-magic-value.outputs.MAGIC_VAL }}"
