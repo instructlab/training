@@ -1,7 +1,7 @@
 accelerate==1.0.1         # via peft, trl, -r requirements-cuda.txt, -r requirements-rocm.txt
 aiofiles==24.1.0          # via -r requirements.txt
 aiohappyeyeballs==2.6.1   # via aiohttp
-aiohttp==3.12.4           # via fsspec
+aiohttp==3.12.6           # via fsspec
 aiosignal==1.3.2          # via aiohttp
 annotated-types==0.7.0    # via pydantic
 anyio==4.9.0              # via httpx, jupyter-server
@@ -52,7 +52,7 @@ identify==2.6.12          # via pre-commit
 idna==3.10                # via anyio, httpx, jsonschema, requests, yarl
 instructlab-dolomite==0.2.0  # via -r requirements.txt
 ipykernel==6.29.5         # via jupyter, jupyter-console, jupyterlab, -r requirements-dev.txt
-ipython==9.2.0            # via ipykernel, ipywidgets, jupyter-console, -r requirements-dev.txt
+ipython==9.3.0            # via ipykernel, ipywidgets, jupyter-console, -r requirements-dev.txt
 ipython-pygments-lexers==1.1.1  # via ipython
 ipywidgets==8.1.7         # via jupyter
 isoduration==20.11.0      # via jsonschema
