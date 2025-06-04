@@ -141,6 +141,19 @@ class FSDPOptions(BaseModel):
     sharding_strategy: ShardingStrategies = ShardingStrategies.HYBRID_SHARD
 
 
+class Optimizer(Enum):
+    ADAMW = "Adamw"
+    CPUAdam = "CPUAdam"
+    FusedAdam = "FusedAdam"
+
+
+# public API
+class ModelTypes(Enum):
+    LIGER = "Liger"
+    DOLOMITE = "Dolomite"
+    CAUSALLM = "CausalLM"
+
+
 # public API
 class TrainingArgs(BaseModel):
     """
