@@ -95,7 +95,7 @@ def train(
     metric_logger = logging.getLogger("instructlab.training.metrics")
     base_logger = logging.getLogger("instructlab.training")
 
-    batch_size = args.effective_batch_size // args.grad_accum
+    batch_size = args.effective_batch_size // accelerator.grad_accum
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
