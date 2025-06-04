@@ -6,12 +6,14 @@ on:
     branches:
       - "main"
     paths:
+      - '.github/actions/*/*.ya?ml'
       - '.github/workflows/*.ya?ml'
       - '.github/workflows/actionlint.*' # This workflow
   pull_request:
     branches:
       - "main"
     paths:
+      - '.github/actions/*/*.ya?ml'
       - '.github/workflows/*.ya?ml'
       - '.github/workflows/actionlint.*' # This workflow
 
