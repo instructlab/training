@@ -51,6 +51,7 @@ from transformers import (
 )
 import torch
 import torch.distributed
+from torch.nn import CrossEntropyLoss
 
 # First Party
 from instructlab.training import config
@@ -148,6 +149,7 @@ def setup_model(
             model = GPTDolomiteForCausalLM.from_pretrained(
                 **base_model_args,
             )
+            model.loss_fct = CrossEntropyLoss(reduction="sum")
     elif args.use_liger:
         # TODO(osilkin): we duplicate some checks here because someone may run this script through
         # torchrun directly and not `run_training`. To fix this, we should eventually move everything
@@ -159,6 +161,7 @@ def setup_model(
         try:
             # Third Party
             from liger_kernel.transformers import AutoLigerKernelForCausalLM
+            from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
         except ImportError as e:
             raise ValueError(
                 "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
@@ -170,8 +173,10 @@ def setup_model(
         model = AutoLigerKernelForCausalLM.from_pretrained(
             **base_model_args, cross_entropy=True, fused_linear_cross_entropy=False
         )
+        model.loss_fct = LigerCrossEntropyLoss(reduction="sum")
     else:
         model = AutoModelForCausalLM.from_pretrained(**base_model_args)
+        model.loss_fct = CrossEntropyLoss(reduction="sum")
 
     # store the base model args so we can recall them later if saving a LoRA model
     args.base_model_args = base_model_args
