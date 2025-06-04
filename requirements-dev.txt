@@ -11,7 +11,6 @@ pylint-pydantic
 pytest
 ruff
 tox>=4.4.2
-tox-current-env
 
 mypy>=1.10.0
 types-tqdm
@@ -25,3 +24,4 @@ huggingface_hub
 
 wandb
 tensorboard
+ninja
