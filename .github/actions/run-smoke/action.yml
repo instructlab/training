@@ -31,33 +31,6 @@ runs:
         . venv/bin/activate
         pip install tox -c constraints-dev.txt
 
-    # flash-attn has a bug in the setup.py that causes pip to attempt
-    # installing it before torch is installed. This is a bug because their
-    # setup.py depends on importing the module, so it should have been listed
-    # in build_requires. Alas. See:
-    # https://github.com/Dao-AILab/flash-attention/pull/958
-    - name: "Install torch and other unlisted build dependencies for flash-attn"
-      shell: bash
-      run: |
-        source venv/bin/activate
-        # The list is taken from the pull request linked above
-        pip install torch packaging setuptools wheel psutil ninja -c constraints-dev.txt
-
-    - name: "Install tox-current-env to reuse the venv with pre-installed build dependencies"
-      shell: bash
-      run: |
-        source venv/bin/activate
-        pip install tox-current-env
-
-    - name: "Install dependencies from tox.ini in the current venv, using current venv installed deps"
-      shell: bash
-      run: |
-        source venv/bin/activate
-        tox -e py3-smoke --print-deps-to-file=./deps.txt
-        pip_install="pip install -c constraints-dev.txt"
-        $pip_install -r ./deps.txt --no-build-isolation
-        $pip_install .
-
     - name: "Show disk utilization BEFORE tests"
       shell: bash
       if: always()
@@ -68,7 +41,7 @@ runs:
       shell: bash
       run: |
         source venv/bin/activate
-        tox --current-env -e py3-smoke
+        tox -e py3-smoke
 
     - name: "Show disk utilization AFTER tests"
       shell: bash
