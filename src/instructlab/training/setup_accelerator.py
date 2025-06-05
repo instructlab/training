@@ -79,6 +79,7 @@ def get_fsdp_config(args, model: PreTrainedModel):
         backward_prefetch=prefetch_policy,
         sharding_strategy=ShardingStrategy[args.fsdp_sharding_strategy],
         cpu_offload=CPUOffload(args.cpu_offload_params_fsdp),
+        fsdp_version=2,
     )
 
     # `use_orig_params` must be disabled when using LoRA and FSDP together
