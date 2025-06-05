@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from copy import deepcopy
 import argparse
 import datetime
 import logging
@@ -9,9 +8,6 @@ import os
 import subprocess
 import time
 import warnings
-
-# Third Party
-from accelerate import Accelerator
 
 try:
     # Third Party
@@ -38,14 +34,14 @@ except ImportError:
         )
 
 # Third Party
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoConfig, PreTrainedTokenizer, get_scheduler
+from transformers import AutoConfig
 import torch
 import torch.distributed
 
 # First Party
 from instructlab.training import config
+from instructlab.training.accelerator import Accelerator
 from instructlab.training.config import (
     DistributedBackend,
     ModelTypes,
@@ -69,7 +65,6 @@ from instructlab.training.model import (
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
-from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
@@ -87,13 +82,9 @@ logger = logging.getLogger(__name__)
 
 def train(
     args,
-    model,
-    optimizer,
-    lr_scheduler,
+    model: Model,
+    optimizer: torch.optim.Optimizer,
     accelerator: Accelerator,
-    tokenizer: PreTrainedTokenizer,
-    train_loader: DataLoader,
-    grad_accum,
 ):
     model.train()
 
@@ -104,15 +95,15 @@ def train(
     metric_logger = logging.getLogger("instructlab.training.metrics")
     base_logger = logging.getLogger("instructlab.training")
 
-    batch_size = args.effective_batch_size // grad_accum
+    batch_size = args.effective_batch_size // accelerator.grad_accum
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
         logger.info("Updating 'samples_seen' %d", args.samples_seen)
         samples_seen = args.samples_seen
 
-    if args.save_samples > 0:
-        args.save_samples = (args.save_samples // batch_size) * batch_size
+    if accelerator.save_samples > 0:
+        accelerator.save_samples = (accelerator.save_samples // batch_size) * batch_size
         logger.info("Number of samples per save: %d", args.save_samples)
 
     if args.save_samples_ds is not None:
@@ -122,18 +113,18 @@ def train(
     global_grad_norm = None
     for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
-            train_loader.batch_sampler.set_epoch(epoch)
+            accelerator.train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
-            train_loader.sampler.set_epoch(epoch)
+            accelerator.train_loader.sampler.set_epoch(epoch)
         else:
             raise NotADirectoryError
 
-        num_epoch_steps = len(train_loader)
+        num_epoch_steps = len(accelerator.train_loader)
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
         # blast through the batches in the train loader up to the last step within the epoch.
-        for batch in train_loader:
+        for batch in accelerator.train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
                 global_step += 1
@@ -178,16 +169,16 @@ def train(
             )
             accelerator.backward(loss)
 
-            if global_step % grad_accum == 0:
+            if global_step % accelerator.grad_accum == 0:
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                lr_scheduler.step()
+                accelerator.lr_scheduler.step()
                 optimizer.zero_grad()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = lr_scheduler.get_last_lr()[0]
+                current_lr = accelerator.lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
                 global_grad_norm = (
@@ -219,7 +210,7 @@ def train(
                         "total_loss": float(log_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
-                        "total_samples": len(train_loader.dataset),
+                        "total_samples": len(accelerator.train_loader.dataset),
                         "num_epoch_steps": num_epoch_steps,
                         # "weight_norm": weight_norm,
                     },
@@ -234,7 +225,7 @@ def train(
                     args=args,
                     accelerator=accelerator,
                     model=model,
-                    tokenizer=tokenizer,
+                    tokenizer=model.tokenizer,
                     samples_seen=samples_seen,
                     is_lora=bool(args.lora_r),
                     hf_format=True,
@@ -252,7 +243,7 @@ def train(
                 args=args,
                 accelerator=accelerator,
                 model=model,
-                tokenizer=tokenizer,
+                tokenizer=model.tokenizer,
                 samples_seen=samples_seen,
                 is_lora=bool(args.lora_r),
                 full_state=args.accelerate_full_state_at_epoch,
@@ -266,7 +257,7 @@ def train(
         save_hf_format_accelerate(
             args,
             model,
-            tokenizer,
+            model.tokenizer,
             accelerator,
             samples_seen,
             is_lora=bool(args.lora_r),
@@ -460,51 +451,45 @@ def main(args):
             },
             extra={"hparams": True},
         )
-
-    # TODO cdoern: `m.model` should be hidden behind a custom `Accelerator class`
-    # when using the training library `Model` class should be first class
-    accelerator = setup_accelerator(args, m, grad_accum)
-    if args.distributed_training_framework == DistributedBackend.FSDP.value:
-        model = accelerator.prepare(m.model)
-        m.update_model(model)
+    # accelerator does not need optimizer to init, in fact, the optimizer needs to be initialized AFTER the Accelerator
+    accelerator = Accelerator(
+        model=m,
+        samples_per_gpu=args.samples_per_gpu,
+        grad_accum=grad_accum,
+        train_loader=train_loader,
+        distributed_framework=DistributedBackend(args.distributed_training_framework),
+        fsdp_sharding_strategy=args.fsdp_sharding_strategy,
+        deepspeed_cpu_offload_optimizer=args.cpu_offload_optimizer,
+        deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+        deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+        fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        save_samples=args.save_samples,
+    )
+    # optimizer needs model that has been prepared by accelerator
+    # and then accelerator needs to be prepared AGAIN once optimizer is initialized
     optimizer = setup_optimizer(
         model=m,
         cpu_offload=args.cpu_offload_optimizer,
         name=None,  # choose based on backend
         learning_rate=args.learning_rate,
     )
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
+    accelerator.prepare_with_optimizer(
         optimizer=optimizer,
+        lr_scheduler=args.lr_scheduler,
+        num_epochs=args.num_epochs,
         num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
     )
-
-    # TODO cdoern: `m.model` should be hidden behind a custom `Accelerator class`
-    # when using the training library `Model` class should be first class
-    model, optimizer, _, lr_scheduler = accelerator.prepare(
-        m.model,
-        optimizer,
-        deepcopy(train_loader),
-        lr_scheduler,
-    )
-    m.update_model(model)
-    # Necessary so that Accelerate does not step once per GPU
-    # see https://github.com/huggingface/accelerate/blob/127818fc27ebe5cb236357fff59ff1748326d643/src/accelerate/scheduler.py#L69
-    lr_scheduler.split_batches = True
+    # TODO: make this work more seamlessly
+    optimizer = accelerator.optimizer
+    m = accelerator.model
 
     load_latest_full_state(args=args, accelerator=accelerator)
 
     train(
         args,
-        m,
-        optimizer,
-        lr_scheduler,
-        accelerator,
-        tokenizer,
-        train_loader,
-        grad_accum,
+        model=m,
+        optimizer=optimizer,
+        accelerator=accelerator,
     )
 
     torch.distributed.barrier()
