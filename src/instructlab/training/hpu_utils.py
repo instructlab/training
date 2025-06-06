@@ -1,3 +1,4 @@
+import os
 import torch
 from functools import lru_cache
 
@@ -47,3 +48,15 @@ def simple_bucket(length):
 
 def bucket(length):
     return simple_bucket(length)
+
+
+def save_hpu_model(model, output_dir):
+    from safetensors.torch import save_file
+
+    state_dict = model.state_dict()
+    remove_prefix = "_orig_mod."
+    clean_state_dict = {
+        k[len(remove_prefix) :] if k.startswith(remove_prefix) else k: v
+        for k, v in state_dict.items()
+    }
+    save_file(clean_state_dict, os.path.join(output_dir, "model.safetensors"))
