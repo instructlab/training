@@ -50,7 +50,11 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
-from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
+from instructlab.training.hpu_utils import (
+    is_torch_hpu_available,
+    bucket,
+    save_hpu_model,
+)
 
 logger = logging.getLogger("instructlab.training")
 
@@ -1033,12 +1037,15 @@ def save_hf_format_accelerate(
             model.module.unmerge_adapter()
 
     if not is_lora:
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
+        if is_torch_hpu_available() and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
+            save_hpu_model(model, output_dir)
+        else:
+            accelerator.save_model(
+                model,
+                save_directory=output_dir,
+                max_shard_size="5GB",
+                safe_serialization=True,
+            )
 
     if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
         # export doesnt like the directory to exist
