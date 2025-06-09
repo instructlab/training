@@ -13,6 +13,7 @@ import torch
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
 from instructlab.training.utils import log_rank_0, make_collate_fn
 
+from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
 
 class TokenDataset(Dataset):
     def __init__(self, data_path):
@@ -109,6 +110,10 @@ def setup_dataloader(
 
     lengths = dataset.get_lengths()
     if sampler == "multipack":
+        if is_torch_hpu_available():
+            bucket_v = np.vectorize(bucket)
+            lengths = bucket_v(lengths)
+
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=packing_max_batch_len,
             lengths=lengths,

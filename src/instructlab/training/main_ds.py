@@ -33,6 +33,14 @@ except ImportError:
             UserWarning,
         )
 
+from instructlab.training.hpu_utils import is_torch_hpu_available
+
+if is_torch_hpu_available():
+    import habana_frameworks.torch.core as htcore
+    import habana_frameworks.torch.distributed.hccl
+    from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
+    adapt_transformers_to_gaudi()
+
 # Third Party
 from tqdm import tqdm
 from transformers import AutoConfig
@@ -139,10 +147,19 @@ def train(
             total_length = float(torch.tensor([batch.pop("total_length")]))
             if not args.use_dolomite:
                 for k in batch:
-                    batch[k] = batch[k].to(local_rank)
+                    batch[k] = batch[k].to('hpu' if is_torch_hpu_available() else local_rank)
+
+            hpu_args = []
+            if is_torch_hpu_available():
+                hpu_args = {
+                    "use_flash_attention":True,
+                    "lazy_mode":False,
+                }
+
             output = model(
                 **batch,
                 use_cache=False,
+                **hpu_args,
             )
             loss = output.loss
             log_loss = loss.detach().item()
@@ -179,8 +196,14 @@ def train(
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+
+                if is_torch_hpu_available():
+                    mem_allocated = torch.hpu.memory_allocated() / (1024**3)
+                    malloc_retries = 0
+                else:
+                    mem_allocated = torch.cuda.memory_allocated() / (1024**3)
+                    malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+
                 global_grad_norm = (
                     model.get_global_grad_norm()
                     if hasattr(model, "get_global_grad_norm")
@@ -202,8 +225,8 @@ def train(
                         "rank": torch.distributed.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
-                        "cuda_mem_allocated": cuda_mem_allocated,
-                        "cuda_malloc_retries": cuda_malloc_retries,
+                        ("hpu" if is_torch_hpu_available() else "cuda") + "_mem_allocated": mem_allocated,
+                        ("hpu" if is_torch_hpu_available() else "cuda") + "_malloc_retries": malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
@@ -236,7 +259,10 @@ def train(
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
+
+            if not is_torch_hpu_available():
+                torch.cuda.empty_cache()
+
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
@@ -314,17 +340,24 @@ def main(args):
     args.model_type = model_conf.model_type
 
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    if is_torch_hpu_available():
+        torch.hpu.set_device(int(os.environ["LOCAL_RANK"]))
+    else:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
-    if timeout is not None:
-        torch.distributed.init_process_group(timeout=timeout)
-    else:
-        torch.distributed.init_process_group()
+    backend = "hccl" if is_torch_hpu_available() else None
+    torch.distributed.init_process_group(backend=backend, timeout=timeout)
 
     args.global_rank = torch.distributed.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
+
+    if is_torch_hpu_available():
+        tensor = torch.ByteTensor([False]).to('hpu')
+    else:
+        tensor = torch.ByteTensor([False]).cuda()
+
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
