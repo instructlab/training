@@ -228,7 +228,6 @@ def train(
                     tokenizer=model.tokenizer,
                     samples_seen=samples_seen,
                     is_lora=bool(args.lora_r),
-                    hf_format=True,
                 )
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
                 torch.distributed.barrier()
@@ -247,7 +246,6 @@ def train(
                 samples_seen=samples_seen,
                 is_lora=bool(args.lora_r),
                 full_state=args.accelerate_full_state_at_epoch,
-                hf_format=True,
                 epoch=epoch,
             )
             base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
