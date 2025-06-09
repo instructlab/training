@@ -55,6 +55,7 @@ class Model:
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
+        self._last_checkpoint_size: int | None = None
         bnb_config = None
         if lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
@@ -75,6 +76,14 @@ class Model:
 
         if flash_enabled:
             self.base_model_args["attn_implementation"] = "flash_attention_2"
+
+    @property
+    def last_checkpoint_size(self) -> int | None:
+        return self._last_checkpoint_size
+
+    @last_checkpoint_size.setter
+    def last_checkpoint_size(self, value: int):
+        self._last_checkpoint_size = value
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
