@@ -4,9 +4,10 @@ name: E2E (NVIDIA L40S x4) SDK Test
 
 on:
   # only run on PRs that touch certain regex paths
-  pull_request:
+  pull_request_target:
     branches:
       - main
+      - release-*
     paths:
       # note this should match the merging criteria in 'mergify.yml'
       - "**.py"
@@ -15,19 +16,28 @@ on:
       - "requirements.txt"
       - "requirements-dev.txt"
       - "constraints-dev.txt"
-      - ".github/workflows/e2e-nvidia-l40s-x4-sdk.yaml" # This workflow
+      - ".github/workflows/*.yml" # This workflow
   workflow_dispatch:
     inputs:
       pr_or_branch:
         description: 'pull request number or branch name'
         required: true
         default: 'main'
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
   cancel-in-progress: true
 
 env:
   TMPDIR: /home/tmp
+
+defaults:
+  run:
+    shell: bash
+
+
+permissions:
+  contents: read
 
 jobs:
   start-large-ec2-runner:
@@ -97,8 +107,11 @@ jobs:
       - start-large-ec2-runner
     runs-on: ${{ needs.start-large-ec2-runner.outputs.label }}
 
-    permissions:
-      pull-requests: write
+
+    # It is important that this job has no write permissions and has
+    # no access to any secrets. This part (e2e-medium-test) is where we are running
+    # untrusted code from PRs.
+    permissions: {}
 
     steps:
       - name: Install Packages
@@ -308,3 +321,14 @@ jobs:
         run: |
           echo "::warning::Failed to upload Phase 2 loss graph to S3. This won't block the workflow, but you may want to investigate."
           echo "Loss graph upload failed" >> "${GITHUB_STEP_SUMMARY}"
+
+  e2e-medium-workflow-complete:
+    # we don't want to block PRs on failed EC2 cleanup
+    # so not requiring "stop-medium-ec2-runner" as well
+    permissions:
+      checks: read
+    uses: ./.github/workflows/status-checks.yml
+    with:
+      job_ids: >- # Space-separated job ids to wait on for status checks
+        start-large-ec2-runner
+        e2e-medium-test
