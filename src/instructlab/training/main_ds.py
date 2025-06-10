@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+from pathlib import Path
 import argparse
 import datetime
 import logging
@@ -42,6 +43,7 @@ import torch.distributed
 # First Party
 from instructlab.training import config
 from instructlab.training.accelerator import Accelerator
+from instructlab.training.checkpointer import Checkpointer
 from instructlab.training.config import (
     DistributedBackend,
     ModelTypes,
@@ -70,9 +72,6 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
-    load_latest_full_state,
-    save_checkpoint,
-    save_hf_format_accelerate,
     set_random_seed,
 )
 import instructlab.training.data_process as dp
@@ -85,6 +84,7 @@ def train(
     model: Model,
     optimizer: torch.optim.Optimizer,
     accelerator: Accelerator,
+    checkpointer: Checkpointer,
 ):
     model.train()
 
@@ -221,14 +221,10 @@ def train(
                 global_step * batch_size % args.save_samples == 0
             ):
                 base_logger.debug(f"Saving checkpoint at step {global_step}")
-                save_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=model.tokenizer,
+                checkpointer.checkpoint(
+                    output_dir=args.output_dir,
+                    epoch=epoch,
                     samples_seen=samples_seen,
-                    is_lora=bool(args.lora_r),
-                    hf_format=True,
                 )
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
                 torch.distributed.barrier()
@@ -239,28 +235,20 @@ def train(
             torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
-            save_checkpoint(
-                args=args,
-                accelerator=accelerator,
-                model=model,
-                tokenizer=model.tokenizer,
-                samples_seen=samples_seen,
-                is_lora=bool(args.lora_r),
-                full_state=args.accelerate_full_state_at_epoch,
-                hf_format=True,
+            checkpointer.checkpoint(
+                output_dir=args.output_dir,
                 epoch=epoch,
+                samples_seen=samples_seen,
             )
             base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
             torch.distributed.barrier()
 
     if args.save_last:
-        save_hf_format_accelerate(
-            args,
-            model,
-            model.tokenizer,
-            accelerator,
-            samples_seen,
-            is_lora=bool(args.lora_r),
+        checkpointer.save_hf_format_accelerate(
+            output_dir=args.output_dir,
+            epoch=args.num_epochs,
+            samples_seen=samples_seen,
+            last_epoch=True,
         )
 
 
@@ -483,13 +471,19 @@ def main(args):
     optimizer = accelerator.optimizer
     m = accelerator.model
 
-    load_latest_full_state(args=args, accelerator=accelerator)
-
+    strategy = "all"
+    if not args.accelerate_full_state_at_epoch:
+        strategy = "hf_format"
+    checkpointer = Checkpointer(
+        strategy=strategy, model=m, optimizer=optimizer, accelerator=accelerator
+    )
+    checkpointer.load_latest_full_state(Path(args.output_dir))
     train(
         args,
         model=m,
         optimizer=optimizer,
         accelerator=accelerator,
+        checkpointer=checkpointer,
     )
 
     torch.distributed.barrier()
