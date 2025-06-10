@@ -362,6 +362,7 @@ def main(args):
         flash_enabled=flash_enabled,
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
+        model_conf=model_conf,
     )
 
     args.base_model_args = m.base_model_args

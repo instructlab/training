@@ -191,7 +191,7 @@ class Checkpointer:
         )
         start = time.time()
 
-        if self.model.model_type in ("gpt_megatron", "gpt_dolomite"):
+        if self.model.model_conf.model_type in ("gpt_megatron", "gpt_dolomite"):
             convert_dolomite = False
         else:
             convert_dolomite = True
@@ -199,7 +199,7 @@ class Checkpointer:
         # Build the final output directory path
         final_output_dir = Path(output_dir) / "hf_format" / subdir
 
-        if self.model.model_type == "dolomite" and convert_dolomite:
+        if self.model.model_conf.model_type == "dolomite" and convert_dolomite:
             tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
             output_dir = Path(tmpdir.name)
         else:
@@ -236,10 +236,10 @@ class Checkpointer:
             output_dir.mkdir(parents=True, exist_ok=True)
             if not self.model.module.config.architectures and convert_dolomite:
                 arch_added = False
-                if self.model.model_type == "llama":
+                if self.model.model_conf.model_type == "llama":
                     self.model.module.config.architectures = ["LlamaForCausalLM"]
                     arch_added = True
-                elif self.model.model_type == "granite":
+                elif self.model.model_conf.model_type == "granite":
                     self.model.module.config.architectures = ["GraniteForCausalLM"]
                     arch_added = True
                 if arch_added:
@@ -272,7 +272,7 @@ class Checkpointer:
             )
 
         if (
-            self.model.model_type == "dolomite"
+            self.model.model_conf.model_type == "dolomite"
             and convert_dolomite
             and self.accelerator.is_main_process
         ):
@@ -282,7 +282,7 @@ class Checkpointer:
             export_to_huggingface(
                 pretrained_model_name_or_path=tmpdir.name,
                 save_path=final_output_dir,
-                model_type=self.model.model_type,
+                model_type=self.model.model_conf.model_type,
             )
             tmpdir.cleanup()
 
