@@ -34,6 +34,8 @@ from transformers import PreTrainedTokenizer
 import torch
 
 # First Party
+from instructlab.training.hpu_utils import is_torch_hpu_available
+
 from instructlab.training.config import (  # Adjust this import if needed
     DistributedBackend,
     Optimizer,
@@ -78,6 +80,14 @@ class Model:
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
+
+        if is_torch_hpu_available() and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
+            torch._dynamo.config.cache_size_limit = 10*1000
+            torch._dynamo.config.accumulated_cache_size_limit = 20*1000
+            self.model = torch.compile(self.model, backend="hpu_backend", dynamic=False)
+            for layer in self.model.model.layers:
+                layer.compile(backend="hpu_backend", dynamic=False) 
+
         self.reconcile_tokenizer()
         if self.lora_config:
             self.model = self.prepare_peft_model(
@@ -264,7 +274,11 @@ class Model:
             bool: True if the model is a causal language model, False otherwise.
         """
         # Third Party
-        return "ForCausalLM" in self.model.__class__.__name__
+        if not is_torch_hpu_available():
+            class_name = self.model.__class__.__name__
+        else:
+            class_name = self.model._orig_mod.__class__.__name__ if self.model.__class__.__name__ == 'OptimizedModule' else self.model.__class__.__name__
+        return "ForCausalLM" in class_name
 
     def reconcile_tokenizer(self):
         if len(self.tokenizer) > self.model.config.vocab_size:
@@ -319,6 +333,17 @@ class Model:
             and self.model.config.eos_token_id is None
         ):
             self.model.config.eos_token_id = self.tokenizer.eos_token_id
+
+        if is_torch_hpu_available():
+            model = self.model._orig_mod if self.model.__class__.__name__ == 'OptimizedModule' else self.model
+            class_name = model.__class__.__name__
+
+            replace_no_split_modules = {
+                'GaudiLlamaForCausalLM': ['GaudiLlamaDecoderLayer',]
+            }
+            
+            if class_name in replace_no_split_modules: 
+                model._no_split_modules = replace_no_split_modules[class_name]
 
         if not self._is_causal_lm_model():
             raise ValueError(
