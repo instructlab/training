@@ -805,18 +805,16 @@ def save_checkpoint(
     samples_seen,
     is_lora: bool,
     epoch: int = None,
-    hf_format: bool = True,
     full_state: bool = False,
 ) -> None:
-    if hf_format:
-        save_hf_format_accelerate(
-            args=args,
-            model=model,
-            accelerator=accelerator,
-            tokenizer=tokenizer,
-            samples_seen=samples_seen,
-            is_lora=is_lora,
-        )
+    save_hf_format_accelerate(
+        args=args,
+        model=model,
+        accelerator=accelerator,
+        tokenizer=tokenizer,
+        samples_seen=samples_seen,
+        is_lora=is_lora,
+    )
 
     if full_state:
         save_full_state(
