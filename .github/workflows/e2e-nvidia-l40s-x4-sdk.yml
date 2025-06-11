@@ -3,8 +3,10 @@
 name: E2E (NVIDIA L40S x4) SDK Test
 
 on:
-  # only run on PRs that touch certain regex paths
-  pull_request:
+  # using this rather than pull_request because this workflow
+  # needs to run in the context of the base branch (main) and
+  # access the repo's secrets to start the AWS instances.
+  pull_request_target:
     branches:
       - main
     paths:
