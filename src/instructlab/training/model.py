@@ -50,11 +50,13 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        model_conf=None,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
+        self.model_conf = model_conf
         bnb_config = None
         if lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
@@ -385,6 +387,7 @@ class LigerModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        model_conf=None,
     ):
         super().__init__(
             model_path=model_path,
@@ -394,6 +397,7 @@ class LigerModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            model_conf=model_conf,
         )
         try:
             # Third Party
@@ -426,6 +430,7 @@ class DolomiteModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        model_conf=None,
     ):
         super().__init__(
             model_path=model_path,
@@ -435,6 +440,7 @@ class DolomiteModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            model_conf=model_conf,
         )
         # Third Party
         from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
@@ -469,6 +475,7 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        model_conf=None,
     ):
         super().__init__(
             model_path=model_path,
@@ -478,6 +485,7 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            model_conf=model_conf,
         )
         # Third Party
         from transformers import AutoModelForCausalLM
