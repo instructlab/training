@@ -399,6 +399,7 @@ class LigerModel(Model):
             # Third Party
             # pylint: disable-next=W0611
             from liger_kernel.transformers import AutoLigerKernelForCausalLM
+            from liger_kernel.transformers.cross_entropy import LigerCrossEntropyLoss
         except ImportError as e:
             raise ValueError(
                 "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
@@ -412,8 +413,8 @@ class LigerModel(Model):
             fused_linear_cross_entropy=False,
         )
         self.model.gradient_checkpointing_enable()
+        self.model.loss_fct = LigerCrossEntropyLoss(reduction="sum")
         self._post_model_init()
-
 
 class DolomiteModel(Model):
     def __init__(
@@ -449,6 +450,7 @@ class DolomiteModel(Model):
             self.base_model_args["pretrained_model_name_or_path"] = path
             self.base_model_args["use_padding_free_transformer"] = True
             self.model = GPTDolomiteForCausalLM.from_pretrained(**self.base_model_args)
+            self.model.loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
         self._post_model_init()
         apply_gradient_checkpointing(
             model=self.model,
@@ -483,6 +485,7 @@ class CausalLMModel(Model):
         from transformers import AutoModelForCausalLM
 
         self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
+        self.model.loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
         self._post_model_init()
         self.model.gradient_checkpointing_enable()
 
