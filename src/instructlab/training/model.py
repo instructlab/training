@@ -34,7 +34,6 @@ from transformers import PreTrainedTokenizer
 import torch
 
 # First Party
-from instructlab.training.hpu_utils import is_torch_hpu_available
 
 from instructlab.training.config import (  # Adjust this import if needed
     DistributedBackend,
@@ -52,11 +51,13 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
+        self.device = device
         bnb_config = None
         if lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
@@ -81,7 +82,7 @@ class Model:
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
 
-        if is_torch_hpu_available() and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
+        if self.device == "hpu" and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
             torch._dynamo.config.cache_size_limit = 10*1000
             torch._dynamo.config.accumulated_cache_size_limit = 20*1000
             self.model = torch.compile(self.model, backend="hpu_backend", dynamic=False)
@@ -274,7 +275,7 @@ class Model:
             bool: True if the model is a causal language model, False otherwise.
         """
         # Third Party
-        if not is_torch_hpu_available():
+        if self.device != "hpu":
             class_name = self.model.__class__.__name__
         else:
             class_name = self.model._orig_mod.__class__.__name__ if self.model.__class__.__name__ == 'OptimizedModule' else self.model.__class__.__name__
@@ -334,7 +335,7 @@ class Model:
         ):
             self.model.config.eos_token_id = self.tokenizer.eos_token_id
 
-        if is_torch_hpu_available():
+        if self.device == "hpu":
             model = self.model._orig_mod if self.model.__class__.__name__ == 'OptimizedModule' else self.model
             class_name = model.__class__.__name__
 
@@ -410,6 +411,7 @@ class LigerModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         super().__init__(
             model_path=model_path,
@@ -419,6 +421,7 @@ class LigerModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
         )
         try:
             # Third Party
@@ -451,6 +454,7 @@ class DolomiteModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         super().__init__(
             model_path=model_path,
@@ -460,6 +464,7 @@ class DolomiteModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
         )
         # Third Party
         from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
@@ -494,6 +499,7 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         super().__init__(
             model_path=model_path,
@@ -503,6 +509,7 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
         )
         # Third Party
         from transformers import AutoModelForCausalLM

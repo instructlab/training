@@ -213,7 +213,7 @@ class StreamablePopen(subprocess.Popen):
 
 
 def make_collate_fn(
-    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
+    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000, device=None,
 ):
     if use_dolomite:
 
@@ -276,7 +276,7 @@ def make_collate_fn(
                 lens = np.array([len(item["input_ids"]) for item in batch])
                 max_len = max(lens)
 
-                if is_torch_hpu_available():
+                if device=="hpu":   
                     max_len = bucket(max_len)
 
                 input_ids = torch.stack(

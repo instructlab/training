@@ -131,7 +131,7 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
-        # blast through the batches in the train loader up to the last step within the epoch.
+        # blast through the batches in the train loader up to the last step within the epoch. 
         for batch in accelerator.train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -147,10 +147,10 @@ def train(
             total_length = float(torch.tensor([batch.pop("total_length")]))
             if not args.use_dolomite:
                 for k in batch:
-                    batch[k] = batch[k].to('hpu' if is_torch_hpu_available() else local_rank)
+                    batch[k] = batch[k].to('hpu' if args.device == "hpu" else local_rank)
 
             hpu_args = {}
-            if is_torch_hpu_available():
+            if args.device == "hpu":
                 hpu_args = {
                     "use_flash_attention":True,
                     "lazy_mode":False,
@@ -197,7 +197,7 @@ def train(
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
 
-                if is_torch_hpu_available():
+                if args.device == "hpu":
                     mem_allocated = torch.hpu.memory_allocated() / (1024**3)
                     malloc_retries = 0
                 else:
@@ -225,8 +225,8 @@ def train(
                         "rank": torch.distributed.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
-                        ("hpu" if is_torch_hpu_available() else "cuda") + "_mem_allocated": mem_allocated,
-                        ("hpu" if is_torch_hpu_available() else "cuda") + "_malloc_retries": malloc_retries,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_mem_allocated": mem_allocated,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_malloc_retries": malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
@@ -260,7 +260,7 @@ def train(
             if local_rank == 0:
                 inner_pb.update(1)
 
-            if not is_torch_hpu_available():
+            if args.device != "hpu":
                 torch.cuda.empty_cache()
 
         if args.checkpoint_at_epoch:
@@ -340,7 +340,7 @@ def main(args):
     args.model_type = model_conf.model_type
 
     #### distributed init #####
-    if is_torch_hpu_available():
+    if args.device == "hpu":
         torch.hpu.set_device(int(os.environ["LOCAL_RANK"]))
     else:
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -348,12 +348,12 @@ def main(args):
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
-    backend = "hccl" if is_torch_hpu_available() else None
+    backend = "hccl" if args.device == "hpu" else None
     torch.distributed.init_process_group(backend=backend, timeout=timeout)
 
     args.global_rank = torch.distributed.get_rank()
 
-    if is_torch_hpu_available():
+    if args.device == "hpu":
         tensor = torch.ByteTensor([False]).to('hpu')
     else:
         tensor = torch.ByteTensor([False]).cuda()
@@ -407,6 +407,7 @@ def main(args):
         flash_enabled=flash_enabled,
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
+        device=args.device,
     )
 
     args.base_model_args = m.base_model_args
@@ -446,6 +447,7 @@ def main(args):
         samples_per_gpu=args.samples_per_gpu,
         sampler=args.sampler,
         seed=args.seed,
+        device=args.device,
     )
     if len(train_loader) == 0:
         # this happens sometimes when we have more GPUs than data to process. In this case
@@ -466,6 +468,7 @@ def main(args):
             samples_per_gpu=args.samples_per_gpu,
             sampler=args.sampler,
             seed=args.seed,
+            device=args.device,
         )
 
     if args.local_rank == 0:
@@ -497,6 +500,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
         save_samples=args.save_samples,
+        device=args.device,
     )
     # optimizer needs model that has been prepared by accelerator
     # and then accelerator needs to be prepared AGAIN once optimizer is initialized
@@ -678,6 +682,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
+
+    command.append(
+        f"--device={train_args.device}"
+    )
 
     logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
@@ -876,6 +884,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Use Liger kernels for training.",
     )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="PyTorch device to use.",
+    )
+
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
