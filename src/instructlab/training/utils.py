@@ -51,6 +51,7 @@ from instructlab.training.config import (
     TrainingArgs,
 )
 from instructlab.training.model import Model
+from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
 
 logger = logging.getLogger("instructlab.training")
 
@@ -212,7 +213,7 @@ class StreamablePopen(subprocess.Popen):
 
 
 def make_collate_fn(
-    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
+    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000, device=None,
 ):
     if use_dolomite:
 
@@ -274,6 +275,9 @@ def make_collate_fn(
             def pad_collate_fn(batch):
                 lens = np.array([len(item["input_ids"]) for item in batch])
                 max_len = max(lens)
+
+                if device=="hpu":   
+                    max_len = bucket(max_len)
 
                 input_ids = torch.stack(
                     [
@@ -386,6 +390,7 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
+                **(_deprecated_arguments if is_torch_hpu_available() else {}),
             )
 
             return_dict = isinstance(output, dict)
@@ -794,7 +799,10 @@ def set_random_seed(seed):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        if is_torch_hpu_available():
+            torch.hpu.manual_seed_all(seed)
+        else:
+            torch.cuda.manual_seed_all(seed)
 
 
 def save_checkpoint(
