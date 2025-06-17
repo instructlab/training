@@ -39,7 +39,7 @@ einops==0.8.1             # via deepspeed, flash-attn
 executing==2.2.0          # via stack-data
 fastjsonschema==2.21.1    # via nbformat
 filelock==3.18.0          # via datasets, huggingface-hub, torch, tox, transformers, virtualenv
-flash-attn==2.8.0.post2   # via -r requirements-cuda.txt, -r requirements-rocm.txt
+flash-attn==2.7.4.post1   # via -r requirements-cuda.txt, -r requirements-rocm.txt
 fonttools==4.58.4         # via matplotlib
 fqdn==1.5.1               # via jsonschema
 frozenlist==1.7.0         # via aiohttp, aiosignal
