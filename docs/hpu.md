@@ -10,7 +10,7 @@ Next changes are required to enable training on HPU:
 
 It is also recommended to use HPU optimized versions of transformers:
 
-```python
+```Python
 from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
 adapt_transformers_to_gaudi()
 ```
@@ -29,8 +29,21 @@ To compute bucked size, we use next algorithm:
 This approach limits overhead of the bucketing to 1/16 th of the longest sample and allows us to significantly reduce number of recompilations.
 
 ## How to run
-To run training make next changes to config file:
-```json
+To run training build docker using next dockerfile:
+```Dockerfile
+FROM vault.habana.ai/gaudi-docker/1.21.0/rhel9.4/habanalabs/pytorch-installer-2.6.0:1.21.0-555
+
+ARG CMAKE_ARGS="-DGGML_NATIVE=off"
+
+WORKDIR /app
+RUN pip install git+https://github.com/instructlab/instructlab.git@v0.26.1
+
+WORKDIR /app
+RUN pip install git+https://github.com/huggingface/optimum-habana.git@v1.18.0
+```
+
+Then make next changes to config file:
+```YAML
 train:
   device: hpu
   distributed_backend: fsdp
@@ -40,8 +53,8 @@ train:
   disable_flash_attn: true
 ```
 
-And use this command line:
-```bash
+And finally run this command line:
+```BASH
 ilab --config=./config.yaml model train --pipeline accelerated --data-path ./data.jsonl
 ```
 

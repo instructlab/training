@@ -132,6 +132,7 @@ class Accelerator:
         from functools import partial
 
         # Third Party
+        from accelerate.utils import FullyShardedDataParallelPlugin
         from peft.utils.other import fsdp_auto_wrap_policy
         from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
         from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
@@ -159,27 +160,17 @@ class Accelerator:
         prefetch_policy = (
             BackwardPrefetch.BACKWARD_POST if is_lora else BackwardPrefetch.BACKWARD_PRE
         )
+        fsdp_plugin = FullyShardedDataParallelPlugin(
+            auto_wrap_policy=wrap_policy,
+            limit_all_gathers=True,
+            backward_prefetch=prefetch_policy,
+            sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
+            cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
+        )
 
         if self.device_str == "hpu":
-            from optimum.habana.accelerate.utils import GaudiFullyShardedDataParallelPlugin
-            fsdp_plugin = GaudiFullyShardedDataParallelPlugin(
-                auto_wrap_policy=wrap_policy,
-                limit_all_gathers=True,
-                backward_prefetch=prefetch_policy,
-                sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
-                cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
-            )
             fsdp_plugin.use_orig_params=True
             fsdp_plugin.sync_module_states=True
-        else:
-            from accelerate.utils import FullyShardedDataParallelPlugin
-            fsdp_plugin = FullyShardedDataParallelPlugin(
-                auto_wrap_policy=wrap_policy,
-                limit_all_gathers=True,
-                backward_prefetch=prefetch_policy,
-                sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
-                cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
-            )
 
         # `use_orig_params` must be disabled when using LoRA and FSDP together
         # Source: https://huggingface.co/docs/peft/en/accelerate/fsdp#the-important-parts
