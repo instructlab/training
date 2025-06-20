@@ -120,7 +120,7 @@ jobs:
               run: |
                   gh release upload '${{ github.ref_name }}' dist/* --repo '${{ github.repository }}'
               env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_TOKEN: ${{ github.token }}
 
             # PyPI does not accept .sigstore artifacts and
             # gh-action-pypi-publish has no option to ignore them.
