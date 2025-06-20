@@ -66,7 +66,6 @@ def run_test(knowledge_data_path, skills_data_path, nnodes, node_rank, nproc_per
             accelerate_full_state_at_epoch=True,
             checkpoint_at_epoch=True,
             use_liger=False,
-            use_dolomite=False,
             distributed_backend="fsdp",
             process_data=True,
         )

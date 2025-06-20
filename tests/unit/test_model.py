@@ -10,7 +10,7 @@ import torch
 
 # First Party
 from instructlab.training.config import DistributedBackend
-from instructlab.training.model import CausalLMModel, DolomiteModel, LigerModel, Model
+from instructlab.training.model import CausalLMModel, LigerModel, Model
 
 
 @pytest.fixture
@@ -205,72 +205,13 @@ def test_model_flash_attention_check(
     mock_device_props.return_value = mock_device
 
     # Test enabling flash attention
-    assert Model.check_flash_attn_enabled(False, False) is True
+    assert Model.check_flash_attn_enabled(False) is True
 
     # Test disabling flash attention
-    assert Model.check_flash_attn_enabled(True, False) is False
-
-    # Test invalid combination
-    with pytest.raises(RuntimeError):
-        Model.check_flash_attn_enabled(True, True)
+    assert Model.check_flash_attn_enabled(True) is False
 
 
 # New tests for model initializations
-
-
-def test_dolomite_model_initialization(mock_tokenizer, mock_model):
-    with (
-        patch(
-            "instructlab.dolomite.hf_models.GPTDolomiteForCausalLM.from_pretrained",
-            return_value=mock_model,
-        ),
-        patch(
-            "instructlab.training.utils.ensure_loadable_dolomite_checkpoint",
-            return_value=MagicMock(
-                __enter__=lambda _: "test_path", __exit__=lambda *_: None
-            ),
-        ),
-    ):
-        model = DolomiteModel(
-            model_path="test_model",
-            output_dir="test_output",
-            distributed_framework=DistributedBackend.DEEPSPEED,
-            noise_alpha=None,
-            tokenizer=mock_tokenizer,
-        )
-
-        assert isinstance(model, DolomiteModel)
-        assert model.distributed_framework == DistributedBackend.DEEPSPEED
-        assert model.tokenizer == mock_tokenizer
-        assert model.noise_alpha is None
-
-
-def test_dolomite_model_with_lora(mock_tokenizer, mock_model, lora_config):
-    mock_model.__class__.__name__ = "GPTDolomiteForCausalLM"
-    mock_model.get_input_embeddings = MagicMock(return_value=MagicMock())
-    with (
-        patch(
-            "instructlab.dolomite.hf_models.GPTDolomiteForCausalLM.from_pretrained",
-            return_value=mock_model,
-        ),
-        patch(
-            "instructlab.training.utils.ensure_loadable_dolomite_checkpoint",
-            return_value=MagicMock(
-                __enter__=lambda _: "test_path", __exit__=lambda *_: None
-            ),
-        ),
-        patch("peft.get_peft_model", return_value=mock_model),
-    ):
-        model = DolomiteModel(
-            model_path="test_model",
-            output_dir="test_output",
-            distributed_framework=DistributedBackend.DEEPSPEED,
-            noise_alpha=None,
-            tokenizer=mock_tokenizer,
-            lora_config=lora_config,
-        )
-
-        assert model.lora_config == lora_config
 
 
 def test_causal_lm_model_with_flash_attention(mock_tokenizer, mock_model):

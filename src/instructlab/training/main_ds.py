@@ -57,7 +57,6 @@ from instructlab.training.logger import (
 )
 from instructlab.training.model import (
     CausalLMModel,
-    DolomiteModel,
     LigerModel,
     Model,
     setup_optimizer,
@@ -137,9 +136,8 @@ def train(
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
             total_length = float(torch.tensor([batch.pop("total_length")]))
-            if not args.use_dolomite:
-                for k in batch:
-                    batch[k] = batch[k].to(local_rank)
+            for k in batch:
+                batch[k] = batch[k].to(local_rank)
             output = model(
                 **batch,
                 use_cache=False,
@@ -328,9 +326,7 @@ def main(args):
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
-    flash_enabled = Model.check_flash_attn_enabled(
-        args.disable_flash_attn, args.use_dolomite
-    )
+    flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
 
     dataset = setup_dataset(
         args.data_path,
@@ -353,7 +349,6 @@ def main(args):
     # Create model based on type
     model_class_map = {
         ModelTypes.LIGER: LigerModel,
-        ModelTypes.DOLOMITE: DolomiteModel,
         ModelTypes.CAUSALLM: CausalLMModel,
     }
 
@@ -384,7 +379,7 @@ def main(args):
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
+            is_padding=not flash_enabled,
             dataset=dataset,
             seed=args.seed,
         )
@@ -406,7 +401,6 @@ def main(args):
         dataset,
         tokenizer.pad_token_id,
         num_workers=8,
-        use_dolomite=args.use_dolomite,
         flash_enabled=flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
@@ -426,7 +420,6 @@ def main(args):
             dataset,
             tokenizer.pad_token_id,
             num_workers=8,
-            use_dolomite=args.use_dolomite,
             flash_enabled=flash_enabled,
             max_batch_len=args.max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
@@ -575,9 +568,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append("--mock_data")
         if train_args.mock_len:
             command.append(f"--mock_len={train_args.mock_len}")
-
-    if train_args.use_dolomite:
-        command.append("--use_dolomite")
 
     if train_args.disable_flash_attn:
         command.append("--disable_flash_attn")
@@ -784,7 +774,11 @@ if __name__ == "__main__":
         default="HYBRID_SHARD",
         help="Sharding strategy to be used for FSDP distributed training.",
     )
-    parser.add_argument("--use_dolomite", action="store_true")
+    parser.add_argument(
+        "--use_dolomite",
+        action="store_true",
+        help="(Deprecated, NoOp) Attempts to use GPTDolomite architecture",
+    )
     parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
@@ -887,7 +881,6 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --save_samples=250000 \
 --log_level="INFO" \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
---use_dolomite \
 --max_batch_len 70000 \
 --seed=42
 """
