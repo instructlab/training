@@ -25,9 +25,9 @@ from instructlab.training.main_ds import run_training
 
 MINIMAL_TRAINING_ARGS = {
     "max_seq_len": 140,  # this config fits nicely on 4xL40s and may need modification for other setups
-    "max_batch_len": 5000,
+    "max_batch_len": 15000,
     "num_epochs": 1,
-    "effective_batch_size": 128,
+    "effective_batch_size": 3840,
     "save_samples": 0,
     "learning_rate": 1e-4,
     "warmup_steps": 1,
@@ -51,7 +51,7 @@ REFERENCE_TEST_MODEL = "ibm-granite/granite-3.3-2b-instruct"
 RUNNER_CPUS_EXPECTED = 4
 
 # Number of samples to randomly sample from the processed dataset for faster training
-NUM_SAMPLES_TO_KEEP = 2500
+NUM_SAMPLES_TO_KEEP = 5000
 
 
 @pytest.fixture(scope="module")
