@@ -400,8 +400,7 @@ def convert_loss_to_reduce_sum(model, use_dolomite=False):
                 shift_labels = shift_labels.view(-1)
                 # Ensure tensors are on the same device
                 shift_labels = shift_labels.to(shift_logits.device)
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(shift_logits, shift_labels)
+                loss = model.loss_fct(shift_logits, shift_labels)
 
             if not return_dict:
                 return ((loss,) + output) if loss is not None else output
