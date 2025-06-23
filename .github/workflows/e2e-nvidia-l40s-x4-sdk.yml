@@ -105,7 +105,7 @@ jobs:
         run: |
           cat /etc/os-release
           mkdir -p "${TMPDIR}"
-          sudo dnf install -y gcc gcc-c++ make git python3.11 python3.11-devel
+          sudo dnf install -y gcc gcc-c++ make git python3.12 python3.12-devel
   
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -130,18 +130,18 @@ jobs:
           export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/local/cuda/extras/CUPTI/lib64"
           export PATH="$PATH:$CUDA_HOME/bin"
           nvidia-smi
-          python3.11 -m venv --upgrade-deps venv
+          python3.12 -m venv --upgrade-deps venv
           . venv/bin/activate
           pip install instructlab
           pip install instructlab[cuda]
           pip install vllm
-          python3.11 -m pip install packaging wheel setuptools-scm
+          python3.12 -m pip install packaging wheel setuptools-scm
           pip install .
           pip install .[cuda]
-          python3.11 -m pip uninstall -y flash-attn
-          python3.11 -m pip cache purge
-          python3.11 -m pip install ninja
-          MAX_JOBS=8 python3.11 -m pip install flash-attn --no-build-isolation
+          python3.12 -m pip uninstall -y flash-attn
+          python3.12 -m pip cache purge
+          python3.12 -m pip install ninja
+          MAX_JOBS=8 python3.12 -m pip install flash-attn --no-build-isolation
 
       - name: Check disk before tests
         run: |

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: "Run smoke tests via Tox::pytest (python 3.11)"
+name: "Run smoke tests via Tox::pytest (python 3.12)"
 # These tests will be long running and require accelerated hardware.
 
 on:
@@ -118,7 +118,7 @@ jobs:
       - name: Run smoke tests
         uses: ./.github/actions/run-smoke
         with:
-          python-version: 3.11
+          python-version: 3.12
 
   stop-large-ec2-runner:
     needs:
