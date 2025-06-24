@@ -444,7 +444,7 @@ def wrap_masked_messages(
     """
     Given a list of messages and a set of roles we want to unmask, return
     a list with the matching messages wrapped with `<|UNMASK_BEGIN|>` and `<|UNMASK_END|>` tokens
-    wrapped around the `message.content` field.
+    wrapped around both the `content` and `reasoning_content` fields (if present).
 
     Args:
         msgs (List[Message]): List of messages we want to wrap with unmask tokens.
@@ -452,13 +452,50 @@ def wrap_masked_messages(
 
     Returns:
         List[Message]: The resultant list with all appropriate messages wrapped.
+
+    Note:
+        Both `content` and `reasoning_content` fields are processed if present in a message.
+        The `reasoning_content` field is optional and enables support for structured reasoning traces.
     """
     new_msgs: t.List[Message] = []
     for msg in msgs:
-        content = msg["content"]
-        if msg["role"] in unmask_roles:
-            content = UNMASK_BEGIN_TOKEN + content + UNMASK_END_TOKEN
-        new_msgs.append({"role": msg["role"], "content": content})
+        if msg["role"] not in unmask_roles:
+            # do nothing
+            new_msgs += [msg]
+            continue
+
+        # here, we need to be on the lookout for both string and non-string
+        # entries (e.g. other content types, or pure reasoning traces)
+        interesting_fields = ["content", "reasoning_content"]
+        new_msg = {k: v for k, v in msg.items() if k not in interesting_fields}
+
+        # what's left to add then is content or reasoning_content
+        content = msg.get("content", None)
+        reasoning_content = msg.get("reasoning_content", None)
+
+        # we handle these conditionally since these may become optional fields in the future.
+        if content is not None:
+            if not isinstance(content, str):
+                raise ValueError(
+                    "Error: unmasking non-string data types is currently unsupported. "
+                )
+            new_msg["content"] = UNMASK_BEGIN_TOKEN + content + UNMASK_END_TOKEN
+
+        if reasoning_content is not None:
+            if not isinstance(reasoning_content, str):
+                raise ValueError(
+                    "Error: received an entry for `reasoning_content` which was not a string. "
+                    "Non-string datatypes for this field are currently unsupported, if this is intentional please raise an issue."
+                )
+
+            new_msg["reasoning_content"] = (
+                UNMASK_BEGIN_TOKEN + reasoning_content + UNMASK_END_TOKEN
+            )
+
+        # MyPy wants to be very specific about types, but new_msg may contain
+        # valid fields in each message which are hard to account for ahead of time.
+        new_msgs += [new_msg]  # type: ignore
+
     return new_msgs
 
 
