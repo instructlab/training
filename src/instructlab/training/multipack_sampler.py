@@ -34,6 +34,8 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
+from instructlab.training.hpu_utils import is_torch_hpu_available, bucket
+
 
 def find_max_pack_len_with_padding(
     dataset,
@@ -68,9 +70,14 @@ def find_max_pack_len_with_padding(
 
         The function creates a sampler using the MultipackDistributedBatchSampler class, generates batches using the sampler, and then returns the ratio of the dataset size to the number of batches.
         """
+        lengths=dataset.get_lengths()
+        if is_torch_hpu_available():
+            bucket_v = np.vectorize(bucket)
+            lengths = bucket_v(lengths)
+
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=num_tokens_per_gpu,
-            lengths=dataset.get_lengths(),
+            lengths=lengths,
             num_replicas=torch.distributed.get_world_size(),
             rank=torch.distributed.get_rank(),
             seed=seed,

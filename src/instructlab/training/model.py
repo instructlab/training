@@ -50,11 +50,13 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
+        self.device = device
         bnb_config = None
         if lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
@@ -78,6 +80,15 @@ class Model:
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
+
+        if self.device == "hpu" and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
+            cache_size_limit = 10*1000
+            torch._dynamo.config.cache_size_limit = cache_size_limit
+            torch._dynamo.config.accumulated_cache_size_limit = 2*cache_size_limit
+            self.model = torch.compile(self.model, backend="hpu_backend", dynamic=False)
+            for layer in self.model.model.layers:
+                layer.compile(backend="hpu_backend", dynamic=False) 
+
         self.reconcile_tokenizer()
         if self.lora_config:
             self.model = self.prepare_peft_model()
@@ -246,7 +257,11 @@ class Model:
             bool: True if the model is a causal language model, False otherwise.
         """
         # Third Party
-        return "ForCausalLM" in self.model.__class__.__name__
+        if self.device != "hpu":
+            class_name = self.model.__class__.__name__
+        else:
+            class_name = self.model._orig_mod.__class__.__name__ if self.model.__class__.__name__ == 'OptimizedModule' else self.model.__class__.__name__
+        return "ForCausalLM" in class_name
 
     def reconcile_tokenizer(self):
         if len(self.tokenizer) > self.model.config.vocab_size:
@@ -301,6 +316,17 @@ class Model:
             and self.model.config.eos_token_id is None
         ):
             self.model.config.eos_token_id = self.tokenizer.eos_token_id
+
+        if self.device == "hpu":
+            model = self.model._orig_mod if self.model.__class__.__name__ == 'OptimizedModule' else self.model
+            class_name = model.__class__.__name__
+
+            replace_no_split_modules = {
+                'GaudiLlamaForCausalLM': ['GaudiLlamaDecoderLayer',]
+            }
+            
+            if class_name in replace_no_split_modules: 
+                model._no_split_modules = replace_no_split_modules[class_name]
 
         if not self._is_causal_lm_model():
             raise ValueError(
@@ -358,6 +384,7 @@ class LigerModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         super().__init__(
             model_path=model_path,
@@ -367,6 +394,7 @@ class LigerModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
         )
         try:
             # Third Party
@@ -400,6 +428,7 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
     ):
         super().__init__(
             model_path=model_path,
@@ -409,6 +438,7 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
         )
         # Third Party
         from transformers import AutoModelForCausalLM
