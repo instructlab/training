@@ -1,0 +1,497 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Standard
+from unittest.mock import Mock, patch
+import tempfile
+import typing as t
+import unittest
+
+try:
+    # Third Party
+    import pytest
+
+    PYTEST_AVAILABLE = True
+except ImportError:
+    PYTEST_AVAILABLE = False
+
+try:
+    # Third Party
+    from transformers import AutoTokenizer, PreTrainedTokenizer
+
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
+    PreTrainedTokenizer = None
+
+# First Party
+from instructlab.training.data_process import (
+    MASK_TOKEN,
+    UNMASK_BEGIN_TOKEN,
+    UNMASK_END_TOKEN,
+    unmask_messages,
+    unmask_sample,
+    wrap_masked_messages,
+)
+from instructlab.training.type_definitions import Message, ProcessedMessagesData
+
+
+class TestReasoningContentSupport(unittest.TestCase):
+    """Test suite for reasoning_content field support in data processing."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        # Mock tokenizer for basic tests
+        if TRANSFORMERS_AVAILABLE:
+            self.mock_tokenizer = Mock(spec=PreTrainedTokenizer)
+        else:
+            self.mock_tokenizer = Mock()
+        self.mock_tokenizer.encode.side_effect = (
+            lambda text, add_special_tokens=False: [
+                hash(text) % 1000 for _ in text.split()
+            ]
+        )
+        self.mock_tokenizer.decode.side_effect = lambda tokens: " ".join(
+            [f"token_{t}" for t in tokens]
+        )
+        self.mock_tokenizer.apply_chat_template.side_effect = (
+            self._mock_apply_chat_template
+        )
+        self.mock_tokenizer.eos_token = "</s>"
+
+        # Set up token IDs for unmask tokens
+        self.unmask_begin_id = 1001
+        self.unmask_end_id = 1002
+        self.eos_id = 1003
+
+        def mock_encode_special(text, add_special_tokens=False):
+            if text == UNMASK_BEGIN_TOKEN:
+                return [self.unmask_begin_id]
+            elif text == UNMASK_END_TOKEN:
+                return [self.unmask_end_id]
+            elif text == "</s>":
+                return [self.eos_id]
+            else:
+                return [hash(text) % 1000]
+
+        self.mock_tokenizer.encode.side_effect = mock_encode_special
+
+    def _mock_apply_chat_template(
+        self,
+        messages: t.List[Message],
+        tokenize: bool = True,
+        add_special_tokens: bool = True,
+    ) -> t.Union[str, t.List[int]]:
+        """Mock implementation of apply_chat_template."""
+        template_str = ""
+        for msg in messages:
+            template_str += f"<|{msg['role']}|>\n"
+            if "content" in msg:
+                template_str += msg["content"]
+            if "reasoning_content" in msg:
+                template_str += msg["reasoning_content"]
+            template_str += "\n"
+
+        if tokenize:
+            return [hash(template_str) % 1000 for _ in range(len(template_str.split()))]
+        else:
+            return template_str
+
+    def test_wrap_masked_messages_with_reasoning_content(self):
+        """Test that wrap_masked_messages correctly wraps both content and reasoning_content."""
+        messages = [
+            {
+                "role": "user",
+                "content": "What is 2+2?",
+            },
+            {
+                "role": "assistant",
+                "content": "The answer is 4.",
+                "reasoning_content": "I need to add 2 and 2 together. 2 + 2 = 4.",
+            },
+        ]
+
+        unmask_roles = ["assistant"]
+        result = wrap_masked_messages(messages, unmask_roles)
+
+        # Check that user message is unchanged
+        self.assertEqual(result[0]["role"], "user")
+        self.assertEqual(result[0]["content"], "What is 2+2?")
+        self.assertNotIn("reasoning_content", result[0])
+
+        # Check that assistant message has both fields wrapped
+        self.assertEqual(result[1]["role"], "assistant")
+        self.assertEqual(
+            result[1]["content"],
+            f"{UNMASK_BEGIN_TOKEN}The answer is 4.{UNMASK_END_TOKEN}",
+        )
+        self.assertEqual(
+            result[1]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}I need to add 2 and 2 together. 2 + 2 = 4.{UNMASK_END_TOKEN}",
+        )
+
+    def test_wrap_masked_messages_content_only(self):
+        """Test that wrap_masked_messages works with messages that only have content."""
+        messages = [
+            {
+                "role": "user",
+                "content": "Hello!",
+            },
+            {
+                "role": "assistant",
+                "content": "Hi there!",
+            },
+        ]
+
+        unmask_roles = ["assistant"]
+        result = wrap_masked_messages(messages, unmask_roles)
+
+        # Check that user message is unchanged
+        self.assertEqual(result[0]["role"], "user")
+        self.assertEqual(result[0]["content"], "Hello!")
+
+        # Check that assistant message has content wrapped
+        self.assertEqual(result[1]["role"], "assistant")
+        self.assertEqual(
+            result[1]["content"],
+            f"{UNMASK_BEGIN_TOKEN}Hi there!{UNMASK_END_TOKEN}",
+        )
+        self.assertNotIn("reasoning_content", result[1])
+
+    def test_wrap_masked_messages_reasoning_content_only(self):
+        """Test that wrap_masked_messages works with messages that only have reasoning_content."""
+        messages = [
+            {
+                "role": "user",
+                "content": "Think step by step.",
+            },
+            {
+                "role": "assistant",
+                "reasoning_content": "Let me think about this step by step...",
+            },
+        ]
+
+        unmask_roles = ["assistant"]
+        result = wrap_masked_messages(messages, unmask_roles)
+
+        # Check that user message is unchanged
+        self.assertEqual(result[0]["role"], "user")
+        self.assertEqual(result[0]["content"], "Think step by step.")
+
+        # Check that assistant message has reasoning_content wrapped
+        self.assertEqual(result[1]["role"], "assistant")
+        self.assertEqual(
+            result[1]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}Let me think about this step by step...{UNMASK_END_TOKEN}",
+        )
+        self.assertNotIn("content", result[1])
+
+    def test_wrap_masked_messages_multiple_unmask_roles(self):
+        """Test that wrap_masked_messages works with multiple roles to unmask."""
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a helpful assistant.",
+            },
+            {
+                "role": "user",
+                "content": "What is the capital of France?",
+                "reasoning_content": "This is a geography question about France.",
+            },
+            {
+                "role": "assistant",
+                "content": "The capital of France is Paris.",
+                "reasoning_content": "This is a straightforward geography question.",
+            },
+        ]
+
+        unmask_roles = ["user", "assistant"]
+        result = wrap_masked_messages(messages, unmask_roles)
+
+        # Check that system message is unchanged
+        self.assertEqual(result[0]["role"], "system")
+        self.assertEqual(result[0]["content"], "You are a helpful assistant.")
+
+        # Check that user message has both fields wrapped
+        self.assertEqual(result[1]["role"], "user")
+        self.assertEqual(
+            result[1]["content"],
+            f"{UNMASK_BEGIN_TOKEN}What is the capital of France?{UNMASK_END_TOKEN}",
+        )
+        self.assertEqual(
+            result[1]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}This is a geography question about France.{UNMASK_END_TOKEN}",
+        )
+
+        # Check that assistant message has both fields wrapped
+        self.assertEqual(result[2]["role"], "assistant")
+        self.assertEqual(
+            result[2]["content"],
+            f"{UNMASK_BEGIN_TOKEN}The capital of France is Paris.{UNMASK_END_TOKEN}",
+        )
+        self.assertEqual(
+            result[2]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}This is a straightforward geography question.{UNMASK_END_TOKEN}",
+        )
+
+    def test_wrap_masked_messages_non_string_content_error(self):
+        """Test that wrap_masked_messages raises error for non-string content."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": ["This", "is", "not", "a", "string"],
+            }
+        ]
+
+        unmask_roles = ["assistant"]
+
+        with self.assertRaises(ValueError) as context:
+            wrap_masked_messages(messages, unmask_roles)
+
+        self.assertIn(
+            "unmasking non-string data types is currently unsupported",
+            str(context.exception),
+        )
+
+    def test_wrap_masked_messages_non_string_reasoning_content_error(self):
+        """Test that wrap_masked_messages raises error for non-string reasoning_content."""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Valid content",
+                "reasoning_content": {"thinking": "This is not a string"},
+            }
+        ]
+
+        unmask_roles = ["assistant"]
+
+        with self.assertRaises(ValueError) as context:
+            wrap_masked_messages(messages, unmask_roles)
+
+        self.assertIn(
+            "received an entry for `reasoning_content` which was not a string",
+            str(context.exception),
+        )
+
+    def test_unmask_messages_with_reasoning_content(self):
+        """Test that unmask_messages correctly processes reasoning_content."""
+        # This is a complex integration test, so we'll test it with a real tokenizer in the integration tests
+        # For unit testing, we just verify that the wrap_masked_messages function properly handles reasoning_content
+        messages = [
+            {
+                "role": "user",
+                "content": "What is 5*7?",
+            },
+            {
+                "role": "assistant",
+                "content": "35",
+                "reasoning_content": "5 times 7 equals 35",
+            },
+        ]
+
+        unmask_roles = ["assistant"]
+
+        # Test that wrap_masked_messages works correctly with reasoning_content
+        wrapped = wrap_masked_messages(messages, unmask_roles)
+
+        # Verify that both content and reasoning_content are wrapped
+        self.assertIn(UNMASK_BEGIN_TOKEN, wrapped[1]["content"])
+        self.assertIn(UNMASK_END_TOKEN, wrapped[1]["content"])
+        self.assertIn(UNMASK_BEGIN_TOKEN, wrapped[1]["reasoning_content"])
+        self.assertIn(UNMASK_END_TOKEN, wrapped[1]["reasoning_content"])
+
+        # Verify the user message is unchanged
+        self.assertEqual(wrapped[0]["content"], "What is 5*7?")
+        self.assertNotIn("reasoning_content", wrapped[0])
+
+    def test_unmask_sample_with_reasoning_content(self):
+        """Test that unmask_sample correctly processes samples with reasoning_content."""
+        sample = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Explain photosynthesis.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Photosynthesis is the process by which plants make food.",
+                    "reasoning_content": "I need to explain photosynthesis in simple terms.",
+                },
+            ]
+        }
+
+        result = unmask_sample(sample, self.mock_tokenizer)
+
+        # Check that result has the expected structure
+        self.assertIsInstance(result, dict)
+        self.assertIn("input_ids", result)
+        self.assertIn("labels", result)
+        self.assertIn("len", result)
+
+    def test_unmask_sample_with_unmask_flag(self):
+        """Test that unmask_sample correctly handles the unmask flag."""
+        sample = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Hello",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Hi",
+                    "reasoning_content": "Simple greeting",
+                },
+            ],
+            "unmask": True,
+        }
+
+        result = unmask_sample(sample, self.mock_tokenizer)
+
+        # Check that result has the expected structure
+        self.assertIsInstance(result, dict)
+        self.assertIn("input_ids", result)
+        self.assertIn("labels", result)
+        self.assertIn("len", result)
+
+
+@unittest.skipUnless(TRANSFORMERS_AVAILABLE, "transformers library not available")
+class TestReasoningContentWithRealTokenizers(unittest.TestCase):
+    """Test reasoning_content functionality with real tokenizers."""
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest not available")
+    def test_with_qwen_tokenizer(self):
+        """Test reasoning_content functionality with Qwen3-32B tokenizer."""
+        try:
+            # Use a smaller Qwen model that's more readily available
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+        except Exception as e:
+            self.skipTest(f"Qwen tokenizer not available: {e}")
+
+        # Add the unmask tokens to the tokenizer
+        tokenizer.add_special_tokens(
+            {
+                "additional_special_tokens": [
+                    UNMASK_BEGIN_TOKEN,
+                    UNMASK_END_TOKEN,
+                    MASK_TOKEN,
+                ]
+            }
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": "What is 2+2?",
+            },
+            {
+                "role": "assistant",
+                "content": "4",
+                "reasoning_content": "I need to add 2 and 2, which equals 4.",
+            },
+        ]
+
+        # Test wrap_masked_messages
+        wrapped = wrap_masked_messages(messages, ["assistant"])
+
+        # Verify that both content and reasoning_content are wrapped
+        self.assertIn(UNMASK_BEGIN_TOKEN, wrapped[1]["content"])
+        self.assertIn(UNMASK_END_TOKEN, wrapped[1]["content"])
+        self.assertIn(UNMASK_BEGIN_TOKEN, wrapped[1]["reasoning_content"])
+        self.assertIn(UNMASK_END_TOKEN, wrapped[1]["reasoning_content"])
+
+        # Test unmask_messages
+        result = unmask_messages(messages, tokenizer, ["assistant"])
+
+        # Verify the result structure
+        self.assertIsInstance(result, dict)
+        self.assertIn("input_ids", result)
+        self.assertIn("labels", result)
+        self.assertIn("len", result)
+
+        # Verify that special tokens are not in the final output
+        unmask_begin_id = tokenizer.encode(
+            UNMASK_BEGIN_TOKEN, add_special_tokens=False
+        )[0]
+        unmask_end_id = tokenizer.encode(UNMASK_END_TOKEN, add_special_tokens=False)[0]
+
+        self.assertNotIn(unmask_begin_id, result["input_ids"])
+        self.assertNotIn(unmask_end_id, result["input_ids"])
+
+    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest not available")
+    def test_with_mistral_tokenizer(self):
+        """Test reasoning_content functionality with Mistral tokenizer."""
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                "mistralai/Mistral-7B-Instruct-v0.1"
+            )
+        except Exception as e:
+            self.skipTest(f"Mistral tokenizer not available: {e}")
+
+        # Add the unmask tokens to the tokenizer
+        tokenizer.add_special_tokens(
+            {
+                "additional_special_tokens": [
+                    UNMASK_BEGIN_TOKEN,
+                    UNMASK_END_TOKEN,
+                    MASK_TOKEN,
+                ]
+            }
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "content": "Calculate 5*6",
+            },
+            {
+                "role": "assistant",
+                "content": "30",
+                "reasoning_content": "5 multiplied by 6 equals 30.",
+            },
+        ]
+
+        # Test the full pipeline
+        result = unmask_messages(messages, tokenizer, ["assistant"])
+
+        # Verify the result structure and content
+        self.assertIsInstance(result, dict)
+        self.assertIn("input_ids", result)
+        self.assertIn("labels", result)
+        self.assertIn("len", result)
+        self.assertGreater(len(result["input_ids"]), 0)
+        self.assertEqual(len(result["input_ids"]), len(result["labels"]))
+
+    def test_edge_cases_with_reasoning_content(self):
+        """Test edge cases for reasoning_content functionality."""
+        # Test empty reasoning_content
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Response",
+                "reasoning_content": "",
+            }
+        ]
+
+        wrapped = wrap_masked_messages(messages, ["assistant"])
+        self.assertEqual(
+            wrapped[0]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}{UNMASK_END_TOKEN}",
+        )
+
+        # Test only reasoning_content without content
+        messages = [
+            {
+                "role": "assistant",
+                "reasoning_content": "Thinking process",
+            }
+        ]
+
+        wrapped = wrap_masked_messages(messages, ["assistant"])
+        self.assertNotIn("content", wrapped[0])
+        self.assertEqual(
+            wrapped[0]["reasoning_content"],
+            f"{UNMASK_BEGIN_TOKEN}Thinking process{UNMASK_END_TOKEN}",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
