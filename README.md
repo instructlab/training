@@ -102,6 +102,8 @@ The library now supports an optional `reasoning_content` field in addition to th
 - Supporting models that need to generate internal reasoning traces
 - Enabling step-by-step reasoning in model responses
 
+> **Note**: this is only supported for models with chat templates that use the DeepSeek R1-style parser. Models without a custom thought processor such as Phi-4 must still provide their reasoning traces in the `content` field.
+
 **Example message structure with reasoning content:**
 
 ```json
@@ -137,7 +139,11 @@ The library now supports an optional `reasoning_content` field in addition to th
 }
 ```
 
-Both `content` and `reasoning_content` fields are processed during training according to the unmasking rules specified by the unmask_roles parameter. When a message role is included in unmask_roles, both fields (if present) will be unmasked for training.
+#### Important Notes
+
+1. **Automatic reasoning content processing**: If `reasoning_content` exists in a message, it will always be processed and unmasked as long as the message role is targeted for unmasking. This ensures that reasoning traces are properly included in the training data.
+
+2. **DeepSeek R1 Thinking Compatibility**: Models using the DeepSeek R1 thought processor (such as Qwen3) must supply their thinking traces in the `reasoning_content` field to be processed correctly. Failure to do so may result in improper handling of reasoning tokens and suboptimal training performance.
 
 ## Documentation
 
