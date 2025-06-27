@@ -21,6 +21,7 @@ from instructlab.training.data_process import (
     UNMASK_REASONING_BEGIN_TOKEN,
     UNMASK_REASONING_END_TOKEN,
     unmask_messages,
+    unmask_sample,
     wrap_masked_messages,
 )
 from instructlab.training.type_definitions import Message
@@ -472,6 +473,525 @@ class TestErrorConditions:
             RuntimeError, match="unmasking finished but not all messages were processed"
         ):
             unmask_messages(messages, mock_tokenizer, ["assistant"])
+
+
+class TestRealTokenizersUnmaskBehavior:
+    """Test suite for validating unmask behavior with real tokenizers."""
+
+    @pytest.fixture(
+        scope="class", params=["Qwen/Qwen3-32B", "ibm-granite/granite-3.1-8b-instruct"]
+    )
+    def real_tokenizer(self, request):
+        """Load real tokenizers for comprehensive testing."""
+        try:
+            # Add environment variable for testing without downloading
+            os.environ["TRANSFORMERS_OFFLINE"] = "0"
+
+            tokenizer = AutoTokenizer.from_pretrained(request.param, cache_dir=".cache")
+
+            # Add the special unmask tokens
+            tokenizer.add_special_tokens(
+                {
+                    "additional_special_tokens": [
+                        UNMASK_BEGIN_TOKEN,
+                        UNMASK_END_TOKEN,
+                        UNMASK_REASONING_BEGIN_TOKEN,
+                        UNMASK_REASONING_END_TOKEN,
+                    ]
+                }
+            )
+
+            # Store the model name for test identification
+            tokenizer._model_name = request.param
+
+            return tokenizer
+        except Exception as e:
+            pytest.skip(f"Could not load tokenizer {request.param}: {e}")
+
+    @pytest.fixture
+    def sample_unmask_true(self):
+        """Sample with unmask: True - should unmask user and assistant, but not system."""
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an AI language model developed by IBM Research. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.",
+                },
+                {
+                    "role": "user",
+                    "content": 'For the word "dream", give an example of a word that rhymes with it and its synonym.',
+                },
+                {
+                    "role": "assistant",
+                    "content": 'Here\'s an example for "dream" that includes a word that rhymes with it and a synonym:\n1. Word that rhymes with "dream": "beam"\nSynonym: "ideal"',
+                },
+            ],
+            "unmask": True,
+        }
+
+    @pytest.fixture
+    def sample_unmask_false(self):
+        """Sample with unmask: False - should only unmask assistant."""
+        return {
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are an AI language model developed by IBM Research. You are a cautious assistant. You carefully follow instructions. You are helpful and harmless and you follow ethical guidelines and promote positive behavior.",
+                },
+                {
+                    "role": "user",
+                    "content": 'Using the word "grace", come up with a word that rhymes and has the same number of syllables',
+                },
+                {
+                    "role": "assistant",
+                    "content": 'Certainly! Here\'s a word that rhymes with "grace" and has the same number of syllables:\n1. Space',
+                },
+            ],
+            "unmask": False,
+        }
+
+    @pytest.fixture
+    def sample_with_reasoning(self):
+        """Sample with reasoning content."""
+        return {
+            "messages": [
+                {"role": "user", "content": "What is 2+2?"},
+                {
+                    "role": "assistant",
+                    "content": "The answer is 4.",
+                    "reasoning_content": "I need to add 2 and 2 together. 2 + 2 = 4.",
+                },
+            ],
+            "unmask": False,
+        }
+
+    @pytest.mark.slow
+    def test_unmask_sample_with_unmask_true(self, real_tokenizer, sample_unmask_true):
+        """Test that unmask: True correctly unmasks user and assistant but not system."""
+        result = unmask_sample(sample_unmask_true, real_tokenizer)
+
+        # Basic validation
+        assert "input_ids" in result
+        assert "labels" in result
+        assert "len" in result
+        assert len(result["input_ids"]) == len(result["labels"])
+        assert result["len"] == len(result["input_ids"])
+
+        # Decode the sequences to validate content
+        input_text = real_tokenizer.decode(
+            result["input_ids"], skip_special_tokens=False
+        )
+
+        # Should contain parts of user and assistant content but not system in labels
+        masked_positions = [
+            i for i, label in enumerate(result["labels"]) if label == -100
+        ]
+        unmasked_positions = [
+            i for i, label in enumerate(result["labels"]) if label != -100
+        ]
+
+        # Must have both masked and unmasked tokens
+        assert len(masked_positions) > 0, (
+            f"Expected some masked tokens for {real_tokenizer._model_name}"
+        )
+        assert len(unmasked_positions) > 0, (
+            f"Expected some unmasked tokens for {real_tokenizer._model_name}"
+        )
+
+        # Verify that unmasked tokens match input_ids
+        for pos in unmasked_positions:
+            assert result["labels"][pos] == result["input_ids"][pos], (
+                f"Unmasked position {pos} should have matching label and input_id"
+            )
+
+        # Check that unmask tokens are not present in final output
+        assert UNMASK_BEGIN_TOKEN.encode() not in input_text.encode()
+        assert UNMASK_END_TOKEN.encode() not in input_text.encode()
+
+        print(f"\n=== {real_tokenizer._model_name} - UNMASK: TRUE ===")
+        print(f"Input text: {input_text}")
+        print(f"Total tokens: {len(result['input_ids'])}")
+        print(f"Masked tokens: {len(masked_positions)}")
+        print(f"Unmasked tokens: {len(unmasked_positions)}")
+
+        # Create a visual representation of masking
+        visual_labels = []
+        for i, (token_id, label) in enumerate(
+            zip(result["input_ids"], result["labels"])
+        ):
+            token_text = real_tokenizer.decode([token_id])
+            if label == -100:
+                visual_labels.append("<|MASK|>")
+            else:
+                visual_labels.append(token_text)
+
+        print(f"Visual masking: {''.join(visual_labels)}")
+
+    @pytest.mark.slow
+    def test_unmask_sample_with_unmask_false(self, real_tokenizer, sample_unmask_false):
+        """Test that unmask: False correctly unmasks only assistant."""
+        result = unmask_sample(sample_unmask_false, real_tokenizer)
+
+        # Basic validation
+        assert "input_ids" in result
+        assert "labels" in result
+        assert "len" in result
+        assert len(result["input_ids"]) == len(result["labels"])
+        assert result["len"] == len(result["input_ids"])
+
+        # Decode the sequences to validate content
+        input_text = real_tokenizer.decode(
+            result["input_ids"], skip_special_tokens=False
+        )
+
+        # Should have more masked tokens than unmask=True case since only assistant is unmasked
+        masked_positions = [
+            i for i, label in enumerate(result["labels"]) if label == -100
+        ]
+        unmasked_positions = [
+            i for i, label in enumerate(result["labels"]) if label != -100
+        ]
+
+        # Must have both masked and unmasked tokens
+        assert len(masked_positions) > 0, (
+            f"Expected some masked tokens for {real_tokenizer._model_name}"
+        )
+        assert len(unmasked_positions) > 0, (
+            f"Expected some unmasked tokens for {real_tokenizer._model_name}"
+        )
+
+        # Verify that unmasked tokens match input_ids
+        for pos in unmasked_positions:
+            assert result["labels"][pos] == result["input_ids"][pos], (
+                f"Unmasked position {pos} should have matching label and input_id"
+            )
+
+        # Check that unmask tokens are not present in final output
+        assert UNMASK_BEGIN_TOKEN.encode() not in input_text.encode()
+        assert UNMASK_END_TOKEN.encode() not in input_text.encode()
+
+        print(f"\n=== {real_tokenizer._model_name} - UNMASK: FALSE ===")
+        print(f"Input text: {input_text}")
+        print(f"Total tokens: {len(result['input_ids'])}")
+        print(f"Masked tokens: {len(masked_positions)}")
+        print(f"Unmasked tokens: {len(unmasked_positions)}")
+
+        # Create a visual representation of masking
+        visual_labels = []
+        for i, (token_id, label) in enumerate(
+            zip(result["input_ids"], result["labels"])
+        ):
+            token_text = real_tokenizer.decode([token_id])
+            if label == -100:
+                visual_labels.append("<|MASK|>")
+            else:
+                visual_labels.append(token_text)
+
+        print(f"Visual masking: {''.join(visual_labels)}")
+
+    @pytest.mark.slow
+    def test_unmask_comparison_between_settings(
+        self, real_tokenizer, sample_unmask_true, sample_unmask_false
+    ):
+        """Test that unmask: True results in fewer masked tokens than unmask: False."""
+        result_true = unmask_sample(sample_unmask_true, real_tokenizer)
+        result_false = unmask_sample(sample_unmask_false, real_tokenizer)
+
+        masked_count_true = sum(1 for label in result_true["labels"] if label == -100)
+        masked_count_false = sum(1 for label in result_false["labels"] if label == -100)
+
+        unmasked_count_true = len(result_true["labels"]) - masked_count_true
+        unmasked_count_false = len(result_false["labels"]) - masked_count_false
+
+        # unmask: True should have more unmasked tokens (user + assistant vs just assistant)
+        assert unmasked_count_true > unmasked_count_false, (
+            f"unmask: True should unmask more tokens than unmask: False for {real_tokenizer._model_name}"
+        )
+
+    @pytest.mark.slow
+    def test_unmask_with_reasoning_content(self, real_tokenizer, sample_with_reasoning):
+        """Test that reasoning content is properly handled."""
+        result = unmask_sample(sample_with_reasoning, real_tokenizer)
+
+        # Basic validation
+        assert "input_ids" in result
+        assert "labels" in result
+        assert "len" in result
+        assert len(result["input_ids"]) == len(result["labels"])
+
+        # Should have processed both content and reasoning_content
+        unmasked_positions = [
+            i for i, label in enumerate(result["labels"]) if label != -100
+        ]
+        assert len(unmasked_positions) > 0, (
+            "Should have unmasked tokens from assistant content and reasoning"
+        )
+
+        # Decode to see the result
+        input_text = real_tokenizer.decode(
+            result["input_ids"], skip_special_tokens=False
+        )
+        print(f"\n=== {real_tokenizer._model_name} - WITH REASONING ===")
+        print(f"Input text: {input_text}")
+        print(f"Total tokens: {len(result['input_ids'])}")
+        print(f"Unmasked tokens: {len(unmasked_positions)}")
+
+    def test_token_id_consistency(self, real_tokenizer, sample_unmask_true):
+        """Test that token IDs are consistent and valid."""
+        result = unmask_sample(sample_unmask_true, real_tokenizer)
+
+        # All input_ids should be valid token IDs
+        for token_id in result["input_ids"]:
+            assert isinstance(token_id, int), "All token IDs should be integers"
+            assert 0 <= token_id < len(real_tokenizer), (
+                "Token IDs should be within vocabulary range"
+            )
+
+        # All non-masked labels should match their corresponding input_ids
+        for i, (input_id, label) in enumerate(
+            zip(result["input_ids"], result["labels"])
+        ):
+            if label != -100:
+                assert label == input_id, (
+                    f"Position {i}: label {label} should match input_id {input_id}"
+                )
+
+        # Verify we can decode all tokens
+        decoded_text = real_tokenizer.decode(result["input_ids"])
+        assert isinstance(decoded_text, str), (
+            "Should be able to decode all tokens to string"
+        )
+        assert len(decoded_text) > 0, "Decoded text should not be empty"
+
+    def test_special_tokens_removed_from_output(
+        self, real_tokenizer, sample_unmask_true
+    ):
+        """Test that special unmask tokens are properly removed from final output."""
+        result = unmask_sample(sample_unmask_true, real_tokenizer)
+
+        # Get token IDs for special tokens
+        unmask_begin_id = real_tokenizer.encode(
+            UNMASK_BEGIN_TOKEN, add_special_tokens=False
+        )[0]
+        unmask_end_id = real_tokenizer.encode(
+            UNMASK_END_TOKEN, add_special_tokens=False
+        )[0]
+        unmask_reasoning_begin_id = real_tokenizer.encode(
+            UNMASK_REASONING_BEGIN_TOKEN, add_special_tokens=False
+        )[0]
+        unmask_reasoning_end_id = real_tokenizer.encode(
+            UNMASK_REASONING_END_TOKEN, add_special_tokens=False
+        )[0]
+
+        # None of these should appear in final output
+        assert unmask_begin_id not in result["input_ids"], (
+            "UNMASK_BEGIN_TOKEN should not be in final input_ids"
+        )
+        assert unmask_end_id not in result["input_ids"], (
+            "UNMASK_END_TOKEN should not be in final input_ids"
+        )
+        assert unmask_reasoning_begin_id not in result["input_ids"], (
+            "UNMASK_REASONING_BEGIN_TOKEN should not be in final input_ids"
+        )
+        assert unmask_reasoning_end_id not in result["input_ids"], (
+            "UNMASK_REASONING_END_TOKEN should not be in final input_ids"
+        )
+
+        # Same for labels
+        assert unmask_begin_id not in result["labels"], (
+            "UNMASK_BEGIN_TOKEN should not be in final labels"
+        )
+        assert unmask_end_id not in result["labels"], (
+            "UNMASK_END_TOKEN should not be in final labels"
+        )
+        assert unmask_reasoning_begin_id not in result["labels"], (
+            "UNMASK_REASONING_BEGIN_TOKEN should not be in final labels"
+        )
+        assert unmask_reasoning_end_id not in result["labels"], (
+            "UNMASK_REASONING_END_TOKEN should not be in final labels"
+        )
+
+    def test_reproducibility(self, real_tokenizer, sample_unmask_true):
+        """Test that the same input produces the same output consistently."""
+        result1 = unmask_sample(sample_unmask_true, real_tokenizer)
+        result2 = unmask_sample(sample_unmask_true, real_tokenizer)
+
+        assert result1["input_ids"] == result2["input_ids"], (
+            "Results should be reproducible"
+        )
+        assert result1["labels"] == result2["labels"], "Results should be reproducible"
+        assert result1["len"] == result2["len"], "Results should be reproducible"
+
+
+class TestUnmaskSampleLogic:
+    """Test the logic of unmask_sample without requiring full tokenizer loading."""
+
+    @pytest.fixture
+    def mock_tokenizer_for_unmask_sample(self):
+        """Create a comprehensive mock tokenizer for testing unmask_sample logic."""
+        tokenizer = Mock()
+
+        # Mock the special token encodings - using unique IDs for each token
+        def mock_encode(text, add_special_tokens=False):
+            token_map = {
+                UNMASK_BEGIN_TOKEN: [1000],
+                UNMASK_END_TOKEN: [1001],
+                UNMASK_REASONING_BEGIN_TOKEN: [1002],
+                UNMASK_REASONING_END_TOKEN: [1003],
+                "<|endoftext|>": [0],
+            }
+            # Return predictable token IDs based on hash for consistent testing
+            return token_map.get(text, [abs(hash(text)) % 500 + 100])
+
+        tokenizer.encode = mock_encode
+        tokenizer.eos_token = "<|endoftext|>"
+
+        # Mock apply_chat_template to return a sequence that represents:
+        # system_tokens + unmask_begin + user_tokens + unmask_end + unmask_begin + assistant_tokens + unmask_end + eos
+        def mock_apply_chat_template(messages, **kwargs):
+            sequence = []
+            for msg in messages:
+                role = msg["role"]
+                content = msg.get("content", "")
+                reasoning_content = msg.get("reasoning_content", "")
+
+                # Add role-specific tokens
+                if role == "system":
+                    sequence.extend([10, 11, 12])  # system role tokens
+                elif role == "user":
+                    sequence.extend([20, 21])  # user role tokens
+                elif role == "assistant":
+                    sequence.extend([30, 31])  # assistant role tokens
+
+                # Add reasoning content if present and wrapped
+                if (
+                    reasoning_content
+                    and UNMASK_REASONING_BEGIN_TOKEN in reasoning_content
+                ):
+                    sequence.append(1002)  # reasoning begin
+                    sequence.extend([250, 251, 252])  # reasoning content tokens
+                    sequence.append(1003)  # reasoning end
+
+                # Add content tokens
+                if content and UNMASK_BEGIN_TOKEN in content:
+                    sequence.append(1000)  # unmask begin
+                    # Add content tokens based on role
+                    if role == "user":
+                        sequence.extend([200, 201, 202])
+                    elif role == "assistant":
+                        sequence.extend([300, 301, 302])
+                    sequence.append(1001)  # unmask end
+                elif content:
+                    # Non-wrapped content
+                    if role == "system":
+                        sequence.extend([100, 101, 102, 103])
+                    elif role == "user":
+                        sequence.extend([200, 201, 202])
+                    elif role == "assistant":
+                        sequence.extend([300, 301, 302])
+
+            sequence.append(0)  # eos token
+            return sequence
+
+        tokenizer.apply_chat_template = mock_apply_chat_template
+        return tokenizer
+
+    def test_unmask_sample_unmask_false_logic(self, mock_tokenizer_for_unmask_sample):
+        """Test unmask: False logic - should only unmask assistant role."""
+        sample = {
+            "messages": [
+                {"role": "system", "content": "System message"},
+                {"role": "user", "content": "User message"},
+                {"role": "assistant", "content": "Assistant message"},
+            ],
+            "unmask": False,
+        }
+
+        result = unmask_sample(sample, mock_tokenizer_for_unmask_sample)
+
+        # Basic validation
+        assert len(result["input_ids"]) == len(result["labels"])
+
+        # Count masked vs unmasked tokens
+        masked_count = sum(1 for label in result["labels"] if label == -100)
+        unmasked_count = len(result["labels"]) - masked_count
+
+        assert masked_count > 0, "Should have some masked tokens"
+        assert unmasked_count > 0, "Should have some unmasked tokens (assistant)"
+
+        # Verify that assistant tokens are unmasked
+        # The mock returns assistant content as tokens [300, 301, 302]
+        assistant_tokens = [300, 301, 302]
+        for token in assistant_tokens:
+            if token in result["input_ids"]:
+                idx = result["input_ids"].index(token)
+                assert result["labels"][idx] == token, (
+                    f"Assistant token {token} should be unmasked"
+                )
+
+    def test_unmask_sample_unmask_true_logic(self, mock_tokenizer_for_unmask_sample):
+        """Test unmask: True logic - should unmask user and assistant, but not system."""
+        sample = {
+            "messages": [
+                {"role": "system", "content": "System message"},
+                {"role": "user", "content": "User message"},
+                {"role": "assistant", "content": "Assistant message"},
+            ],
+            "unmask": True,
+        }
+
+        result = unmask_sample(sample, mock_tokenizer_for_unmask_sample)
+
+        # Basic validation
+        assert len(result["input_ids"]) == len(result["labels"])
+
+        # Count masked vs unmasked tokens
+        masked_count = sum(1 for label in result["labels"] if label == -100)
+        unmasked_count = len(result["labels"]) - masked_count
+
+        assert masked_count > 0, "Should have some masked tokens (system)"
+        assert unmasked_count > 0, "Should have some unmasked tokens (user + assistant)"
+
+        # Verify that both user and assistant tokens are unmasked
+        user_tokens = [200, 201, 202]
+        assistant_tokens = [300, 301, 302]
+
+        for token in user_tokens + assistant_tokens:
+            if token in result["input_ids"]:
+                idx = result["input_ids"].index(token)
+                assert result["labels"][idx] == token, (
+                    f"User/Assistant token {token} should be unmasked"
+                )
+
+    def test_unmask_sample_comparison(self, mock_tokenizer_for_unmask_sample):
+        """Test that unmask: True unmasks more tokens than unmask: False."""
+        sample_base = {
+            "messages": [
+                {"role": "system", "content": "System message"},
+                {"role": "user", "content": "User message"},
+                {"role": "assistant", "content": "Assistant message"},
+            ]
+        }
+
+        sample_false = {**sample_base, "unmask": False}
+        sample_true = {**sample_base, "unmask": True}
+
+        result_false = unmask_sample(sample_false, mock_tokenizer_for_unmask_sample)
+        result_true = unmask_sample(sample_true, mock_tokenizer_for_unmask_sample)
+
+        unmasked_false = sum(1 for label in result_false["labels"] if label != -100)
+        unmasked_true = sum(1 for label in result_true["labels"] if label != -100)
+
+        assert unmasked_true > unmasked_false, (
+            "unmask: True should unmask more tokens than unmask: False"
+        )
+
+        print(f"\nUnmask comparison:")
+        print(f"unmask: False -> {unmasked_false} unmasked tokens")
+        print(f"unmask: True  -> {unmasked_true} unmasked tokens")
+        print(
+            f"Difference: +{unmasked_true - unmasked_false} more tokens unmasked with unmask: True"
+        )
 
 
 if __name__ == "__main__":
