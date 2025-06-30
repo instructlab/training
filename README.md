@@ -14,11 +14,18 @@ The InstructLab Training library is an optimized model instruction-tuning librar
 To simplify the process of fine-tuning models with the [LAB
 method](https://arxiv.org/abs/2403.01081), or for general use, this library provides a simple pythonic training interface.
 
+### Reasoning Content Support
+
+The library now supports reasoning traces through the `reasoning_content` field in message samples. This enables training models that can handle both regular content and structured reasoning traces, making it ideal for training reasoning-capable models that can separate their thinking process from their final output.
+
 ## Usage and Guidance Sections
 
 - [Installing](#installing-the-library)
   - [Additional Nvidia packages](#additional-nvidia-packages)
 - [Using the library](#using-the-library)
+- [Data format](#data-format)
+  - [Reasoning content support](#reasoning-content-support-1)
+- [Documentation](#documentation)
 - [Learning about the training arguments](#learning-about-training-arguments)
   - [`TrainingArgs`](#trainingargs)
   - [`DeepSpeedOptions`](#deepspeedoptions)
@@ -79,6 +86,72 @@ You can then define various training arguments. They will serve as the parameter
 
 - [Learning about the training argument](#learning-about-training-arguments)
 - [Example training run with arguments](#example-training-run-with-arguments)
+
+## Data format
+
+The library expects training data in the messages format, where each sample contains a list of messages with different roles (user, assistant, system, etc.). Each message should have at minimum:
+
+- `role`: The role of the message sender (e.g., "user", "assistant", "system")
+- `content`: The main content of the message
+
+### Reasoning content support
+
+The library now supports an optional `reasoning_content` field in addition to the standard `content` field. This enables training models with structured reasoning traces. The `reasoning_content` field is particularly useful for:
+
+- Training reasoning-capable models that can separate their thinking process from their output
+- Supporting models that need to generate internal reasoning traces
+- Enabling step-by-step reasoning in model responses
+
+> **Note**: this is only supported for models with chat templates that use the DeepSeek R1-style parser. Models without a custom thought processor such as Phi-4 must still provide their reasoning traces in the `content` field.
+
+**Example message structure with reasoning content:**
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "What is 15 * 23?"
+    },
+    {
+      "role": "assistant",
+      "reasoning_content": "I need to multiply 15 by 23. Let me break this down: 15 * 23 = 15 * (20 + 3) = 15 * 20 + 15 * 3 = 300 + 45 = 345",
+      "content": "15 * 23 = 345"
+    }
+  ]
+}
+```
+
+**Standard message structure:**
+
+```json
+{
+  "messages": [
+    {
+      "role": "user", 
+      "content": "Hello! How are you?"
+    },
+    {
+      "role": "assistant",
+      "content": "Hello! I'm doing well, thank you for asking. How can I help you today?"
+    }
+  ]
+}
+```
+
+#### Important Notes
+
+1. **Automatic reasoning content processing**: If `reasoning_content` exists in a message, it will always be processed and unmasked as long as the message role is targeted for unmasking. This ensures that reasoning traces are properly included in the training data.
+
+2. **DeepSeek R1 Thinking Compatibility**: Models using the DeepSeek R1 thought processor (such as Qwen3) must supply their thinking traces in the `reasoning_content` field to be processed correctly. Failure to do so may result in improper handling of reasoning tokens and suboptimal training performance.
+
+## Documentation
+
+For detailed information about specific features:
+
+- **[Reasoning Content Support](docs/reasoning_content.md)**: Comprehensive guide to using the `reasoning_content` field for training reasoning-capable models
+- **[CI Documentation](docs/ci.md)**: Information about continuous integration processes
+- **[Logging Documentation](docs/logging.md)**: Guide to logging configuration and usage
 
 ## Learning about training arguments
 
