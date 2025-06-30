@@ -4,27 +4,12 @@ name: E2E (NVIDIA L40S x4) SDK Test
 
 on:
   # only run on PRs that touch certain regex paths
-  pull_request:
-    branches:
-      - main
-    paths:
-      # note this should match the merging criteria in 'mergify.yml'
-      - "**.py"
-      - "tox.ini"
-      - "pyproject.toml"
-      - "requirements.txt"
-      - "requirements-dev.txt"
-      - "constraints-dev.txt"
-      - ".github/workflows/e2e-nvidia-l40s-x4-sdk.yaml" # This workflow
   workflow_dispatch:
     inputs:
       pr_or_branch:
         description: 'pull request number or branch name'
         required: true
         default: 'main'
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
-  cancel-in-progress: true
 
 env:
   TMPDIR: /home/tmp
