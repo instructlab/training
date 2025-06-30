@@ -29,7 +29,7 @@ runs:
       run: |
         cat /etc/os-release
         mkdir -p "${TMPDIR}"
-        sudo dnf install -y gcc gcc-c++ make git python${{ inputs.python-version }} python${{ inputs.python-version }}-devel
+        sudo dnf install -y gcc gcc-c++ make git-core python${{ inputs.python-version }} python${{ inputs.python-version }}-devel
 
     - name: Checkout instructlab/instructlab
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
