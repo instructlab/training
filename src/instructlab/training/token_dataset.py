@@ -13,6 +13,7 @@ import torch
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
 from instructlab.training.utils import log_rank_0, make_collate_fn
 
+from instructlab.training.hpu_utils import bucket
 
 class TokenDataset(Dataset):
     def __init__(self, data_path):
@@ -96,15 +97,21 @@ def setup_dataloader(
     samples_per_gpu=None,
     sampler="multipack",
     seed=47,
+    device=None,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
-        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len
+        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len,
+        device=device,
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
     lengths = dataset.get_lengths()
     if sampler == "multipack":
+        if device == "hpu":
+            bucket_v = np.vectorize(bucket)
+            lengths = bucket_v(lengths)
+
         sampler = MultipackDistributedBatchSampler(
             batch_max_length=packing_max_batch_len,
             lengths=lengths,
