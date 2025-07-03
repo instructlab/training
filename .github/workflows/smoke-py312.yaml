@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
-name: "Run smoke tests via Tox::pytest (python 3.11)"
+name: "Run smoke tests via Tox::pytest (python 3.12)"
 # These tests will be long running and require accelerated hardware.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      branch:
+        type: string
+        default: main
   # using this rather than pull_request because this workflow
   # needs to run in the context of the base branch (main) and
   # access the repo's secrets to start the AWS instances.
@@ -107,18 +111,12 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
-
-      - name: "Fetch and checkout PR"
-        # Needed because this workflow runs on pull_request_target which runs on the base branch (e.g. main)
-        if: ${{ github.event_name == 'pull_request_target'}}
-        run: |
-          git fetch origin pull/${{ github.event.number }}/head:pr-${{ github.event.number }}
-          git checkout pr-${{ github.event.number }}
+          ref: ${{inputs.branch}}
 
       - name: Run smoke tests
         uses: ./.github/actions/run-smoke
         with:
-          python-version: 3.11
+          python-version: 3.12
 
   stop-large-ec2-runner:
     needs:
