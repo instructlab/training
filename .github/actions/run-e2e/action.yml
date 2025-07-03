@@ -1,0 +1,230 @@
+name: 'Run e2e tests'
+description: 'Runs e2e tests'
+inputs:
+  python-version:
+    required: true
+    description: >-
+      Python version to use. Must be in the form of "3.xx".
+  gh-token:
+    required: true
+    description: >-
+      GitHub token to use for authentication.
+  hf-token:
+    required: true
+    description: >-
+      Hugging Face token to use for authentication.
+  openai-api-key:
+    required: true
+    description: >-
+      OpenAI API key to use for authentication.
+  son-of-jeeves-discord-webhook:
+    required: true
+    description: >-
+      Son of Jeeves webhook (Discord).
+runs:
+  using: "composite"
+  steps:
+    - name: Install Packages
+      shell: bash
+      run: |
+        cat /etc/os-release
+        mkdir -p "${TMPDIR}"
+        sudo dnf install -y gcc gcc-c++ make git python${{ inputs.python-version }} python${{ inputs.python-version }}-devel
+
+    - name: Checkout instructlab/instructlab
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        repository: "instructlab/instructlab"
+        path: "instructlab"
+          # https://github.com/actions/checkout/issues/249
+        fetch-depth: 0
+
+    - name: Determine if pr_or_branch is a PR number
+      id: check_pr
+      shell: bash
+      run: |
+        PR_OR_BRANCH=${{ github.event.inputs.pr_or_branch || 'main' }} # Default to 'main' if not set
+        if [[ "$PR_OR_BRANCH" =~ ^[0-9]+$ ]]; then
+        echo "is_pr=true" >> "$GITHUB_OUTPUT"
+        else
+        echo "is_pr=false" >> "$GITHUB_OUTPUT"
+        fi
+        echo "pr_or_branch=$PR_OR_BRANCH" >> "$GITHUB_OUTPUT"
+
+    - name: Check if gh cli is installed
+      id: gh_cli
+      shell: bash
+      run: |
+        if command -v gh &> /dev/null ; then
+        echo "gh_cli_installed=true" >> "$GITHUB_OUTPUT"
+        else
+        echo "gh_cli_installed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Install gh CLI
+      if: steps.gh_cli.outputs.gh_cli_installed == 'false'
+      shell: bash
+      run: |
+        sudo dnf install 'dnf-command(config-manager)' -y
+        sudo dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+        sudo dnf install gh --repo gh-cli -y
+
+    - name: test gh CLI
+      shell: bash
+      run: |
+        gh --version
+
+    - name: set default repo
+      working-directory: ./training
+      shell: bash
+      run: |
+        gh repo set-default ${{ github.server_url }}/${{ github.repository }}
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+
+    - name: Add comment to PR
+      if: steps.check_pr.outputs.is_pr == 'true'
+      working-directory: ./training
+      shell: bash
+      run: |
+        gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "${{ github.workflow }} workflow launched on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+
+    - name: Fetch and checkout PR
+      if: steps.check_pr.outputs.is_pr == 'true'
+      working-directory: ./training
+      shell: bash
+      run: |
+        gh pr checkout ${{ steps.check_pr.outputs.pr_or_branch }}
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+
+    - name: Checkout branch
+      if: steps.check_pr.outputs.is_pr == 'false'
+      working-directory: ./training
+      shell: bash
+      run: |
+        git checkout ${{ steps.check_pr.outputs.pr_or_branch }}
+
+    - name: Install ilab
+      working-directory: ./instructlab
+      shell: bash
+      run: |
+        PYTHON=python${{ inputs.python-version }} ./scripts/install-ilab-with-cuda.sh
+
+    - name: Update instructlab-training library
+      working-directory: ./training
+      shell: bash
+      run: |
+        . ../instructlab/venv/bin/activate
+
+        # Patch out our own pin from the ilab repo constraints file
+        ilab_constraints=../instructlab/constraints-dev.txt
+        sed -i '/instructlab-training==/d' $ilab_constraints
+
+        # Since we reuse the virtual environment prepared using ilab
+        # constraints, we should stick to the same constraints when
+        # installing latest training.
+        #
+        # FIX: this is not ideal; a proper fix would require decoupling the
+        # two repos in CI: either by removing the job completely and relying
+        # on "sdk" (no ilab) test runs; or by preparing a separate
+        # constraints file that would consider both the requirements files
+        # for the training library AND for the ilab - so that they are
+        # consistent.
+        pip_install="pip install -c $ilab_constraints"
+        $pip_install .
+        $pip_install .[cuda]
+
+    - name: Check disk before tests
+      if: always()
+      shell: bash
+      run: |
+        df -h
+
+    - name: Run e2e test
+      working-directory: ./instructlab
+      env:
+        HF_TOKEN: ${{ inputs.hf-token }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+      shell: bash
+      run: |
+        . venv/bin/activate
+
+        # set preserve to true so we can retain the logs
+        ./scripts/e2e-ci.sh -lp
+
+        # we know that the file will be named something like f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl" in python
+        # and we know that it will be written into a directory created by `mktemp -d`. 
+        # Given this information, we can use the following command to find the file:
+        log_files=$(find /tmp/ -name "training_params_and_metrics_global0.jsonl")
+        phase_num=1;
+        for log_file in $log_files; do
+        mv "${log_file}" phase-${phase_num}-training-log.jsonl
+        ((phase_num++))
+        done
+
+    - name: Check disk after tests
+      if: always()
+      shell: bash
+      run: |
+        df -h
+
+    - name: Upload training logs Phase 1
+      uses: actions/upload-artifact@v4
+      with:
+        name: phase-1-training-log.jsonl
+        path: ./instructlab/phase-1-training-log.jsonl
+        retention-days: 1
+        overwrite: true
+
+    - name: Upload training logs Phase 2
+      uses: actions/upload-artifact@v4
+      with:
+        name: phase-2-training-log.jsonl
+        path: ./instructlab/phase-2-training-log.jsonl
+        retention-days: 1
+        overwrite: true
+
+    - name: Add comment to PR if the workflow failed
+      if: failure() && steps.check_pr.outputs.is_pr == 'true'
+      working-directory: ./training
+      shell: bash
+      run: |
+        gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "e2e workflow failed on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), please investigate."
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+
+    - name: Add comment to PR if the workflow succeeded
+      if: success() && steps.check_pr.outputs.is_pr == 'true'
+      working-directory: ./training
+      shell: bash
+      run: |
+        gh pr comment "${{ steps.check_pr.outputs.pr_or_branch }}" -b "e2e workflow succeeded on this PR: [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}), congrats!"
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+
+    - name: Send Discord notification for failure
+      if: failure() && steps.check_pr.outputs.is_pr == 'false'
+      uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008 # v1.15.3
+      with:
+        webhook: ${{ inputs.son-of-jeeves-discord-webhook }}
+        status: ${{ job.status }}
+        title: "e2e-nvidia-l40s-x4"
+        description: |
+          Job in **${{ github.repository }}** running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed **with failures** ❌
+          Click [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) to view details.
+        color: 0xCB2431 # Red color for failure
+
+    - name: Send Discord notification for success
+      if: success() && steps.check_pr.outputs.is_pr == 'false'
+      uses: sarisia/actions-status-discord@5ddd3b114a98457dd80a39b2f00b6a998cd69008 # v1.15.3
+      with:
+        webhook: ${{ inputs.son-of-jeeves-discord-webhook }}
+        status: ${{ job.status }}
+        title: "e2e-nvidia-l40s-x4"
+        description: |
+          Job in **${{ github.repository }}** running on branch `${{ steps.check_pr.outputs.pr_or_branch }}` completed **successfully** ✅
+          Click [here](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) to view details.
+        color: 0x28A745 # Green color for success

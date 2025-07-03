@@ -20,6 +20,7 @@ on:
       - "pyproject.toml"
       - "requirements.txt"
       - "requirements-dev.txt"
+      - "constraints-dev.txt"
       - ".github/workflows/unit.yaml" # This workflow
 
 concurrency:
@@ -51,13 +52,8 @@ jobs:
     # untrusted code from PRs.
     permissions: {}
     steps:
-      - name: "Harden runner"
-        uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.10.1
-        with:
-          egress-policy: audit
-
       - name: Setup Python ${{ matrix.python }}
-        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.5.0
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "${{ matrix.python }}"
 
@@ -72,9 +68,10 @@ jobs:
         run: |
           python -m venv --upgrade-deps venv
           . venv/bin/activate
-          pip install tox
+          pip install tox -c constraints-dev.txt
 
       - name: "Show disk utilization BEFORE tests"
+        if: always()
         run: |
           df -h
 
@@ -84,5 +81,6 @@ jobs:
           tox -e py3-unit
 
       - name: "Show disk utilization AFTER tests"
+        if: always()
         run: |
           df -h
