@@ -16,6 +16,7 @@ env:
 
 jobs:
   start-large-ec2-runner:
+    if: github.repository_owner == 'instructlab'
     runs-on: ubuntu-latest
     outputs:
       label: ${{ steps.launch-ec2-instance-with-fallback.outputs.label }}
@@ -185,7 +186,7 @@ jobs:
       - start-large-ec2-runner
       - e2e-medium-test
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    if: ${{ always() && github.repository_owner == 'instructlab' }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
@@ -206,7 +207,7 @@ jobs:
     needs:
       - stop-large-ec2-runner
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    if: ${{ always() && github.repository_owner == 'instructlab' }}
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
