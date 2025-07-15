@@ -3,9 +3,11 @@
 # Standard
 from functools import partial
 from pathlib import Path
+import logging
 import os
 import time
 import typing as t
+import warnings
 
 # Third Party
 from datasets import Dataset, load_dataset
@@ -15,14 +17,19 @@ import regex as re
 
 # First Party
 from instructlab.training.config import DataProcessArgs
+from instructlab.training.logger import setup_root_logger
 from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
-from instructlab.training.utils import log_rank_0, retrieve_chat_template, setup_logger
+from instructlab.training.utils import log_rank_0, retrieve_chat_template
 
 # Constants
 MASK_TOKEN = "<|MASK|>"
 UNMASK_BEGIN_TOKEN = "<|UNMASK_BEGIN|>"
 UNMASK_END_TOKEN = "<|UNMASK_END|>"
+UNMASK_REASONING_BEGIN_TOKEN = "<|UNMASK_REASONING_BEGIN|>"
+UNMASK_REASONING_END_TOKEN = "<|UNMASK_REASONING_END|>"
+
+logger = logging.getLogger(__name__)
 
 
 def check_valid_sample(
@@ -34,6 +41,7 @@ def check_valid_sample(
     eos_tk: list[int],
     max_len: int = 1024,
 ):
+    # pylint: disable=unused-argument
     if len(whole_sentence_tk) >= max_len or len(whole_sentence_tk) < 20:
         return False
     # last token should be eos_token
@@ -191,9 +199,9 @@ def unmask_message_content(
     for i in range(len(final_sentence_tk)):
         for seq in special_sequences:
             if final_sentence_tk[i : i + len(seq)] == seq:
-                assert all(
-                    final_labels[i + j] == -100 for j in range(len(seq))
-                ), f"Special sequence {seq} is unmasked"
+                assert all(final_labels[i + j] == -100 for j in range(len(seq))), (
+                    f"Special sequence {seq} is unmasked"
+                )
 
     # 2. No pretrain tokens should be in the final sentence_tk
     assert all(
@@ -238,8 +246,7 @@ def print_masked_samples(data, tokenizer, unmask, num_proc):
 def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     if not os.path.exists(args.data_output_path):
         os.makedirs(args.data_output_path, exist_ok=True)
-    print("\033[92m data arguments are:\033[0m")
-    print("\033[36m" + args.model_dump_json() + "\033[0m")
+    logger.info("Data arguments are: %s", args.model_dump_json())
     NUM_PROC = args.num_cpu_procs
 
     _, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
@@ -304,7 +311,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
             "The provided dataset is empty, please make sure that your dataset contains samples and try again."
         )
 
-    print(f"\033[92mtokenizing the dataset with {args.model_path} tokenizer...\033[0m")
+    logger.info("Tokenizing the dataset with %s tokenizer...", args.model_path)
     data_with_input_ids = data.map(
         lambda x: {
             "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True),
@@ -314,7 +321,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         desc="Tokenizing the dataset",
     )
 
-    print("\033[38;2;255;165;0mten largest length percentiles:")
+    logger.info("Calculating length of tokenized samples")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
             "len": len(x["input_ids"]),
@@ -325,14 +332,15 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     lens = np.array(data_with_input_ids["len"])
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90 + i * 1}th: {q}")
-    print("\033[0m")
+        logger.info("quantile %dth: %d", 90 + i, q)
 
     num_dropped_samples = np.sum(lens > args.max_seq_len)
-    print(
-        f"\033[36mat {args.max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at %d max sequence length, the number of samples to be dropped is %d",
+        args.max_seq_len,
+        num_dropped_samples,
     )
-    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    logger.info("({:.2f}% of total)", ((num_dropped_samples / len(lens)) * 100))
     if num_dropped_samples == len(data):
         raise RuntimeError(
             f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
@@ -340,13 +348,14 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
-        print(f"quantile {i}th: {q}")
+        logger.info("quantile %dth: %d", i, q)
     num_dropped_samples = np.sum(lens < 20)
-    print(
-        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at 20 min sequence length, the number of samples to be dropped is %d",
+        num_dropped_samples,
     )
     # from ipdb import set_trace; set_trace()
-    print("\033[92mchecking the validity of the samples...\033[0m")
+    logger.info("checking the validity of the samples...")
     data_with_input_ids = data_with_input_ids.filter(
         lambda x: check_valid_sample(
             tokenizer,
@@ -361,10 +370,12 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         desc="Checking the validity of the samples",
     )
     log_rank_0(
-        f"\033[33mnumber of dropped samples: {len(data) - len(data_with_input_ids)} -- out of {len(data)}\033[0m"
+        "number of dropped samples: %d -- out of %d",
+        len(data) - len(data_with_input_ids),
+        len(data),
     )
 
-    print("\033[92mCategorizing training data type...\033[0m")
+    logger.info("Categorizing training data type...")
     data_with_input_ids = data_with_input_ids.map(
         lambda x: {
             "unmask": (
@@ -385,15 +396,14 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>")[0],
         tool_resp_tokens=tool_resp_tk,
     )
-    print("\033[92munmasking the appropriate message content...\033[0m")
+    logger.info("Unmasking the appropriate message content...")
     data_with_labels = data_with_input_ids.map(
         _prefill_unmask_message_content,
         num_proc=NUM_PROC,
         desc="Unmasking the appropriate message content",
     )
 
-    print("\033[92m Samples Previews...\033[0m")
-    print("\033[92m \n \033[0m")
+    logger.info("Samples Previews...")
     print_masked_samples(
         data_with_labels,
         tokenizer,
@@ -418,8 +428,10 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     # Dropping samples that could break training due to oob ids
     if len(final_valid_data) < len(data_with_labels):
         dropped_samples = len(data_with_labels) - len(final_valid_data)
-        print(
-            f"\033[93mWarning: {dropped_samples} samples were dropped because they contained token IDs greater than or equal to {max_id}.\033[0m"
+        logger.warning(
+            "Warning: %d samples were dropped because they contained token IDs greater than or equal to %d.",
+            dropped_samples,
+            max_id,
         )
     # use path to get the stem of the file
     final_valid_data.to_json(
@@ -429,26 +441,74 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
 
 def wrap_masked_messages(
-    msgs: t.List[Message], unmask_roles: t.List[str]
+    msgs: t.List[Message],
+    unmask_roles: t.List[str],
+    enable_reasoning_content: bool = False,
 ) -> t.List[Message]:
     """
     Given a list of messages and a set of roles we want to unmask, return
-    a list with the matching messages wrapped with `<|UNMASK_BEGIN|>` and `<|UNMASK_END|>` tokens
-    wrapped around the `message.content` field.
+    a list with the matching messages wrapped with unmask tokens.
 
     Args:
         msgs (List[Message]): List of messages we want to wrap with unmask tokens.
         unmask_roles (List[str]): The roles whose messages we should wrap.
+        enable_reasoning_content (bool): Whether to wrap reasoning_content fields.
+            When True, reasoning_content is wrapped with UNMASK_REASONING_BEGIN/END tokens.
+            When False, reasoning_content is left unchanged.
 
     Returns:
         List[Message]: The resultant list with all appropriate messages wrapped.
+
+    Note:
+        The `content` field is wrapped with UNMASK_BEGIN/END tokens.
+        The `reasoning_content` field (if present and enable_reasoning_content=True)
+        is wrapped with UNMASK_REASONING_BEGIN/END tokens.
     """
     new_msgs: t.List[Message] = []
     for msg in msgs:
-        content = msg["content"]
-        if msg["role"] in unmask_roles:
-            content = UNMASK_BEGIN_TOKEN + content + UNMASK_END_TOKEN
-        new_msgs.append({"role": msg["role"], "content": content})
+        if msg["role"] not in unmask_roles:
+            # do nothing
+            new_msgs += [msg]
+            continue
+
+        # here, we need to be on the lookout for both string and non-string
+        # entries (e.g. other content types, or pure reasoning traces)
+        interesting_fields = ["content", "reasoning_content"]
+        new_msg = {k: v for k, v in msg.items() if k not in interesting_fields}
+
+        # what's left to add then is content or reasoning_content
+        content = msg.get("content", None)
+        reasoning_content = msg.get("reasoning_content", None)
+
+        # we handle these conditionally since these may become optional fields in the future.
+        if content is not None:
+            if not isinstance(content, str):
+                raise ValueError(
+                    "Error: unmasking non-string data types is currently unsupported. "
+                )
+            new_msg["content"] = UNMASK_BEGIN_TOKEN + content + UNMASK_END_TOKEN
+
+        if reasoning_content is not None:
+            if enable_reasoning_content:
+                if not isinstance(reasoning_content, str):
+                    raise ValueError(
+                        "Error: received an entry for `reasoning_content` which was not a string. "
+                        "Non-string datatypes for this field are currently unsupported, if this is intentional please raise an issue."
+                    )
+
+                new_msg["reasoning_content"] = (
+                    UNMASK_REASONING_BEGIN_TOKEN
+                    + reasoning_content
+                    + UNMASK_REASONING_END_TOKEN
+                )
+            else:
+                # When not enabled, pass through unchanged
+                new_msg["reasoning_content"] = reasoning_content
+
+        # MyPy wants to be very specific about types, but new_msg may contain
+        # valid fields in each message which are hard to account for ahead of time.
+        new_msgs += [new_msg]  # type: ignore
+
     return new_msgs
 
 
@@ -458,23 +518,22 @@ def unmask_messages(
     unmask_roles: t.List[str],
 ) -> ProcessedMessagesData:
     """
-    Algorithm to unmask messages with any arbitrary Tokenizer, provided the following
-    conditions are satisfied:
-
-        1. A chat template has been set on the tokenizer
-        2. The tokenizer has either an end-of-sequence, or a padding token that can be used as a fallback.
-
+    Algorithm to unmask messages with any arbitrary Tokenizer, with support for
+    reasoning content. The algorithm handles both regular content and reasoning
+    content fields, merging adjacent unmask regions as needed.
 
     The algorithm works like this:
 
-        1. Wrap all messages with `<|UNMASK_BEGIN|>` and `<|UNMASK_END|>` special tokens for all roles in `unmask_roles`
-        2. Apply the chat template on the resultant messages
-        3. Add all IDs seen into input_ids, and only those ids found within the special unmask boundary tokens into labels
+        1. Wrap messages with unmask tokens:
+           - content: wrapped with UNMASK_BEGIN/END tokens
+           - reasoning_content: wrapped with UNMASK_REASONING_BEGIN/END tokens
+        2. Apply the chat template on the wrapped messages
+        3. Process the token sequence to identify and merge unmask regions
+        4. Generate labels based on the unmask regions
 
     **Note**:
         If a tokenizer has an end-of-sequence token, it is only ever unmasked for the `assistant` role.
         This helps prevent confusion for the model when learning to predict the next token.
-        Please reach out to the instructlab/training maintainers if you need this behavior changed.
 
     Args:
         msgs (List[Message]): A list of messages.
@@ -485,97 +544,213 @@ def unmask_messages(
     Returns:
         Result (ProcessedMessagesData): Dict with the resulting `input_ids`, `labels`, and `len`
     """
-    msgs_with_unmasking = wrap_masked_messages(msgs, unmask_roles)
-    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
-
-    # get the order of unmasked roles
-    unmask_roles_order = iter(
-        [msg["role"] for msg in msgs_with_unmasking if msg["role"] in unmask_roles]
+    # Check if any messages have reasoning_content that we need to handle
+    has_reasoning = any(
+        msg.get("reasoning_content") is not None
+        for msg in msgs
+        if msg["role"] in unmask_roles
     )
 
-    # get token ids
+    # TODO(osilkin): Here we assume that we will always unmask reasoning content,
+    #                in the future we can make this configurable.
+    msgs_with_unmasking = wrap_masked_messages(
+        msgs, unmask_roles, enable_reasoning_content=has_reasoning
+    )
+
+    # Create a mapping of message index to expected regions
+    message_regions_map = {}
+    for idx, msg in enumerate(msgs_with_unmasking):
+        if msg["role"] in unmask_roles:
+            regions = []
+            if has_reasoning and msg.get("reasoning_content") is not None:
+                regions.append("reasoning")
+            if msg.get("content") is not None:
+                regions.append("content")
+            if regions:
+                message_regions_map[idx] = regions
+
+    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
+
+    # Get token IDs for all unmask tokens
     unmask_begin_token_id = tokenizer.encode(
         UNMASK_BEGIN_TOKEN, add_special_tokens=False
     )[0]
     unmask_end_token_id = tokenizer.encode(UNMASK_END_TOKEN, add_special_tokens=False)[
         0
     ]
+    unmask_reasoning_begin_token_id = tokenizer.encode(
+        UNMASK_REASONING_BEGIN_TOKEN, add_special_tokens=False
+    )[0]
+    unmask_reasoning_end_token_id = tokenizer.encode(
+        UNMASK_REASONING_END_TOKEN, add_special_tokens=False
+    )[0]
+
     eos_token_id = None
     if tokenizer.eos_token is not None:
         eos_token_id = tokenizer.encode(tokenizer.eos_token, add_special_tokens=False)[
             0
         ]
 
-    final_input_ids = []
-    final_labels = []
+    # First pass: identify unmask regions and their types
+    unmask_regions = []
     i = 0
-    unmasking = False
-    role_being_actively_unmasked = None
-
-    # pylint: disable=too-many-nested-blocks
     while i < len(input_ids):
         tok = input_ids[i]
-        if unmasking:
-            if tok == unmask_begin_token_id:
-                raise ValueError(
-                    f'encountered a "{UNMASK_BEGIN_TOKEN}" token while already unmasking. This should never happen, pleas contact the training maintainers.'
+
+        # Check for orphaned end tokens
+        if tok == unmask_end_token_id:
+            raise ValueError(
+                f'encountered an "{UNMASK_END_TOKEN}" token while not unmasking. This should never happen, please contact the training maintainers.'
+            )
+
+        if tok == unmask_reasoning_end_token_id:
+            raise ValueError(
+                f'encountered an "{UNMASK_REASONING_END_TOKEN}" token while not unmasking. This should never happen, please contact the training maintainers.'
+            )
+
+        # Check for unmask begin tokens
+        if tok == unmask_begin_token_id:
+            # Find the matching end token
+            j = i + 1
+            while j < len(input_ids) and input_ids[j] != unmask_end_token_id:
+                # Check for nested begin tokens
+                if input_ids[j] == unmask_begin_token_id:
+                    raise ValueError(
+                        f'encountered a "{UNMASK_BEGIN_TOKEN}" token while already unmasking. This should never happen, please contact the training maintainers.'
+                    )
+                j += 1
+            if j < len(input_ids):
+                unmask_regions.append((i, j, "content"))
+                i = j
+            else:
+                raise RuntimeError(
+                    "suffered a critical failure: unmasking finished but not all messages were processed. Please report this!"
+                )
+        elif tok == unmask_reasoning_begin_token_id:
+            # Find the matching end token
+            j = i + 1
+            while j < len(input_ids) and input_ids[j] != unmask_reasoning_end_token_id:
+                # Check for nested begin tokens
+                if input_ids[j] == unmask_reasoning_begin_token_id:
+                    raise ValueError(
+                        f'encountered a "{UNMASK_REASONING_BEGIN_TOKEN}" token while already unmasking. This should never happen, please contact the training maintainers.'
+                    )
+                j += 1
+            if j < len(input_ids):
+                unmask_regions.append((i, j, "reasoning"))
+                i = j
+            else:
+                raise RuntimeError(
+                    "suffered a critical failure: unmasking finished but not all messages were processed. Please report this!"
                 )
 
-            if tok == unmask_end_token_id:
-                # we need to just make sure that we unmask the EOS token for the assistant role
-                if (
-                    eos_token_id is not None
-                    and role_being_actively_unmasked == "assistant"
-                ):
-                    # TODO(osilkin): clean up this portion so that we don't run into race conditions or other bugs
-                    i += 1
-                    while i < len(input_ids):
-                        final_input_ids.append(input_ids[i])
-                        final_labels.append(input_ids[i])
-                        if input_ids[i] == eos_token_id:
-                            break
-                        i += 1
-                unmasking = False
-                role_being_actively_unmasked = None
-            else:
-                final_input_ids.append(tok)
-                final_labels.append(tok)
-        else:
-            if tok == unmask_end_token_id:
-                raise ValueError(
-                    f'encountered an "{UNMASK_END_TOKEN}" token while not unmasking. This should never happen, please contact the training maintainers.'
-                )
-
-            if tok == unmask_begin_token_id:
-                unmasking = True
-                role_being_actively_unmasked = next(unmask_roles_order, None)
-            else:
-                final_input_ids.append(tok)
-                final_labels.append(-100)
         i += 1
 
-    # validation logic
-    if unmask_begin_token_id in final_input_ids:
-        raise ValueError(
-            f"{UNMASK_BEGIN_TOKEN} token found in final_input_ids. This should never happen, please contact the training maintainers."
-        )
-    if unmask_begin_token_id in final_labels:
-        raise ValueError(
-            f"{UNMASK_BEGIN_TOKEN} token found in final_labels. This should never happen, please contact the training maintainers."
-        )
-    if unmask_end_token_id in final_input_ids:
-        raise ValueError(
-            f"{UNMASK_END_TOKEN} token found in final_input_ids. This should never happen, please contact the training maintainers."
-        )
-    if unmask_end_token_id in final_labels:
-        raise ValueError(
-            f"{UNMASK_END_TOKEN} token found in final_labels. This should never happen, please contact the training maintainers."
-        )
+    # Group regions by message and merge if they belong to the same message
+    # First, we need to map regions back to their source messages
+    region_to_message_map = {}
+    region_idx = 0
+    for msg_idx, expected_regions in message_regions_map.items():
+        for expected_type in expected_regions:
+            # Find the next region of the expected type
+            while region_idx < len(unmask_regions):
+                if unmask_regions[region_idx][2] == expected_type:
+                    region_to_message_map[region_idx] = (
+                        msg_idx,
+                        msgs_with_unmasking[msg_idx]["role"],
+                    )
+                    region_idx += 1
+                    break
+                region_idx += 1
 
-    if role_being_actively_unmasked is not None:
-        raise RuntimeError(
-            "suffered a critical failure: unmasking finished but not all messages were processed. Please report this!"
-        )
+    # Now merge regions that belong to the same message
+    merged_regions: list[tuple[int, int, str, str | None]] = []
+    i = 0
+    while i < len(unmask_regions):
+        start, end, region_type = unmask_regions[i]
+        msg_info = region_to_message_map.get(i)
+
+        if msg_info is None:
+            # This shouldn't happen, but if it does, keep the region as-is
+            merged_regions.append((start, end, region_type, None))
+            i += 1
+            continue
+
+        msg_idx, role = msg_info
+
+        # Check if the next region belongs to the same message
+        if i + 1 < len(unmask_regions) and (i + 1) in region_to_message_map:
+            next_msg_idx, _ = region_to_message_map[i + 1]
+            if msg_idx == next_msg_idx:
+                # Same message - merge the regions
+                _, next_end, _ = unmask_regions[i + 1]
+                merged_regions.append((start, next_end, "merged", role))
+                i += 2
+                continue
+
+        # Not merged - keep as is
+        merged_regions.append((start, end, region_type, role))
+        i += 1
+
+    # Build the final token sequences
+    final_input_ids = []
+    final_labels = []
+    unmask_tokens = {
+        unmask_begin_token_id,
+        unmask_end_token_id,
+        unmask_reasoning_begin_token_id,
+        unmask_reasoning_end_token_id,
+    }
+
+    # Track which tokens to unmask based on regions
+    tokens_to_unmask = set()
+    for start, end, _, region_role in merged_regions:
+        for idx in range(start + 1, end):
+            if input_ids[idx] not in unmask_tokens:
+                tokens_to_unmask.add(idx)
+
+        # For assistant messages, also unmask tokens after the region until EOS
+        if eos_token_id is not None and region_role == "assistant":
+            # Look for EOS token after the region
+            j = end + 1
+            while j < len(input_ids):
+                if input_ids[j] == eos_token_id:
+                    # Unmask everything from end of region to EOS (inclusive)
+                    for k in range(end + 1, j + 1):
+                        tokens_to_unmask.add(k)
+                    break
+                # Stop if we encounter another unmask region start
+                if input_ids[j] in {
+                    unmask_begin_token_id,
+                    unmask_reasoning_begin_token_id,
+                }:
+                    break
+                j += 1
+
+    # Generate final sequences
+    for i, tok in enumerate(input_ids):
+        if tok not in unmask_tokens:
+            final_input_ids.append(tok)
+            if i in tokens_to_unmask:
+                final_labels.append(tok)
+            else:
+                final_labels.append(-100)
+
+    # Validation logic
+    for tok_id, tok_name in [
+        (unmask_begin_token_id, UNMASK_BEGIN_TOKEN),
+        (unmask_end_token_id, UNMASK_END_TOKEN),
+        (unmask_reasoning_begin_token_id, UNMASK_REASONING_BEGIN_TOKEN),
+        (unmask_reasoning_end_token_id, UNMASK_REASONING_END_TOKEN),
+    ]:
+        if tok_id in final_input_ids:
+            raise ValueError(
+                f"{tok_name} token found in final_input_ids. This should never happen, please contact the training maintainers."
+            )
+        if tok_id in final_labels:
+            raise ValueError(
+                f"{tok_name} token found in final_labels. This should never happen, please contact the training maintainers."
+            )
 
     if len(final_input_ids) != len(final_labels):
         raise RuntimeError(
@@ -690,10 +865,10 @@ def is_pretraining_format(ds: Dataset) -> bool:
 
     # TODO(osilkin): deprecate this eventually
     t1 = time.time()
-    print("Checking if the dataset contains any legacy pretraining samples.")
+    logger.info("Checking if the dataset contains any legacy pretraining samples.")
     has_pretrain_roles = "pretraining" in set(ds.flatten()["messages.role"])
     t2 = time.time()
-    print(f"Done, took {t2 - t1} seconds")
+    logger.info("Done, took %d seconds", t2 - t1)
     return has_pretrain_roles
 
 
@@ -925,6 +1100,8 @@ def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
             "additional_special_tokens": [
                 UNMASK_BEGIN_TOKEN,
                 UNMASK_END_TOKEN,
+                UNMASK_REASONING_BEGIN_TOKEN,
+                UNMASK_REASONING_END_TOKEN,
                 MASK_TOKEN,
             ]
         }
@@ -958,7 +1135,9 @@ def process_samples(
 
 
 def analyze_dataset_statistics(
-    data: Dataset, max_seq_len: int, num_cpu_procs: int
+    data: Dataset,
+    max_seq_len: int,
+    num_cpu_procs: int,  # pylint: disable=unused-argument
 ) -> None:
     """
     Analyze and print dataset statistics.
@@ -971,18 +1150,19 @@ def analyze_dataset_statistics(
     lens = np.array(data["len"])
 
     # Print largest length percentiles
-    print("\033[38;2;255;165;0mten largest length percentiles:")
+    logger.info("ten largest length percentiles:")
     biggest_10_percent = np.quantile(lens, (90 + np.arange(11)) / 100.0)
     for i, q in enumerate(biggest_10_percent):
-        print(f"quantile {90 + i * 1}th: {q}")
-    print("\033[0m")
+        logger.info("quantile %dth: %d", 90 + i * 1, q)
 
     # Check for samples exceeding max sequence length
     num_dropped_samples = np.sum(lens > max_seq_len)
-    print(
-        f"\033[36mat {max_seq_len} max sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at %d max sequence length, the number of samples to be dropped is %d",
+        max_seq_len,
+        num_dropped_samples,
     )
-    print(f"\033[36m({((num_dropped_samples / len(lens)) * 100):.2f}% of total)\033[0m")
+    logger.info("(%.2f of total)", (float(num_dropped_samples) / len(lens)) * 100)
 
     if num_dropped_samples == len(data):
         raise RuntimeError(
@@ -993,12 +1173,13 @@ def analyze_dataset_statistics(
     # Print smallest length percentiles
     lowest_10_percent = np.quantile(lens, (0 + np.arange(11)) / 100.0)
     for i, q in enumerate(lowest_10_percent):
-        print(f"quantile {i}th: {q}")
+        logger.info("quantile %dth: %d", i, q)
 
     # Check for very short samples
     num_dropped_samples = np.sum(lens < 20)
-    print(
-        f"\033[36mat 20 min sequence length, the number of samples to be dropped is {num_dropped_samples}\033[0m"
+    logger.info(
+        "at 20 min sequence length, the number of samples to be dropped is %d",
+        num_dropped_samples,
     )
 
 
@@ -1006,8 +1187,7 @@ def preview_samples(
     data: Dataset, tokenizer: PreTrainedTokenizer, num_proc: int
 ) -> None:
     """Preview samples from the dataset."""
-    print("\033[92m Samples Previews...\033[0m")
-    print("\033[92m \n \033[0m")
+    logger.info("Samples Previews...")
 
     # Print pretraining samples
     print_masked_samples(
@@ -1109,9 +1289,10 @@ def process_data(
             Path to the chat template and special tokens. When this argument is used, the legacy data processing method will be used. Otherwise, the new data processing method will be used.
     """
     if chat_tmpl_path:
-        print(
-            "\033[93mWarning: The legacy data processing method will eventually be deprecated. "
-            "Please update your workflow to use the new processing method.\033[0m"
+        warnings.warn(
+            "The legacy data processing method will eventually be deprecated. "
+            "Please update your workflow to use the new processing method.",
+            DeprecationWarning,
         )
         args = DataProcessArgs(
             data_output_path=data_output_path,
@@ -1190,7 +1371,7 @@ if __name__ == "__main__":
         help="Number of cpu processes for data processing",
     )
     args = parser.parse_args()
-    setup_logger(args.logging_level)
+    setup_root_logger(args.logging_level)
     if args.chat_tmpl_path:
         data_process_args = DataProcessArgs(
             data_output_path=args.data_output_path,

@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 # Third Party
+from datasets import load_dataset
 from transformers import AutoModelForCausalLM
 import huggingface_hub
 import pytest
@@ -30,7 +31,6 @@ MINIMAL_TRAINING_ARGS = {
     "learning_rate": 1e-4,
     "warmup_steps": 1,
     "random_seed": 43,
-    "use_dolomite": False,
     "is_padding_free": False,
     "checkpoint_at_epoch": True,
     "accelerate_full_state_at_epoch": True,
@@ -46,8 +46,11 @@ DEFAULT_TORCHRUN_ARGS = {
     "rdzv_endpoint": "127.0.0.1:12345",
 }
 
-REFERENCE_TEST_MODEL = "instructlab/granite-7b-lab"
+REFERENCE_TEST_MODEL = "ibm-granite/granite-3.3-2b-instruct"
 RUNNER_CPUS_EXPECTED = 4
+
+# Number of samples to randomly sample from the processed dataset for faster training
+NUM_SAMPLES_TO_KEEP = 5000
 
 
 @pytest.fixture(scope="module")
@@ -190,7 +193,10 @@ def chat_template_in_repo_path() -> pathlib.Path:
 def cached_training_data(
     prepared_data_dir: pathlib.Path, cached_test_model: pathlib.Path
 ) -> pathlib.Path:
-    """Renders test data in model template, tokenizes, and saves to fs"""
+    """
+    Renders test data in model template, tokenizes, and saves to filesystem.
+    Subsamples NUM_SAMPLES_TO_KEEP examples to speed up tests.
+    """
 
     data_in_repo = data_in_repo_path()
     chat_template = chat_template_in_repo_path()
@@ -206,7 +212,19 @@ def cached_training_data(
 
     data_process.main(data_process_args)
 
-    return prepared_data_dir / "data.jsonl"
+    # Load the processed data and sample a subset
+    output_path = prepared_data_dir / "data.jsonl"
+    dataset = load_dataset("json", data_files=str(output_path), split="train")
+
+    # Randomly sample NUM_SAMPLES_TO_KEEP examples
+    sampled_dataset = dataset.shuffle(seed=42).select(
+        range(min(NUM_SAMPLES_TO_KEEP, len(dataset)))
+    )
+
+    # Write the sampled data back to the same file
+    sampled_dataset.to_json(str(output_path), num_proc=RUNNER_CPUS_EXPECTED)
+
+    return output_path
 
 
 @pytest.mark.slow

@@ -3,18 +3,14 @@
 # Standard
 from argparse import Namespace
 from collections import OrderedDict
-from contextlib import contextmanager
 from copy import deepcopy
-from functools import partial
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, List, Optional, Tuple
 import importlib
 import inspect
 import logging
 import os
 import random
-import shutil
 import subprocess
 import sys
 import time
@@ -23,24 +19,13 @@ import warnings
 # Third Party
 # pylint: disable=no-name-in-module
 from accelerate import Accelerator, DistributedType
-from instructlab.dolomite.hf_models import (
-    GPTDolomiteConfig,
-    export_to_huggingface,
-    import_from_huggingface,
-)
-from rich.logging import RichHandler
 from torch import distributed as dist
 from torch import nn
 from torch.distributed import get_rank, is_initialized
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    CheckpointImpl,
-    apply_activation_checkpointing,
-    checkpoint_wrapper,
-)
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import StateDictType
-from transformers import AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, PreTrainedTokenizer
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -51,6 +36,9 @@ from instructlab.training.config import (
     QuantizeDataType,
     TrainingArgs,
 )
+from instructlab.training.model import Model
+
+logger = logging.getLogger("instructlab.training")
 
 
 def check_valid_train_args(train_args: TrainingArgs):
@@ -70,14 +58,15 @@ def check_valid_train_args(train_args: TrainingArgs):
             f"Provided path does not exist locally and is not an HF format name. Please make sure that you've passed a valid model path and that it has appropriate permissions, or a Huggingface model name (org/repo): {train_args.model_path}"
         )
 
-    if train_args.use_dolomite and train_args.disable_flash_attn:
-        raise RuntimeError(
-            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
+    if train_args.use_dolomite:
+        warnings.warn(
+            "use_dolomite is ignored; Dolomite support was removed.", DeprecationWarning
         )
 
     if train_args.is_padding_free:
-        print(
-            "\033[33m WARNING: is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond. If you would like to use the older Dolomite padding-free implementation, please set use_dolomite moving forward.\033[0m"
+        warnings.warn(
+            "is_padding_free is being deprecated due to adoption of the default padding-free support in Hugging Face Transformers. As such, this flag is non-functional in 0.6.0 and beyond.",
+            DeprecationWarning,
         )
 
     if (
@@ -99,7 +88,7 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if check_flash_attn_enabled(train_args.disable_flash_attn, train_args.use_dolomite):
+    if Model.check_flash_attn_enabled(train_args.disable_flash_attn):
         # verify that the flash_attn package is actually installed
         try:
             # pylint: disable=unused-import
@@ -118,10 +107,7 @@ def check_valid_train_args(train_args: TrainingArgs):
         raise ValueError(
             "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
         )
-    if train_args.use_liger and train_args.use_dolomite:
-        raise ValueError(
-            "Using Liger kernels and Dolomite padding-free transformer is not supported. Please disable either Liger kernels or Dolomite padding-free transformer."
-        )
+
     if train_args.use_liger:
         try:
             # Third Party
@@ -165,14 +151,19 @@ def add_noisy_embeddings(model, noise_alpha=None):
         return new_func
 
     model_class_name = model.__class__.__name__
-    if model_class_name in ["GPTMegatronForCausalLM", "GPTDolomiteForCausalLM"]:
-        orig_forward = model.get_input_embeddings().forward
-        model.get_input_embeddings().forward = noised_embed(orig_forward, noise_alpha)
-    elif model_class_name in ["MistralForCausalLM", "LlamaForCausalLM"]:
-        orig_forward = model.base_model.embed_tokens.forward
-        model.base_model.embed_tokens.forward = noised_embed(orig_forward, noise_alpha)
-    else:
-        raise ValueError(f"Unsupported model class: {model_class_name}")
+    match model_class_name:
+        case "GPTMegatronForCausalLM":
+            orig_forward = model.get_input_embeddings().forward
+            model.get_input_embeddings().forward = noised_embed(
+                orig_forward, noise_alpha
+            )
+        case "MistralForCausalLM" | "LlamaForCausalLM":
+            orig_forward = model.base_model.embed_tokens.forward
+            model.base_model.embed_tokens.forward = noised_embed(
+                orig_forward, noise_alpha
+            )
+        case _:
+            raise ValueError(f"Unsupported model class: {model_class_name}")
     return model
 
 
@@ -206,251 +197,146 @@ class StreamablePopen(subprocess.Popen):
                     break
 
 
-def supports_flash_attention(device_id=0):
-    """Check if a GPU supports FlashAttention."""
-    major, minor = torch.cuda.get_device_capability(device_id)
-    # Check if the GPU architecture is Ampere (SM 8.x) or newer (SM 9.0)
-    is_sm8x = major == 8 and minor >= 0
-    is_sm90 = major == 9 and minor == 0
-    dev_name = torch.cuda.get_device_properties(device_id).gcnArchName.split(":")[0]
-    is_compat_amd = dev_name in ("gfx90a", "gfx940", "gfx941", "gfx942")
-    return is_sm8x or is_sm90 or is_compat_amd
+def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000):
+    if flash_enabled:
 
+        def pad_collate_fn(batch):
+            input_ids = []
+            labels = []
+            position_ids = []
+            total_len = 0
+            num_loss_counted_tokens = 0
 
-def check_flash_attn_enabled(disable_flash_attn: bool, use_dolomite: bool) -> bool:
-    if not disable_flash_attn:
-        if supports_flash_attention():
-            flash_enabled = True
-        else:
-            raise RuntimeError(
-                "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
-            )
-    elif use_dolomite:
-        raise RuntimeError(
-            "ERROR: Trying to use dolomite padding-free transformer without flash attention is not supported"
-        )
+            for num_samples, item in enumerate(batch):
+                item_len = len(item["input_ids"])
+                if total_len + item_len > max_batch_len:
+                    break
+
+                input_ids.extend(item["input_ids"].tolist())
+                labels.extend(item["labels"].tolist())
+                position_ids.extend(range(item_len))
+
+                total_len += item_len
+                num_loss_counted_tokens += (item["labels"] != -100).sum().item()
+
+            return {
+                "input_ids": torch.tensor([input_ids], dtype=torch.long),
+                "labels": torch.tensor([labels], dtype=torch.long),
+                "position_ids": torch.tensor([position_ids], dtype=torch.long),
+                "num_loss_counted_tokens": num_loss_counted_tokens,
+                "total_length": total_len,
+                "num_samples": num_samples + 1,  # pylint: disable=W0631
+            }
+
     else:
-        flash_enabled = False
-    return flash_enabled
-
-
-def make_collate_fn(
-    pad_token_id, use_dolomite=False, flash_enabled=True, max_batch_len=60000
-):
-    rank = int(os.environ["RANK"])
-    if use_dolomite:
 
         def pad_collate_fn(batch):
             lens = np.array([len(item["input_ids"]) for item in batch])
+            max_len = max(lens)
 
-            cumsum_lens = np.cumsum(lens)
-            valid_up_to = int((cumsum_lens < max_batch_len).sum())
-            total_len = cumsum_lens[valid_up_to - 1]
-
-            batch = batch[:valid_up_to]
-            input_ids = [x["input_ids"].tolist() for x in batch]
-            labels = [x["labels"].tolist() for x in batch]
-            num_loss_counted_tokens = sum(
-                [(x["labels"] != -100).sum().item() for x in batch]
+            input_ids = torch.stack(
+                [
+                    F.pad(
+                        item["input_ids"],
+                        (max_len - len(item["input_ids"]), 0),
+                        mode="constant",
+                        value=pad_token_id,
+                    )
+                    for item in batch
+                ]
             )
+            labels = torch.stack(
+                [
+                    F.pad(
+                        item["labels"],
+                        (max_len - len(item["labels"]), 0),
+                        mode="constant",
+                        value=-100,
+                    )
+                    for item in batch
+                ]
+            )
+            num_loss_counted_tokens = (labels != -100).sum()
 
-            print(
-                f"\033[96m total length: {total_len} dropped: {cumsum_lens[-1] - total_len} "
-                f"num samples {len(batch)} - rank: {rank} "
-                f"max len: {lens.max()} min len: {lens.min()} avg len: {lens.mean()} "
-                f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
+            attention_mask = torch.stack(
+                [
+                    F.pad(
+                        item["attention_mask"],
+                        (max_len - len(item["attention_mask"]), 0),
+                        mode="constant",
+                        value=0,
+                    )
+                    for item in batch
+                ]
             )
 
             return {
                 "input_ids": input_ids,
                 "labels": labels,
+                "total_length": max_len * len(batch),
                 "num_loss_counted_tokens": num_loss_counted_tokens,
+                "attention_mask": attention_mask,
                 "num_samples": len(batch),
             }
-
-    else:
-        if flash_enabled:
-
-            def pad_collate_fn(batch):
-                input_ids = []
-                labels = []
-                position_ids = []
-                total_len = 0
-                num_loss_counted_tokens = 0
-
-                for num_samples, item in enumerate(batch):
-                    item_len = len(item["input_ids"])
-                    if total_len + item_len > max_batch_len:
-                        break
-
-                    input_ids.extend(item["input_ids"].tolist())
-                    labels.extend(item["labels"].tolist())
-                    position_ids.extend(range(item_len))
-
-                    total_len += item_len
-                    num_loss_counted_tokens += (item["labels"] != -100).sum().item()
-
-                print(
-                    f"\033[96m total length: {total_len} "
-                    f"num samples {len(batch)} - rank: {rank} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
-                return {
-                    "input_ids": torch.tensor([input_ids], dtype=torch.long),
-                    "labels": torch.tensor([labels], dtype=torch.long),
-                    "position_ids": torch.tensor([position_ids], dtype=torch.long),
-                    "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "num_samples": num_samples + 1,  # pylint: disable=W0631
-                }
-
-        else:
-
-            def pad_collate_fn(batch):
-                lens = np.array([len(item["input_ids"]) for item in batch])
-                max_len = max(lens)
-
-                input_ids = torch.stack(
-                    [
-                        F.pad(
-                            item["input_ids"],
-                            (max_len - len(item["input_ids"]), 0),
-                            mode="constant",
-                            value=pad_token_id,
-                        )
-                        for item in batch
-                    ]
-                )
-                labels = torch.stack(
-                    [
-                        F.pad(
-                            item["labels"],
-                            (max_len - len(item["labels"]), 0),
-                            mode="constant",
-                            value=-100,
-                        )
-                        for item in batch
-                    ]
-                )
-                num_loss_counted_tokens = (labels != -100).sum()
-
-                attention_mask = torch.stack(
-                    [
-                        F.pad(
-                            item["attention_mask"],
-                            (max_len - len(item["attention_mask"]), 0),
-                            mode="constant",
-                            value=0,
-                        )
-                        for item in batch
-                    ]
-                )
-                print(
-                    f"\033[96m total tokens: {max_len * len(batch)} num samples: {len(batch)} num padding tokens: {max_len * len(batch) - lens.sum()} - rank: {rank} "
-                    f"max len: {max_len} min len: {min(lens)} avg len: {lens.mean()} "
-                    f"num_loss_counted_tokens: {num_loss_counted_tokens}\033[0m"
-                )
-
-                return {
-                    "input_ids": input_ids,
-                    "labels": labels,
-                    "num_loss_counted_tokens": num_loss_counted_tokens,
-                    "attention_mask": attention_mask,
-                    "num_samples": len(batch),
-                }
 
     return pad_collate_fn
 
 
-def convert_loss_to_reduce_sum(model, use_dolomite=False):
+def convert_loss_to_reduce_sum(model):
     """
     this is necessary because multipack changes the samples per gpu, which biases the gradients to be larger for batches with less samples but longer lengths.
     """
-    if use_dolomite:
 
-        def get_autoregressive_language_modeling_loss(
-            lm_logits: torch.Tensor,
-            labels: torch.Tensor,
-            cu_seqlens: torch.Tensor,
-        ) -> torch.Tensor:
-            loss = None
-            # Shift so that tokens < n predict n
-            if labels is not None:
-                if model._use_padding_free_transformer:
-                    shift_logits = lm_logits[:-1, :]
-                    shift_labels = labels[1:].to(shift_logits.device)
-
-                    # this is needed so that the last token of current example doesn't predict first token of next example
-                    drop_loss_positions = cu_seqlens[1:-1] - 1
-                    shift_labels[drop_loss_positions] = -100
-                else:
-                    shift_logits = lm_logits[..., :-1, :].contiguous()
-                    shift_labels = labels[..., 1:].contiguous().to(shift_logits.device)
-
-                # Flatten the tokens
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(
-                    shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
-                )
-
-            return loss
-
-        model.get_autoregressive_language_modeling_loss = (
-            get_autoregressive_language_modeling_loss
+    def reduce_sum_forward(
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        **_deprecated_arguments,
+    ):
+        output = model.__original_forward__(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
         )
-        return model
-    else:
 
-        def reduce_sum_forward(
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-            **deprecated_arguments,
-        ):
-            output = model.__original_forward__(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                labels=labels,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+        return_dict = isinstance(output, dict)
+        logits = output.logits if return_dict else output[0]
+        loss = None
+        if labels is not None:
+            # Shift so that tokens < n predict n
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            # Flatten the tokens
+            shift_logits = shift_logits.view(-1, model.config.vocab_size)
+            shift_labels = shift_labels.view(-1)
+            # Ensure tensors are on the same device
+            shift_labels = shift_labels.to(shift_logits.device)
+            loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
+            loss = loss_fct(shift_logits, shift_labels)
 
-            return_dict = isinstance(output, dict)
-            logits = output.logits if return_dict else output[0]
-            loss = None
-            if labels is not None:
-                # Shift so that tokens < n predict n
-                shift_logits = logits[..., :-1, :].contiguous()
-                shift_labels = labels[..., 1:].contiguous()
-                # Flatten the tokens
-                shift_logits = shift_logits.view(-1, model.config.vocab_size)
-                shift_labels = shift_labels.view(-1)
-                # Ensure tensors are on the same device
-                shift_labels = shift_labels.to(shift_logits.device)
-                loss_fct = torch.nn.CrossEntropyLoss(reduction="sum")
-                loss = loss_fct(shift_logits, shift_labels)
+        if not return_dict:
+            return ((loss,) + output) if loss is not None else output
 
-            if not return_dict:
-                return ((loss,) + output) if loss is not None else output
+        output.loss = loss
+        return output
 
-            output.loss = loss
-            return output
-
-        model.__original_forward__ = model.forward
-        model.forward = reduce_sum_forward
-        return model
+    model.__original_forward__ = model.forward
+    model.forward = reduce_sum_forward
+    return model
 
 
 # taken from https://github.com/foundation-model-stack/fms-acceleration/blob/main/plugins/accelerated-peft/src/fms_acceleration_peft/autogptq_utils.py
@@ -485,45 +371,6 @@ def wraps(module: nn.Module, wrapped_classes: Tuple[Any]) -> bool:
             return True
 
     return False
-
-
-def create_lora_config(model: PreTrainedModel, args: Namespace) -> "peft.LoraConfig":
-    # if lora
-    # Third Party
-    from peft import LoraConfig
-
-    # ensure we select only the modules that exist in the model
-    proj_layers = get_projection_layer_names(model)
-    if not args.lora_target_modules:
-        print(
-            f"WARNING: lora_target_modules was not specified, defaulting to all of the model's projection modules"
-        )
-        if not proj_layers:
-            raise RuntimeError("could not find any projection layers in the model")
-        args.__dict__["lora_target_modules"] = proj_layers
-    else:
-        # when the user specifies the module, we should verify that they align with what's in the model
-        lora_target_modules_set = set(args.lora_target_modules)
-        diff = lora_target_modules_set - set(proj_layers)
-        layers_to_target = lora_target_modules_set - diff
-        if len(diff) == len(args.lora_target_modules):
-            raise ValueError(
-                f"None of the modules you requested exist in the model.\nRequested modules: {args.lora_target_modules}; Available modules: {proj_layers}.\nThis is usually a misconfiuration error. Consider omitting your `lora_target_modules` list to have these discovered automatically."
-            )
-        if diff:
-            print(
-                f"\033[33mWARNING: the following modules were targeted for LoRA but are not present in the model: {list(diff)}. Applying LoRA only to {list(layers_to_target)} modules.\033[0m"
-            )
-        args.__dict__["lora_target_modules"] = list(layers_to_target)
-
-    return LoraConfig(
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        r=args.lora_r,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=args.lora_target_modules,
-    )
 
 
 def save_fsdp_lora_model(
@@ -590,249 +437,6 @@ def save_fsdp_lora_model(
     dist.barrier()
 
 
-def prepare_peft_model(
-    model: PreTrainedModel,
-    peft_config,
-    distributed_backend: str,
-    gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": True},
-    mixed_precision="bf16",
-):
-    # will guard this
-    # Third Party
-    from peft import (
-        LoraModel,
-        PeftConfig,
-        PeftModel,
-        get_peft_model,
-        prepare_model_for_kbit_training,
-    )
-    from trl.trainer.utils import peft_module_casting_to_bf16
-
-    if not isinstance(peft_config, PeftConfig):
-        raise ValueError(
-            "If you want to use the PeftModel, you need to pass a PeftConfig object, "
-            f"and you passed a {type(peft_config)}."
-        )
-
-    if not isinstance(model, PeftModel):
-        if getattr(model, "is_loaded_in_8bit", False) or getattr(
-            model, "is_loaded_in_4bit", False
-        ):
-            preprare_model_kwargs = {
-                "use_gradient_checkpointing": gradient_checkpointing
-            }
-
-            # if _support_gc_kwargs:
-            preprare_model_kwargs["gradient_checkpointing_kwargs"] = (
-                gradient_checkpointing_kwargs
-            )
-
-            model = prepare_model_for_kbit_training(model, **preprare_model_kwargs)
-
-        elif gradient_checkpointing:
-            # For backward compatibility with older versions of transformers
-            if hasattr(model, "enable_input_require_grads"):
-                model.enable_input_require_grads()
-            else:
-
-                def make_inputs_require_grad(module, input, output):
-                    output.requires_grad_(True)
-
-                model.get_input_embeddings().register_forward_hook(
-                    make_inputs_require_grad
-                )
-
-        if distributed_backend == DistributedBackend.FSDP.value:
-            # FSDP doesn't like `get_peft_model` as it leads to dtype mismatches
-            model = LoraModel(model, peft_config, "default")
-        else:
-            model = get_peft_model(model, peft_config)
-        if mixed_precision == "bf16" and getattr(model, "is_loaded_in_4bit", False):
-            peft_module_casting_to_bf16(model)
-
-    return model
-
-
-def prepare_universal_checkpoint_from_latest(output_dir):
-    """Populate the universal checkpoint in output_dir/step_folder
-    - 1. read output_dir/latest to get step_folder
-    - 2. populate tmp dir in output_dir/step_folder/tmp
-    - 3. populate zero checkpoints in output_dir/step_folder/zero
-    - 4. create output_dir/latest_universal
-
-    Items 1, 2, 3, 4 are idempotent. There is atomicity in the sense that
-    only after 4 is completed, then the output_dir/latest_universal
-    checkpoint is created in which then the universal checkpoint
-    can be loaded.
-
-    Be aware that this creates an extra dir `zero/` in the checkpoint dir,
-    which doubles the DS checkpoint storage requirement.
-    - DS checkpoints store 3X model parameters in 32bit.
-    - e.g., will be 6X a model parameter-only checkpoint in 16bit.
-
-    Note that this requires a latest version of deepspeed. It kind of works if
-    the model is not saving universal checkpoint info, but only in the
-    the case where advanced features like tensor parallel (TP) and
-    pipeline parallel (PP) are turned off.
-    """
-
-    log_rank_0(
-        f"\033[93mPreparing universal checkpoint in {output_dir}\033[0m", to_print=True
-    )
-    # Third Party
-    from transformers.utils.import_utils import _is_package_available
-
-    _, ds_version = _is_package_available("deepspeed", return_version=True)
-    if ds_version < "0.14.3":
-        raise ValueError("universal checkpoint only supported on deepspeed >= 0.14.3")
-
-    start = time.time()
-    if torch.distributed.get_rank() == 0:
-        try:
-            # Third Party
-            from deepspeed.checkpoint import DeepSpeedCheckpoint
-            from deepspeed.checkpoint.ds_to_universal import (
-                PARAM_SHAPES,
-                UNIVERSAL_CHECKPOINT_INFO,
-                _check_for_required_state,
-                _extract_zero_shard_files,
-                _merge_tp_slice_files,
-                _save_optimizer_state,
-            )
-        except ImportError as exc:
-            raise ImportError(
-                "DeepSpeed-specific checkpoints cannot be saved without DeepSpeed>=0.14.3 installed"
-            ) from exc
-
-        # read the latest file to get the step folder
-        latest_file = output_dir / "latest"
-        with open(latest_file) as f:
-            step_folder = f.read()
-
-        # will process the checkpoint in the latest step folder
-        input_folder = os.path.join(output_dir, step_folder)
-
-        # create args for the scripts below
-        class UniversalCheckpointArgs:
-            num_extract_workers: int = 1
-            num_merge_workers: int = 1
-            output_folder: str = input_folder  # just put in same place
-            strict: bool = True  # strict checkpoint
-
-        args = UniversalCheckpointArgs()
-
-        # get the checkpoint
-        ds_checkpoint = DeepSpeedCheckpoint(input_folder)
-
-        # hack, force this to null if we did not properly save
-        # any universal checkpoint information
-        # - this will not support any pipeline replication and other
-        #   replication such as TP, row parallelism, vocab, sub_params
-        if UNIVERSAL_CHECKPOINT_INFO not in ds_checkpoint.global_state:
-            warnings.warn(
-                "Universal checkpoint information not found, setting it to "
-                "an empty dictionary."
-            )
-            ds_checkpoint.global_state[UNIVERSAL_CHECKPOINT_INFO] = {}
-            assert (
-                ds_checkpoint.tp_degree == 1
-            ), "if universal checkpointing info is missing, TP must be absent"
-            assert (
-                ds_checkpoint.pp_degree == 1
-            ), "if universal checkpointing info is missing, PP must be absent"
-        _check_for_required_state(ds_checkpoint)
-
-        slice_shapes = []
-        for mp_rank_file in ds_checkpoint.mp_rank_files:
-            mp_sd = torch.load(mp_rank_file, map_location=torch.device("cpu"))
-            slice_shapes += mp_sd[PARAM_SHAPES]
-
-        # fix back to normal flat dict, merge duplicates for tp>1
-        slice_shapes = dict((k, v) for d in slice_shapes for k, v in d.items())
-        temp_dir = os.path.join(args.output_folder, "tmp")
-
-        log_rank_0(
-            f"\033[93m1. Extracting ZeRO fragments into {temp_dir}\033[0m",
-            to_print=True,
-        )
-        _extract_zero_shard_files(args, ds_checkpoint, temp_dir)
-
-        zero_output_folder = os.path.join(args.output_folder, "zero")
-
-        log_rank_0(
-            f"\033[93m2. Merging slices into {zero_output_folder}\033[0m", to_print=True
-        )
-        _merge_tp_slice_files(args, ds_checkpoint, slice_shapes, temp_dir)
-
-        log_rank_0(
-            f"\033[93m3. Saving common optimizer states into {zero_output_folder}\033[0m",
-            to_print=True,
-        )
-        _save_optimizer_state(args, ds_checkpoint)
-
-        log_rank_0(
-            f"\033[93m4. Removing temp directory {temp_dir}\033[0m", to_print=True
-        )
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
-        latest_file = os.path.join(output_dir, "latest_universal")
-        log_rank_0(f"\033[93m5. Creating {latest_file}\033[0m", to_print=True)
-        with open(latest_file, "w") as f:
-            f.write(step_folder)
-
-    dist.barrier()
-    log_rank_0(f"Preparing universal checkpoint took {time.time() - start} seconds")
-
-
-@contextmanager
-def ensure_loadable_dolomite_checkpoint(
-    model_name_or_path: str,
-    tmpdir: str,
-):
-    local_rank = int(os.environ["LOCAL_RANK"])
-    group_rank = int(os.environ["GROUP_RANK"])
-
-    try:
-        GPTDolomiteConfig.from_pretrained(model_name_or_path)
-        yield model_name_or_path
-    except:  # pylint: disable=bare-except
-        log_rank_0(
-            f"\033[93mModel saved in {model_name_or_path} requires conversion \033[0m",
-            to_print=True,
-        )
-        # if the load failed then it must not be a granite
-        # for now just assume its a llama
-        # make a temp directory name, but do not create it
-        # previously we used mktemp, but it caused problems in multi node settings
-        # so now we use a provided tmpdir
-        # Assumption: tmpdir should be accessible by all ranks, even those
-        # in different nodes
-        tmpdir = Path(tmpdir) / f"tmp.{group_rank}"
-        if os.path.exists(tmpdir) and (not dist.is_initialized() or local_rank == 0):
-            # need to delete if it exists because import doesn't like it to
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-        if not dist.is_initialized() or local_rank == 0:
-            import_from_huggingface(model_name_or_path, tmpdir)
-
-        if dist.is_initialized():
-            # the first barrier is to wait for local rank 0 to finish converting the model
-            # and place into tmpdir
-            dist.barrier()
-
-        # return tmpdir out for loading
-        yield tmpdir
-
-        if dist.is_initialized():
-            # the second barrier is to wait for all the models to finish loading
-            dist.barrier()
-
-        if not dist.is_initialized() or local_rank == 0:
-            # at this point, we can be confident that the tmpdir is no longer needed
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-
 def get_module_class_from_name(
     model: torch.nn.Module, name: str
 ) -> torch.nn.Module | None:
@@ -847,51 +451,6 @@ def get_module_class_from_name(
             module_class = get_module_class_from_name(child_module, name)
             if module_class is not None:
                 return module_class
-
-
-# this function is for supporting gradient checkpointing for padding free
-# dolomite
-def apply_gradient_checkpointing(
-    model: torch.nn.Module,
-    **kwargs,
-) -> None:
-    def block_checkpointing(
-        model: torch.nn.Module,
-        block_name: str,
-        checkpoint_every: int = 1,
-        use_reentrant: bool = False,
-    ) -> None:
-        block_class = get_module_class_from_name(model, block_name)
-        block_idx = 0
-
-        def _whether_to_checkpoint(submodule: torch.nn.Module) -> bool:
-            nonlocal block_idx
-
-            if isinstance(submodule, block_class):
-                block_idx += 1
-                if (block_idx - 1) % checkpoint_every == 0:
-                    return True
-            return False
-
-        checkpoint_wrapper_function = checkpoint_wrapper
-        if use_reentrant:
-            checkpoint_wrapper_function = partial(
-                checkpoint_wrapper, checkpoint_impl=CheckpointImpl.REENTRANT
-            )
-
-        apply_activation_checkpointing(
-            model,
-            checkpoint_wrapper_fn=checkpoint_wrapper_function,
-            check_fn=_whether_to_checkpoint,
-        )
-
-    block_checkpointing(model, **kwargs)
-
-
-def setup_logger(level="DEBUG"):
-    logging.basicConfig(
-        level=level, format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
-    )
 
 
 def get_caller(num_frames=1):
@@ -912,8 +471,7 @@ def log_rank_0(msg, include_caller=False, rank=None, to_print=False):
         if to_print:
             print(msg)
         else:
-            logging.info(msg)
-        # print(msg)
+            logger.info(msg)
 
 
 def _copy_no_lora_dict(state_dict):
@@ -972,19 +530,10 @@ def save_hf_format_accelerate(
     )
     start = time.time()
 
-    if args.model_type in ("gpt_megatron", "gpt_dolomite"):
-        convert_dolomite = False
-    else:
-        convert_dolomite = True
-
     # Build the final output directory path
     final_output_dir = Path(args.output_dir) / "hf_format" / subdir
 
-    if args.use_dolomite and convert_dolomite:
-        tmpdir = TemporaryDirectory("w")  # pylint: disable=consider-using-with
-        output_dir = Path(tmpdir.name)
-    else:
-        output_dir = final_output_dir
+    output_dir = final_output_dir
 
     CONFIG_NAME = "config.json"
     output_config_file = output_dir / CONFIG_NAME
@@ -1014,7 +563,7 @@ def save_hf_format_accelerate(
             model_state = model.module.state_dict()
 
         output_dir.mkdir(parents=True, exist_ok=True)
-        if not model.module.config.architectures and convert_dolomite:
+        if not model.module.config.architectures:
             arch_added = False
             if args.model_type == "llama":
                 model.module.config.architectures = ["LlamaForCausalLM"]
@@ -1025,10 +574,6 @@ def save_hf_format_accelerate(
             if arch_added:
                 warnings.warn(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
-                )
-            else:
-                warnings.warn(
-                    f"Converting from dolomite, but no architecture field added to config.json",
                 )
         model.module.config.to_json_file(output_config_file)
         tokenizer.save_pretrained(output_dir)
@@ -1051,60 +596,11 @@ def save_hf_format_accelerate(
             safe_serialization=True,
         )
 
-    if args.use_dolomite and convert_dolomite and accelerator.is_main_process:
-        # export doesnt like the directory to exist
-        if final_output_dir.exists():
-            shutil.rmtree(final_output_dir)
-        export_to_huggingface(
-            pretrained_model_name_or_path=tmpdir.name,
-            save_path=final_output_dir,
-            model_type=args.model_type,
-        )
-        tmpdir.cleanup()
-
     log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
     dist.barrier()
 
     accelerator.get_state_dict = get_state_dict_unpatched
-
-
-# this is native deepspeed saving with optimizer, scheduler
-def save_model_ds_native(
-    args,
-    model,
-    tokenizer,
-    samples_seen,
-):
-    # to get a statedict from a zero checkpoint, all you need to do is
-    # - from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
-    # - sd = get_fp32_state_dict_from_zero_checkpoint('ckpt')
-    # - sum([math.prod(x.shape) for x in sd.values()]) # check the size (should be correct)
-
-    log_rank_0(
-        f"\033[93mSaving model+optimizer+scheduler in format at samples_seen: {samples_seen}\033[0m",
-        to_print=True,
-    )
-    start = time.time()
-    # used to save huggingface format, so we can use it for hf.from_pretrained
-    output_dir = Path(args.output_dir) / "ds_native"
-    tag = f"samples_{samples_seen}"
-    use_lora = args.lora_r > 0
-
-    # NOTE: this is a distributed save
-    # if its lora, we only save the adapters
-    # - so we exclude frozen if use_lora==True
-    model.save_checkpoint(
-        output_dir,
-        exclude_frozen_parameters=use_lora,
-        tag=tag,  # this will create the subdirectory with the correct name
-    )
-
-    # for now we are not saving tokenizer, config, eg..
-    # so it is not totally "HF compatible"
-
-    log_rank_0(f"\033[93mModel saved in {output_dir}\033[0m", to_print=True)
-    log_rank_0(f"saving took {time.time() - start} seconds")
 
 
 def set_random_seed(seed):
@@ -1229,15 +725,3 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
-
-
-def get_projection_layer_names(model: PreTrainedModel) -> List[str]:
-    """
-    Given a pretrained model, returns all of the projection layers (matching '_proj')
-    """
-    proj_layers = set(
-        name.split(".")[-1]
-        for name, _ in model.named_modules()
-        if name.endswith("_proj")
-    )
-    return list(proj_layers)

@@ -1,17 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from copy import deepcopy
-from pathlib import Path
 import argparse
-import math
+import datetime
+import logging
 import os
-import re
 import subprocess
 import time
-
-# Third Party
-from accelerate import Accelerator
+import warnings
 
 try:
     # Third Party
@@ -20,333 +16,74 @@ except ImportError:
     DeepSpeedCPUAdam = None
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
-        print(
-            "DeepSpeed CPU Optimizer is not available. Some features may be unavailable."
+        warnings.warn(
+            "DeepSpeed CPU Optimizer is not available. Some features may be unavailable.",
+            UserWarning,
         )
 
 try:
     # Third Party
     from deepspeed.ops.adam import FusedAdam
-    from deepspeed.runtime.zero.utils import ZeRORuntimeException
 except ImportError:
     FusedAdam = None
-    ZeRORuntimeException = None
     local_rank = int(os.getenv("LOCAL_RANK", "0"))
     if __name__ == "__main__" and (not local_rank or local_rank == 0):
-        print("DeepSpeed is not available. Some features may be unavailable.")
+        warnings.warn(
+            "DeepSpeed is not available. Some features may be unavailable.",
+            UserWarning,
+        )
 
 # Third Party
-from instructlab.dolomite.hf_models import GPTDolomiteForCausalLM
-from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import (
-    AutoConfig,
-    AutoModelForCausalLM,
-    PreTrainedTokenizer,
-    get_scheduler,
-)
+from transformers import AutoConfig
 import torch
 import torch.distributed
 
 # First Party
 from instructlab.training import config
-from instructlab.training.async_logger import AsyncStructuredLogger
+from instructlab.training.accelerator import Accelerator
+from instructlab.training.config import (
+    DistributedBackend,
+    ModelTypes,
+    TorchrunArgs,
+    TrainingArgs,
+)
 
 # pylint: disable=no-name-in-module
-from instructlab.training.config import DistributedBackend, TorchrunArgs, TrainingArgs
+from instructlab.training.logger import (
+    propagate_package_logs,
+    setup_metric_logger,
+    setup_root_logger,
+)
+from instructlab.training.model import (
+    CausalLMModel,
+    LigerModel,
+    Model,
+    setup_optimizer,
+)
 from instructlab.training.multipack_sampler import (
     find_packing_max_batch_len_and_grad_accum,
 )
-from instructlab.training.setup_accelerator import setup_accelerator
 from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
-    add_noisy_embeddings,
-    apply_gradient_checkpointing,
-    check_flash_attn_enabled,
     check_valid_train_args,
-    convert_loss_to_reduce_sum,
-    create_lora_config,
-    ensure_loadable_dolomite_checkpoint,
     load_latest_full_state,
-    prepare_peft_model,
-    prepare_universal_checkpoint_from_latest,
     save_checkpoint,
     save_hf_format_accelerate,
     set_random_seed,
-    setup_logger,
 )
 import instructlab.training.data_process as dp
 
-
-def setup_optimizer(args, model):
-    if args.distributed_training_framework == DistributedBackend.FSDP.value:
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=args.learning_rate,
-            betas=(0.9, 0.95),
-            weight_decay=0.0,
-        )
-    elif args.distributed_training_framework == DistributedBackend.DEEPSPEED.value:
-        # need to use this only when the CPU offload optimizer is enabled
-        if args.cpu_offload_optimizer:
-            print(
-                "\033[33m!!! CPU offload optimizer enabled, using DeepSpeedCPUAdam !!!\033[0m"
-            )
-            optimizer = DeepSpeedCPUAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-        else:
-            optimizer = FusedAdam(
-                model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95)
-            )
-    else:
-        raise ValueError(
-            f"Sharding framework {args.distributed_training_framework} is not supported."
-        )
-    return optimizer
-
-
-def setup_model(
-    args, tokenizer: PreTrainedTokenizer, train_loader, grad_accum, flash_enabled
-):
-    bnb_config = None
-    if args.lora_r > 0 and args.lora_quant_bits == 4:
-        # Third Party
-        from transformers import BitsAndBytesConfig
-
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,  # if not set will throw a warning about slow speeds when training
-        )
-
-    base_model_args = {
-        "pretrained_model_name_or_path": args.model_name_or_path,
-        "torch_dtype": torch.bfloat16,
-        "quantization_config": bnb_config,
-    }
-    if flash_enabled:
-        base_model_args["attn_implementation"] = "flash_attention_2"
-
-    if args.use_dolomite:
-        with ensure_loadable_dolomite_checkpoint(
-            args.model_name_or_path, args.output_dir
-        ) as path:
-            base_model_args["pretrained_model_name_or_path"] = path
-            base_model_args["use_padding_free_transformer"] = True
-            model = GPTDolomiteForCausalLM.from_pretrained(
-                **base_model_args,
-            )
-    elif args.use_liger:
-        # TODO(osilkin): we duplicate some checks here because someone may run this script through
-        # torchrun directly and not `run_training`. To fix this, we should eventually move everything
-        # to using `torch.multiprocessing` and simplify the CLI.
-        if args.lora_r > 0:
-            raise ValueError(
-                "Using LoRA and Liger kernels is not supported. Please use either LoRA or Liger kernels, but not both."
-            )
-        try:
-            # Third Party
-            from liger_kernel.transformers import AutoLigerKernelForCausalLM
-        except ImportError as e:
-            raise ValueError(
-                "Liger kernels are not installed. Please install Liger kernels using the following command: pip install liger-kernel"
-            ) from e
-
-        # NOTE: (jkunstle) we disable fused_linear_cross_entropy, even though it's a default for most of the models with LK support,
-        #   because reduce_sum_loss requires the logits, and fused_linear_cross_entropy explicitly skips materializing them for
-        #   performance.
-        model = AutoLigerKernelForCausalLM.from_pretrained(
-            **base_model_args, cross_entropy=True, fused_linear_cross_entropy=False
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(**base_model_args)
-
-    # store the base model args so we can recall them later if saving a LoRA model
-    args.base_model_args = base_model_args
-
-    if len(tokenizer) > model.config.vocab_size:
-        print(
-            f"WARNING: tokenizer has {len(tokenizer)} tokens but model has {model.config.vocab_size} vocab size"
-        )
-        model.resize_token_embeddings(
-            int(8 * math.ceil(len(tokenizer) / 8.0))
-        )  # make the vocab size multiple of 8 for sharding the embedding layer.
-
-    # Fix any discrepancy between model and tokenizer
-    if (
-        model.config.pad_token_id is not None
-        and tokenizer.pad_token_id is not None
-        and model.config.pad_token_id != tokenizer.pad_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between pad token id of model ({model.config.pad_token_id}) and tokenizer({tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
-        )
-        model.config.pad_token_id = tokenizer.pad_token_id
-    if (
-        model.config.bos_token_id is not None
-        and tokenizer.bos_token_id is not None
-        and model.config.bos_token_id != tokenizer.bos_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between bos token id of model({model.config.bos_token_id}) and tokenizer({tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
-        )
-        model.config.bos_token_id = tokenizer.bos_token_id
-    if (
-        model.config.eos_token_id is not None
-        and tokenizer.eos_token_id
-        and model.config.eos_token_id != tokenizer.eos_token_id
-    ):
-        print(
-            f"WARNING: There is a mismatch between eos token id of model({model.config.eos_token_id}) and tokenizer({tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
-        )
-        model.config.eos_token_id = tokenizer.eos_token_id
-
-    if "ForCausalLM" not in model.__class__.__name__:
-        raise ValueError(
-            f"Model class name: {model.__class__.__name__} is not supported."
-        )
-
-    # ensure the model has any tokens which were added to the tokenizer
-    if tokenizer.pad_token_id is not None and model.config.pad_token_id is None:
-        model.config.pad_token_id = tokenizer.pad_token_id
-    if tokenizer.bos_token_id is not None and model.config.bos_token_id is None:
-        model.config.bos_token_id = tokenizer.bos_token_id
-    if tokenizer.eos_token_id is not None and model.config.eos_token_id is None:
-        model.config.eos_token_id = tokenizer.eos_token_id
-
-    model = convert_loss_to_reduce_sum(model, use_dolomite=args.use_dolomite)
-    model = add_noisy_embeddings(model, noise_alpha=args.NEFTune_alpha)
-
-    # handling of gradient checkpointing
-    # it is handled differently for lora and full
-    # - with the exception of granite, which handles it
-    #   in the later stanza
-    if args.lora_r > 0:
-        lora_config = create_lora_config(model, args)
-        model = prepare_peft_model(
-            model,
-            lora_config,
-            args.distributed_training_framework,
-            gradient_checkpointing=not args.use_dolomite,
-        )
-        args.lora_config = lora_config
-    elif not args.use_dolomite:
-        model.gradient_checkpointing_enable()
-
-    # granite gradient checkpointing is handled uniformly
-    # for both lora and full here
-    if args.use_dolomite:
-        block_name = model._no_split_modules[0]
-        apply_gradient_checkpointing(
-            model,
-            block_name=block_name,
-            use_reentrant=True,  # this should be the HF default mode
-        )
-
-        if args.lora_r > 0:
-
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    accelerator = setup_accelerator(args, model, grad_accum)
-    if args.distributed_training_framework == DistributedBackend.FSDP.value:
-        model = accelerator.prepare(model)
-    optimizer = setup_optimizer(args, model)
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler,
-        optimizer=optimizer,
-        num_warmup_steps=args.num_warmup_steps,
-        num_training_steps=args.num_epochs * len(train_loader) // grad_accum,
-    )
-    model, optimizer, _, lr_scheduler = accelerator.prepare(
-        model,
-        optimizer,
-        deepcopy(train_loader),
-        lr_scheduler,
-    )
-    # Necessary so that Accelerate does not step once per GPU
-    # see https://github.com/huggingface/accelerate/blob/127818fc27ebe5cb236357fff59ff1748326d643/src/accelerate/scheduler.py#L69
-    lr_scheduler.split_batches = True
-    return model, lr_scheduler, optimizer, accelerator
-
-
-# this function is to check if the checkpoint provided can be resumed
-def maybe_resume_training(args, model):
-    local_rank = int(os.environ["LOCAL_RANK"])
-
-    # DS's loading function will not raise if fails to reload a checkpoint
-    # - if lora is used, then the checkpoints will only be for the adapters
-    #   so we need to disable load_module_strict
-    # - load checkpoint will find the latest checkpoint
-    # - it will also load the optimizer and scheduler states by default
-    load_module_strict = args.lora_r == 0  # can only be true if lora is not used
-    output_dir = Path(args.output_dir) / "ds_native"
-
-    try:
-        # attempt to load a regular checkpoint first
-        model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
-    except ZeRORuntimeException as e:
-        if str(e).startswith("The checkpoint being loaded used a DP world size of"):
-            # if it fails with the above exception, then a universal
-            # checkpoint is required
-
-            # prepare the universal checkpoint
-            # - by reading 'latest' to get the resumable checkpoint
-            prepare_universal_checkpoint_from_latest(output_dir)
-
-            # need to do this to trigger the universal checkpoint
-            # loading
-            model._config.load_universal_checkpoint = True
-
-            # then attempt to load again
-            model.load_checkpoint(output_dir, load_module_strict=load_module_strict)
-
-            # reset to regular checkpoint loading
-            model._config.load_universal_checkpoint = False
-        else:
-            raise e  # reraise
-
-    # do this to figure out the last_step
-    latest_file = output_dir / "latest"
-    try:
-        with open(latest_file) as f:
-            # there is some assumption here that the ds_native
-            # checkpoints are tagged as <something>_(samples_seen)
-            step_folder = f.read()
-            (samples_seen,) = re.match("\w+_(\d+)", step_folder).groups()
-            samples_seen = int(samples_seen)
-
-            last_step = samples_seen // args.effective_batch_size
-            args.__dict__["last_step"] = last_step
-        (
-            print(f"\033[93mStarting from: {last_step}\033[0m")
-            if local_rank == 0
-            else None
-        )
-    except FileNotFoundError:
-        pass
-
-    # we will update the start step here
-    return model
+logger = logging.getLogger(__name__)
 
 
 def train(
     args,
-    model,
-    optimizer,
-    lr_scheduler,
+    model: Model,
+    optimizer: torch.optim.Optimizer,
     accelerator: Accelerator,
-    tokenizer: PreTrainedTokenizer,
-    train_loader: DataLoader,
-    grad_accum,
-    metric_logger,
 ):
     model.train()
 
@@ -354,45 +91,39 @@ def train(
     local_rank = int(os.environ["LOCAL_RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
 
-    batch_size = args.effective_batch_size // grad_accum
+    metric_logger = logging.getLogger("instructlab.training.metrics")
+    base_logger = logging.getLogger("instructlab.training")
+
+    batch_size = args.effective_batch_size // accelerator.grad_accum
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
-        print(f"\033[93mUpdating 'samples_seen' {args.samples_seen}\033[0m")
+        logger.info("Updating 'samples_seen' %d", args.samples_seen)
         samples_seen = args.samples_seen
 
-    if args.save_samples > 0:
-        args.save_samples = (args.save_samples // batch_size) * batch_size
-        (
-            print(f"\033[93mNumber of samples per save: {args.save_samples}\033[0m")
-            if local_rank == 0
-            else None
-        )
+    if accelerator.save_samples > 0:
+        accelerator.save_samples = (accelerator.save_samples // batch_size) * batch_size
+        logger.info("Number of samples per save: %d", args.save_samples)
 
     if args.save_samples_ds is not None:
         args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
-        (
-            print(
-                f"\033[93mNumber of samples per DS save: {args.save_samples_ds}\033[0m"
-            )
-            if local_rank == 0
-            else None
-        )
+        logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
     for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
-            train_loader.batch_sampler.set_epoch(epoch)
+            accelerator.train_loader.batch_sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
-            train_loader.sampler.set_epoch(epoch)
+            accelerator.train_loader.sampler.set_epoch(epoch)
         else:
             raise NotADirectoryError
 
+        num_epoch_steps = len(accelerator.train_loader)
         if local_rank == 0:
-            inner_pb = tqdm(range(len(train_loader)), desc=f"Epoch {epoch}")
+            inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
         # blast through the batches in the train loader up to the last step within the epoch.
-        for batch in train_loader:
+        for batch in accelerator.train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
                 global_step += 1
@@ -404,9 +135,9 @@ def train(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
-            if not args.use_dolomite:
-                for k in batch:
-                    batch[k] = batch[k].to(local_rank)
+            total_length = float(torch.tensor([batch.pop("total_length")]))
+            for k in batch:
+                batch[k] = batch[k].to(local_rank)
             output = model(
                 **batch,
                 use_cache=False,
@@ -431,21 +162,21 @@ def train(
             loss = (
                 loss / num_loss_counted_tokens * world_size
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            print(
+            base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
             accelerator.backward(loss)
 
-            if global_step % grad_accum == 0:
+            if global_step % accelerator.grad_accum == 0:
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                lr_scheduler.step()
+                accelerator.lr_scheduler.step()
                 optimizer.zero_grad()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
-                current_lr = lr_scheduler.get_last_lr()[0]
+                current_lr = accelerator.lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
                 global_grad_norm = (
@@ -462,7 +193,7 @@ def train(
                 # )
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
-                metric_logger.log_sync(
+                metric_logger.info(
                     {
                         "epoch": epoch,
                         "step": global_step,
@@ -472,70 +203,88 @@ def train(
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
+                        "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
                         "total_loss": float(log_loss / num_loss_counted_tokens),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
-                        "total_samples": len(train_loader.dataset),
+                        "total_samples": len(accelerator.train_loader.dataset),
+                        "num_epoch_steps": num_epoch_steps,
                         # "weight_norm": weight_norm,
-                    }
+                    },
+                    extra={"step": global_step},
                 )
 
             if args.save_samples > 0 and (
                 global_step * batch_size % args.save_samples == 0
             ):
+                base_logger.debug(f"Saving checkpoint at step {global_step}")
                 save_checkpoint(
                     args=args,
                     accelerator=accelerator,
                     model=model,
-                    tokenizer=tokenizer,
+                    tokenizer=model.tokenizer,
                     samples_seen=samples_seen,
                     is_lora=bool(args.lora_r),
                     hf_format=True,
                 )
+                base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
+                torch.distributed.barrier()
 
-            # if (
-            #     args.save_samples_ds is not None
-            #     and global_step * batch_size % args.save_samples_ds == 0
-            # ):
-            #     save_model_ds_native(
-            #         args,
-            #         model,
-            #         tokenizer,
-            #         global_step * args.samples_per_gpu * world_size,
-            #     )
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
+            base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
                 args=args,
                 accelerator=accelerator,
                 model=model,
-                tokenizer=tokenizer,
+                tokenizer=model.tokenizer,
                 samples_seen=samples_seen,
                 is_lora=bool(args.lora_r),
                 full_state=args.accelerate_full_state_at_epoch,
                 hf_format=True,
                 epoch=epoch,
             )
+            base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
+            torch.distributed.barrier()
 
     if args.save_last:
         save_hf_format_accelerate(
             args,
             model,
-            tokenizer,
+            model.tokenizer,
             accelerator,
             samples_seen,
             is_lora=bool(args.lora_r),
         )
 
 
-def main(args):
-    # Third Party
-    import yaml
+# This function makes an effort to stick to a default value from torch library,
+# whatever it may be. That's why we don't just set to the current (as of the
+# time of writing) default: to cover the unlikely event torch decides to tweak
+# the default.
+def _get_collective_timeout() -> datetime.timedelta | None:
+    timeout_var = os.getenv("INSTRUCTLAB_NCCL_TIMEOUT_MS")
+    if timeout_var is None:
+        return None
 
+    try:
+        timeout = int(timeout_var)
+    except ValueError:
+        timeout = -1
+
+    if timeout <= 0:
+        raise ValueError(
+            f"Invalid value for INSTRUCTLAB_NCCL_TIMEOUT_MS: {timeout_var}. Must be a positive integer."
+        )
+
+    return datetime.timedelta(milliseconds=timeout)
+
+
+def main(args):
     if args.distributed_training_framework == "deepspeed" and not FusedAdam:
         raise ImportError(
             "DeepSpeed was selected but we cannot import the `FusedAdam` optimizer"
@@ -550,15 +299,12 @@ def main(args):
             "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
         )
 
-    metric_logger = AsyncStructuredLogger(
-        args.output_dir
-        + f"/training_params_and_metrics_global{os.environ['RANK']}.jsonl"
-    )
+    setup_metric_logger(args.logger_type, args.run_name, args.output_dir)
+    metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
-        print(f"\033[38;5;120m{yaml.dump(vars(args), sort_keys=False)}\033[0m")
-        metric_logger.log_sync({"script_params": vars(args)})
+        metric_logger.info(vars(args), extra={"hparams": True})
 
-    setup_logger(args.log_level)
+    setup_root_logger(args.log_level)
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
@@ -568,13 +314,19 @@ def main(args):
     #### distributed init #####
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
-    torch.distributed.init_process_group("nccl")
+
+    timeout = _get_collective_timeout()
+    if timeout is not None:
+        torch.distributed.init_process_group(timeout=timeout)
+    else:
+        torch.distributed.init_process_group()
+
     args.global_rank = torch.distributed.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
-    flash_enabled = check_flash_attn_enabled(args.disable_flash_attn, args.use_dolomite)
+    flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
 
     dataset = setup_dataset(
         args.data_path,
@@ -582,20 +334,58 @@ def main(args):
         mock_len=args.mock_len,
     )
 
+    # This model class wraps the various AutoModel classes we support
+    # based on model_type, and model_path -> choose auto_model
+    lora_config = None
+
+    if args.lora_r > 0:
+        lora_config = Model.create_lora_config(
+            lora_target_modules=args.lora_target_modules,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            lora_r=args.lora_r,
+        )
+
+    # Create model based on type
+    model_class_map = {
+        ModelTypes.LIGER: LigerModel,
+        ModelTypes.CAUSALLM: CausalLMModel,
+    }
+
+    # Convert string to ModelTypes enum with fallback
+    try:
+        model_type = ModelTypes(args.model_class)
+    except (ValueError, AttributeError):
+        model_type = ModelTypes.CAUSALLM
+
+    # Get the model class with default fallback
+    model_class = model_class_map.get(model_type, CausalLMModel)
+    m = model_class(
+        model_path=args.model_name_or_path,
+        output_dir=args.output_dir,
+        lora_config=lora_config,
+        distributed_framework=DistributedBackend(args.distributed_training_framework),
+        tokenizer=tokenizer,
+        flash_enabled=flash_enabled,
+        noise_alpha=args.NEFTune_alpha,
+        lora_quant_bits=args.lora_quant_bits,
+    )
+
+    args.base_model_args = m.base_model_args
+
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
             num_gpus=torch.distributed.get_world_size(),
             avg_sample_len=dataset.get_lengths().mean(),
             effective_batch_size=args.effective_batch_size,
             max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not (args.use_dolomite or flash_enabled),
+            is_padding=not flash_enabled,
             dataset=dataset,
             seed=args.seed,
         )
         args.sampler = "multipack"
     except RuntimeError as e:
-        if os.environ["LOCAL_RANK"] == "0":
-            print(f"\033[38;5;120m{e}\033[0m")
+        logger.error(e)
 
         # fallback to grad accum = 1
         # NOTE: packing max batch len will not be used
@@ -611,7 +401,6 @@ def main(args):
         dataset,
         tokenizer.pad_token_id,
         num_workers=8,
-        use_dolomite=args.use_dolomite,
         flash_enabled=flash_enabled,
         max_batch_len=args.max_batch_len,
         packing_max_batch_len=packing_max_batch_len,
@@ -623,15 +412,14 @@ def main(args):
         # this happens sometimes when we have more GPUs than data to process. In this case
         # we should either alert the user to switch samplers, or do it automatically and
         # warn them about it happening
-        print(
-            "\033[93mThe dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!\033[0m"
+        logger.warning(
+            "The dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!"
         )
         args.sampler = "distributed"
         train_loader = setup_dataloader(
             dataset,
             tokenizer.pad_token_id,
             num_workers=8,
-            use_dolomite=args.use_dolomite,
             flash_enabled=flash_enabled,
             max_batch_len=args.max_batch_len,
             packing_max_batch_len=packing_max_batch_len,
@@ -641,7 +429,7 @@ def main(args):
         )
 
     if args.local_rank == 0:
-        metric_logger.log_sync(
+        metric_logger.info(
             {
                 "num_gpus": torch.distributed.get_world_size(),
                 "avg_sample_len": dataset.get_lengths().mean(),
@@ -653,25 +441,48 @@ def main(args):
                 "avg_samples_per_batch": len(dataset) / len(train_loader),
                 "samples_per_gpu": args.samples_per_gpu,
                 "total_samples": len(dataset),  # emit the total number of samples
-            }
+            },
+            extra={"hparams": True},
         )
-
-    model, lr_scheduler, optimizer, accelerator = setup_model(
-        args, tokenizer, train_loader, grad_accum, flash_enabled
+    # accelerator does not need optimizer to init, in fact, the optimizer needs to be initialized AFTER the Accelerator
+    accelerator = Accelerator(
+        model=m,
+        samples_per_gpu=args.samples_per_gpu,
+        grad_accum=grad_accum,
+        train_loader=train_loader,
+        distributed_framework=DistributedBackend(args.distributed_training_framework),
+        fsdp_sharding_strategy=args.fsdp_sharding_strategy,
+        deepspeed_cpu_offload_optimizer=args.cpu_offload_optimizer,
+        deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
+        deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
+        fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        save_samples=args.save_samples,
     )
+    # optimizer needs model that has been prepared by accelerator
+    # and then accelerator needs to be prepared AGAIN once optimizer is initialized
+    optimizer = setup_optimizer(
+        model=m,
+        cpu_offload=args.cpu_offload_optimizer,
+        name=None,  # choose based on backend
+        learning_rate=args.learning_rate,
+    )
+    accelerator.prepare_with_optimizer(
+        optimizer=optimizer,
+        lr_scheduler=args.lr_scheduler,
+        num_epochs=args.num_epochs,
+        num_warmup_steps=args.num_warmup_steps,
+    )
+    # TODO: make this work more seamlessly
+    optimizer = accelerator.optimizer
+    m = accelerator.model
 
     load_latest_full_state(args=args, accelerator=accelerator)
 
     train(
         args,
-        model,
-        optimizer,
-        lr_scheduler,
-        accelerator,
-        tokenizer,
-        train_loader,
-        grad_accum,
-        metric_logger,
+        model=m,
+        optimizer=optimizer,
+        accelerator=accelerator,
     )
 
     torch.distributed.barrier()
@@ -683,6 +494,15 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     """
     Wrapper around the main training job that calls torchrun.
     """
+    # Set up logging first before any processing
+    # Enable package logging propagation before setting up loggers
+    propagate_package_logs(True)
+    setup_root_logger(train_args.log_level)
+    setup_metric_logger("async", None, train_args.ckpt_output_dir)
+
+    logger = logging.getLogger("instructlab.training")
+    logger.info("Starting training setup...")
+
     check_valid_train_args(train_args)
 
     # switch out generic tmpl for legacy tmpl if requested
@@ -724,7 +544,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--learning_rate={train_args.learning_rate}",
         f"--num_warmup_steps={train_args.warmup_steps}",
         f"--save_samples={train_args.save_samples}",
-        f"--log_level=INFO",
+        f"--log_level={train_args.log_level}",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
     ]
@@ -748,9 +568,6 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append("--mock_data")
         if train_args.mock_len:
             command.append(f"--mock_len={train_args.mock_len}")
-
-    if train_args.use_dolomite:
-        command.append("--use_dolomite")
 
     if train_args.disable_flash_attn:
         command.append("--disable_flash_attn")
@@ -819,7 +636,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
 
-    print(f"\033[92mRunning training command as subprocess: {' '.join(command)}\033[0m")
+    logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
     interrupt: KeyboardInterrupt | Exception | None = None
     failure = False
@@ -830,10 +647,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
         process.listen()
     except KeyboardInterrupt as e:
-        print("Training subprocess interrupted by user.")
+        logger.info("Training subprocess interrupted by user.")
         interrupt = e
     except Exception as e:
-        print("Unexpected exception received during distributed training")
+        logger.error(
+            "Unexpected exception received during distributed training", exc_info=e
+        )
         interrupt = e
     finally:
         if "process" not in locals() or process is None:
@@ -841,19 +660,17 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
         failure = process.poll() != 0
         if not failure:
-            print("\033[92mOperation completed successfully! 🎉\033[0m")
+            logger.info("Operation completed successfully! 🎉")
         else:
-            print(
-                "\033[91mTraining subprocess has not exited yet. Sending SIGTERM.\033[0m"
-            )
+            logger.error("Training subprocess has not exited yet. Sending SIGTERM.")
 
         process.terminate()
         try:
-            print("Waiting for process to exit, 60s...")
+            logger.info("Waiting for process to exit, 60s...")
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
-            print(
-                "\033[91mTraining subprocess did not terminate before timeout, sending SIGKILL.\033[0m"
+            logger.error(
+                "Training subprocess did not terminate before timeout, sending SIGKILL."
             )
             process.kill()
 
@@ -870,6 +687,12 @@ if __name__ == "__main__":
     #               Maybe switch out from argparse to something smarter
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name_or_path", type=str)
+    parser.add_argument(
+        "--model-class",
+        type=str,
+        default=ModelTypes.CAUSALLM.value,
+        help=f"valid model classes are {[x.value for x in ModelTypes]}.",
+    )
     parser.add_argument("--data_path", type=str)
     parser.add_argument("--output_dir", type=str)
     parser.add_argument("--num_epochs", type=int, default=1)
@@ -930,6 +753,8 @@ if __name__ == "__main__":
         help="Save full model state using Accelerate after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
+    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--logger_type", type=str, default="async")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
@@ -946,10 +771,14 @@ if __name__ == "__main__":
         "--fsdp_sharding_strategy",
         type=str,
         # choices=[e.name for e in ShardingStrategy],
-        default="SHARD_GRAD_OP",
+        default="HYBRID_SHARD",
         help="Sharding strategy to be used for FSDP distributed training.",
     )
-    parser.add_argument("--use_dolomite", action="store_true")
+    parser.add_argument(
+        "--use_dolomite",
+        action="store_true",
+        help="(Deprecated, NoOp) Attempts to use GPTDolomite architecture",
+    )
     parser.add_argument("--lora_r", type=int, default=0)  # set to > 0 to activate lora
     parser.add_argument("--lora_alpha", type=int, default=32)
     parser.add_argument("--lora_dropout", type=float, default=0.1)
@@ -1052,7 +881,6 @@ torchrun --nnodes=$WORLD_SIZE --node_rank=$RANK \
 --save_samples=250000 \
 --log_level="INFO" \
 --fsdp_sharding_strategy="SHARD_GRAD_OP" \
---use_dolomite \
 --max_batch_len 70000 \
 --seed=42
 """

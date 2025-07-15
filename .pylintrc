@@ -451,7 +451,6 @@ disable=raw-checker-failed,
         # Added specifically for the training repo to get a green starting point
         import-outside-toplevel,
         redefined-outer-name,
-        unused-argument,
         f-string-without-interpolation,
         expression-not-assigned,
         wrong-import-position,

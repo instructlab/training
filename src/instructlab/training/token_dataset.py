@@ -47,7 +47,7 @@ class TokenDataset(Dataset):
 
 
 class MockDataset(Dataset):
-    def __init__(self, data_path, max_seq_len=4600):
+    def __init__(self, max_seq_len=4600):
         self.input_ids = np.random.randint(
             0, 10000, size=(92000, max_seq_len), dtype=np.int16
         )
@@ -80,7 +80,7 @@ def setup_dataset(
 ) -> Dataset:
     if mock:
         log_rank_0("Using a mock dataset.")
-        dataset = MockDataset(data_path, max_seq_len=mock_len)
+        dataset = MockDataset(max_seq_len=mock_len)
     else:
         dataset = TokenDataset(data_path)
     return dataset
@@ -90,7 +90,6 @@ def setup_dataloader(
     dataset: Dataset,
     pad_token_id: int,
     num_workers: int = 8,
-    use_dolomite=False,
     flash_enabled=True,
     max_batch_len=60000,
     packing_max_batch_len=60000,
@@ -99,10 +98,7 @@ def setup_dataloader(
     seed=47,
 ) -> DataLoader:
     collate_fn = make_collate_fn(
-        pad_token_id,
-        use_dolomite=use_dolomite,
-        flash_enabled=flash_enabled,
-        max_batch_len=max_batch_len,
+        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])

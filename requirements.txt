@@ -2,18 +2,13 @@ packaging>=20.9
 wheel>=0.43
 pyyaml
 py-cpuinfo
-# we set this to be above 0a0 so that it doesn't
-# replace custom pytorch images with the 2.3.0
-torch>=2.3.0a0
+torch>=2.6.0
 transformers>=4.45.2
 
 datasets>=2.15.0
 numba
-# Note: numpy ranges copied from instructlab/instructlab
-#
 numpy>=1.26.4,<2.0.0
 rich
-instructlab-dolomite>=0.2.0
 trl>=0.9.4
 peft
 pydantic>=2.7.0

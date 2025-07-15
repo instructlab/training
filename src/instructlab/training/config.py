@@ -6,7 +6,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -141,6 +141,18 @@ class FSDPOptions(BaseModel):
     sharding_strategy: ShardingStrategies = ShardingStrategies.HYBRID_SHARD
 
 
+class Optimizer(Enum):
+    ADAMW = "Adamw"
+    CPUAdam = "CPUAdam"
+    FusedAdam = "FusedAdam"
+
+
+# public API
+class ModelTypes(Enum):
+    LIGER = "Liger"
+    CAUSALLM = "CausalLM"
+
+
 # public API
 class TrainingArgs(BaseModel):
     """
@@ -178,6 +190,8 @@ class TrainingArgs(BaseModel):
     learning_rate: float
     warmup_steps: int
     random_seed: int = 42
+
+    # (jkunstle) left here for compatibility, but Dolomite is removed.
     use_dolomite: bool = False
     is_padding_free: bool = False  # TODO: deprecate
     checkpoint_at_epoch: bool = True
@@ -195,7 +209,7 @@ class TrainingArgs(BaseModel):
     )
     fsdp_options: FSDPOptions = Field(
         default_factory=lambda: FSDPOptions(
-            cpu_offload_params=False, sharding_strategy=ShardingStrategies.SHARD_GRAD_OP
+            cpu_offload_params=False,
         )
     )
     distributed_backend: DistributedBackend = DistributedBackend.FSDP
@@ -227,4 +241,8 @@ class TrainingArgs(BaseModel):
     use_liger: bool = Field(
         default=False,
         description="Whether to use Liger kernels for training.",
+    )
+
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
+        default="INFO"
     )
