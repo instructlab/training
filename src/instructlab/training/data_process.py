@@ -340,7 +340,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         args.max_seq_len,
         num_dropped_samples,
     )
-    logger.info("({:.2f}% of total)", ((num_dropped_samples / len(lens)) * 100))
+    logger.info("(%.2f%% of total)", ((num_dropped_samples / len(lens)) * 100))
     if num_dropped_samples == len(data):
         raise RuntimeError(
             f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\nPlease consider increasing your `max_seq_len` value, or adding more samples."
