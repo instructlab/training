@@ -2,7 +2,7 @@
 import argparse
 
 # Third Party
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def interpolate_models(
