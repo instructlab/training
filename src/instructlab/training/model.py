@@ -30,7 +30,7 @@ except ImportError:
 # Third Party
 from peft import LoraConfig
 from torch.optim import AdamW
-from transformers import PreTrainedTokenizer
+from transformers import PreTrainedTokenizer, AutoConfig
 import torch
 
 # First Party
@@ -55,12 +55,24 @@ class Model:
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
-        bnb_config = None
-        if lora_config and lora_config.r > 0 and lora_quant_bits == 4:
+        quant_config = None
+        # Get model config to check model type
+        model_config = AutoConfig.from_pretrained(model_path)
+        if model_config.model_type == "gpt_oss":
+            # Third Party
+            from transformers import Mxfp4Config
+            
+            # Use dequantize=False to preserve original model format for compatibility
+            # WARNING: This may have implications for FSDP mixed precision training
+            # TODO: Monitor training stability and memory usage with quantized weights
+            quant_config = Mxfp4Config(dequantize=False)
+
+        # TODO: Add support for 8bit quantization
+        elif lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
             from transformers import BitsAndBytesConfig
 
-            bnb_config = BitsAndBytesConfig(
+            quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
@@ -70,11 +82,13 @@ class Model:
         self.base_model_args = {
             "pretrained_model_name_or_path": model_path,
             "torch_dtype": torch.bfloat16,
-            "quantization_config": bnb_config,
+            "quantization_config": quant_config,
         }
 
-        if flash_enabled:
+        if flash_enabled and model_config.model_type != "gpt_oss":
             self.base_model_args["attn_implementation"] = "flash_attention_2"
+        elif flash_enabled and model_config.model_type == "gpt_oss":
+            self.base_model_args["attn_implementation"]="kernels-community/vllm-flash-attn3"
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
