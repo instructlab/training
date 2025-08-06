@@ -141,14 +141,14 @@ jobs:
 
       - name: Download loss data Phase 1
         id: phase-1-download-logs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-1-training-log.jsonl
           path: downloaded-data
 
       - name: Download loss data Phase 2
         id: phase-2-download-logs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: phase-2-training-log.jsonl
           path: downloaded-data
