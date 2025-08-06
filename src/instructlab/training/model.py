@@ -82,8 +82,10 @@ class Model:
             "quantization_config": quant_config,
         }
 
-        if flash_enabled:
+        if flash_enabled and model_config.model_type != "gpt_oss":
             self.base_model_args["attn_implementation"] = "flash_attention_2"
+        elif flash_enabled and model_config.model_type == "gpt_oss":
+            self.base_model_args["attn_implementation"]="kernels-community/vllm-flash-attn3"
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
