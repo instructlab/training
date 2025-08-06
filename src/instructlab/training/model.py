@@ -60,9 +60,9 @@ class Model:
         model_config = AutoConfig.from_pretrained(model_path)
         if model_config.model_type == "gpt_oss":
             # Third Party
-            from transformers import MXFP4Config
+            from transformers import Mxfp4Config
             
-            quant_config = MXFP4Config(dequantize=True)
+            quant_config = Mxfp4Config(dequantize=True)
 
         # TODO: Add support for 8bit quantization
         elif lora_config and lora_config.r > 0 and lora_quant_bits == 4:
