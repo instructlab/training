@@ -96,9 +96,22 @@ def _generate_real_quantization_metadata(expert_params_converted):
         base_name = new_name.replace("_blocks", "")
         
         try:
-            # Perform actual MXFP4 quantization
+            # Perform actual MXFP4 quantization (requires GPU for Triton kernels)
             logger.info(f"Performing real MXFP4 quantization for {original_name}")
-            quantized_blocks, scales = quantize_to_mxfp4(param_tensor)
+            
+            # Move to GPU if not already there
+            original_device = param_tensor.device
+            if param_tensor.device.type == 'cpu':
+                gpu_tensor = param_tensor.cuda()
+            else:
+                gpu_tensor = param_tensor
+            
+            # Perform quantization on GPU
+            quantized_blocks, scales = quantize_to_mxfp4(gpu_tensor)
+            
+            # Move results back to original device
+            quantized_blocks = quantized_blocks.to(original_device)
+            scales = scales.to(original_device)
             
             # Add quantized blocks (this replaces the original parameter)
             metadata[new_name] = quantized_blocks
