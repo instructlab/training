@@ -98,6 +98,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
         try:
             # Perform actual MXFP4 quantization (requires GPU for Triton kernels)
             logger.info(f"Performing real MXFP4 quantization for {original_name}")
+            logger.info(f"Input tensor shape: {param_tensor.shape}, dtype: {param_tensor.dtype}")
             
             # Move to GPU if not already there
             original_device = param_tensor.device
@@ -118,8 +119,8 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 raise ValueError(f"Unexpected return type from quantize_to_mxfp4: {type(result)}")
             
             # Check what we actually got and handle device movement appropriately
-            logger.info(f"Blocks: type={type(quantized_blocks)}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
-            logger.info(f"Scales: type={type(scales)}, device={getattr(scales, 'device', 'no device attr')}")
+            logger.info(f"Blocks: type={type(quantized_blocks)}, shape={getattr(quantized_blocks, 'shape', 'no shape')}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
+            logger.info(f"Scales: type={type(scales)}, shape={getattr(scales, 'shape', 'no shape')}, device={getattr(scales, 'device', 'no device attr')}")
             
             # Convert triton tensors to PyTorch tensors to match original format
             # Original GPT-OSS uses: blocks=torch.uint8, scales=torch.uint8
