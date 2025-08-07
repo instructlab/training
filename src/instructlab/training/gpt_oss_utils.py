@@ -33,7 +33,9 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
     expert_params_converted = []
     
     logger.info("Starting GPT-OSS parameter conversion...")
+    logger.info(f"Input state dict has {len(state_dict)} parameters")
     
+    conversion_count = 0
     for param_name, param_tensor in state_dict.items():
         new_name = param_name
         
@@ -41,14 +43,18 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
         if ".mlp.experts.down_proj" in param_name and not param_name.endswith("_bias"):
             new_name = param_name.replace(".mlp.experts.down_proj", ".mlp.experts.down_proj_blocks")
             expert_params_converted.append((param_name, new_name, param_tensor))
+            conversion_count += 1
             logger.info(f"Converting {param_name} -> {new_name}")
             
         elif ".mlp.experts.gate_up_proj" in param_name and not param_name.endswith("_bias"):
             new_name = param_name.replace(".mlp.experts.gate_up_proj", ".mlp.experts.gate_up_proj_blocks")
             expert_params_converted.append((param_name, new_name, param_tensor))
+            conversion_count += 1
             logger.info(f"Converting {param_name} -> {new_name}")
         
         converted_state_dict[new_name] = param_tensor
+    
+    logger.info(f"Converted {conversion_count} parameter names")
     
     # Generate quantization metadata for converted expert parameters
     if expert_params_converted:
