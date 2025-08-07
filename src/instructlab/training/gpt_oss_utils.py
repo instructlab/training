@@ -121,11 +121,21 @@ def _generate_real_quantization_metadata(expert_params_converted):
             logger.info(f"Blocks: type={type(quantized_blocks)}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
             logger.info(f"Scales: type={type(scales)}, device={getattr(scales, 'device', 'no device attr')}")
             
-            # Move results back to original device only if they're tensors
-            if torch.is_tensor(quantized_blocks):
+            # Convert triton tensors to PyTorch tensors and move to original device
+            if hasattr(quantized_blocks, 'torch'):
+                # triton_kernels.tensor.Tensor has a .torch() method to convert to PyTorch tensor
+                quantized_blocks = quantized_blocks.torch().to(original_device)
+            elif hasattr(quantized_blocks, 'to'):
                 quantized_blocks = quantized_blocks.to(original_device)
-            if torch.is_tensor(scales):
+            
+            if hasattr(scales, 'torch'):
+                # triton_kernels.tensor.Tensor has a .torch() method to convert to PyTorch tensor
+                scales = scales.torch().to(original_device)
+            elif hasattr(scales, 'to'):
                 scales = scales.to(original_device)
+            
+            # Verify we now have PyTorch tensors
+            logger.info(f"After conversion: blocks={type(quantized_blocks)}, scales={type(scales)}")
             
             # Add quantized blocks (this replaces the original parameter)
             metadata[new_name] = quantized_blocks
