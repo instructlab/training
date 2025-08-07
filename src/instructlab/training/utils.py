@@ -643,23 +643,20 @@ def save_hf_format_accelerate(
         # Check if this is a GPT-OSS model that needs format conversion
         from .gpt_oss_utils import should_convert_gpt_oss_format
         
-        if should_convert_gpt_oss_format(model.module.config):
-            # For GPT-OSS models, use FSDP-compatible state dict extraction like LoRA
+        if should_convert_gpt_oss_format(model.module.config) and accelerator.is_main_process:
+            # For GPT-OSS models, use same pattern as LoRA
             log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
             
-            # Use FSDP state dict configuration for proper extraction
-            sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-            with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
-                model_state = model.state_dict()
+            # Get model state dict directly like LoRA does
+            model_state = model.module.state_dict()
             
-            if accelerator.is_main_process:
-                save_dict_accelerate_gpt_oss(
-                    accelerator,
-                    model_state,
-                    save_directory=output_dir,
-                    max_shard_size="5GB",
-                    safe_serialization=True,
-                )
+            save_dict_accelerate_gpt_oss(
+                accelerator,
+                model_state,
+                save_directory=output_dir,
+                max_shard_size="5GB",
+                safe_serialization=True,
+            )
         elif not should_convert_gpt_oss_format(model.module.config):
             # Standard model saving
             accelerator.save_model(
