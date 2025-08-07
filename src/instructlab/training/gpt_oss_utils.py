@@ -56,20 +56,26 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
     
     logger.info(f"Converted {conversion_count} parameter names")
     
-    # Generate quantization metadata for converted expert parameters
+    # Generate real quantization for converted expert parameters
     if expert_params_converted:
-        logger.info(f"Generating quantization metadata for {len(expert_params_converted)} expert parameters")
-        metadata = _generate_placeholder_quantization_metadata(expert_params_converted)
+        logger.info(f"Generating real MXFP4 quantization for {len(expert_params_converted)} expert parameters")
+        metadata = _generate_real_quantization_metadata(expert_params_converted)
+        
+        # Remove original dequantized parameters and add quantized versions
+        for original_name, new_name, param_tensor in expert_params_converted:
+            if original_name in converted_state_dict:
+                del converted_state_dict[original_name]  # Remove dequantized version
+        
         converted_state_dict.update(metadata)
-        logger.info(f"Added {len(metadata)} quantization metadata parameters")
+        logger.info(f"Added {len(metadata)} quantized parameters (blocks + scales)")
     
     logger.info(f"Conversion complete: {len(converted_state_dict)} total parameters")
     return converted_state_dict
 
 
-def _generate_placeholder_quantization_metadata(expert_params_converted):
+def _generate_real_quantization_metadata(expert_params_converted):
     """
-    Generate placeholder quantization scales and zeros for dequantized expert parameters.
+    Generate real MXFP4 quantization for dequantized expert parameters.
     
     Args:
         expert_params_converted: List of (original_name, new_name, tensor) tuples
@@ -77,15 +83,53 @@ def _generate_placeholder_quantization_metadata(expert_params_converted):
     Returns:
         Dict of quantization metadata parameters
     """
+    try:
+        from transformers.integrations.mxfp4 import quantize_to_mxfp4
+    except ImportError:
+        logger.error("MXFP4 quantization not available - falling back to placeholder")
+        return _generate_placeholder_quantization_metadata(expert_params_converted)
+    
     metadata = {}
     
     for original_name, new_name, param_tensor in expert_params_converted:
-        # Generate base name for scales/zeros
+        # Generate base name for scales
+        base_name = new_name.replace("_blocks", "")
+        
+        try:
+            # Perform actual MXFP4 quantization
+            logger.info(f"Performing real MXFP4 quantization for {original_name}")
+            quantized_blocks, scales = quantize_to_mxfp4(param_tensor)
+            
+            # Add quantized blocks (this replaces the original parameter)
+            metadata[new_name] = quantized_blocks
+            
+            # Add scales
+            scales_name = f"{base_name}_scales"
+            metadata[scales_name] = scales
+            
+            logger.info(f"Real quantization: {new_name} → blocks: {quantized_blocks.shape} ({quantized_blocks.dtype}), scales: {scales.shape} ({scales.dtype})")
+            
+        except Exception as e:
+            logger.error(f"Failed to quantize {original_name}: {e}")
+            logger.info("Falling back to placeholder quantization")
+            return _generate_placeholder_quantization_metadata(expert_params_converted)
+    
+    return metadata
+
+
+def _generate_placeholder_quantization_metadata(expert_params_converted):
+    """
+    Fallback placeholder quantization (for debugging/compatibility).
+    """
+    metadata = {}
+    
+    for original_name, new_name, param_tensor in expert_params_converted:
+        # Generate base name for scales
         base_name = new_name.replace("_blocks", "")
         
         # For MXFP4, we need scales and zeros matching tensor shape[:-1]
         if param_tensor.dim() >= 2:
-            # Scales and zeros should match all dims except the last one
+            # Scales should match all dims except the last one
             scales_shape = param_tensor.shape[:-1]
             
             # Generate scales (small positive values around 1.0)
@@ -93,12 +137,7 @@ def _generate_placeholder_quantization_metadata(expert_params_converted):
             scales = torch.ones(scales_shape, dtype=torch.float32, device=param_tensor.device) * 0.1
             metadata[scales_name] = scales
             
-            # Generate zeros (typically zero for symmetric quantization)
-            zeros_name = f"{base_name}_zeros"
-            zeros = torch.zeros(scales_shape, dtype=torch.float32, device=param_tensor.device)
-            metadata[zeros_name] = zeros
-            
-            logger.debug(f"Generated metadata: {scales_name} ({scales.shape}), {zeros_name} ({zeros.shape})")
+            logger.debug(f"Generated placeholder metadata: {scales_name} ({scales.shape})")
     
     return metadata
 
