@@ -469,27 +469,11 @@ def save_fsdp_gpt_oss_model(
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save the converted state dict directly using accelerate's save_model
-        # We'll temporarily monkey-patch the get_state_dict to return our converted state
-        old_get_state = accelerator.get_state_dict
-        accelerator.get_state_dict = lambda x, unwrap=False: converted_state
+        # Save the converted state dict directly using safetensors
+        import safetensors.torch as safe_torch
         
-        # Create a dummy object with methods needed by accelerator.save_model
-        class StateWrapper:
-            def modules(self): return []
-            def parameters(self): return []
-        
-        state_wrapper = StateWrapper()
-        
-        accelerator.save_model(
-            state_wrapper,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
-        
-        # Restore original get_state_dict
-        accelerator.get_state_dict = old_get_state
+        # Save directly to safetensors file
+        safe_torch.save_file(converted_state, output_dir / "model.safetensors")
         
         # Save config and tokenizer
         model.config.to_json_file(f"{output_dir}/config.json")
