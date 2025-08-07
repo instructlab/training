@@ -162,6 +162,10 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 logger.info(f"Converting scales from {scales.dtype} to torch.uint8") 
                 scales = scales.to(torch.uint8)
             
+            # Ensure tensors are contiguous for safetensors compatibility
+            quantized_blocks = quantized_blocks.contiguous()
+            scales = scales.contiguous()
+            
             # Verify we now have PyTorch tensors
             logger.info(f"After conversion: blocks={type(quantized_blocks)}, scales={type(scales)}")
             
