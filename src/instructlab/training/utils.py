@@ -466,27 +466,32 @@ def save_fsdp_gpt_oss_model(
         # Convert the state dict to quantized format
         converted_state = convert_dequantized_to_quantized_format(state)
         
-        # Create fresh model copy on CPU with clean config (no quantization)
-        old_device_map = args.base_model_args.pop("device_map", None)
+        # Save converted state dict directly using accelerate utilities
+        output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Load config and remove any quantization settings
-        from transformers import AutoConfig
-        clean_config = AutoConfig.from_pretrained(args.base_model_args["pretrained_model_name_or_path"])
-        if hasattr(clean_config, 'quantization_config'):
-            delattr(clean_config, 'quantization_config')
+        # Save the converted state dict directly using accelerate's save_model
+        # We'll temporarily monkey-patch the get_state_dict to return our converted state
+        old_get_state = accelerator.get_state_dict
+        accelerator.get_state_dict = lambda x, unwrap=False: converted_state
         
-        model_copy = AutoModelForCausalLM.from_pretrained(
-            args.base_model_args["pretrained_model_name_or_path"],
-            config=clean_config,
-            torch_dtype=args.base_model_args.get("torch_dtype", torch.bfloat16),
-            device_map="cpu"
+        # Create a dummy object with methods needed by accelerator.save_model
+        class StateWrapper:
+            def modules(self): return []
+            def parameters(self): return []
+        
+        state_wrapper = StateWrapper()
+        
+        accelerator.save_model(
+            state_wrapper,
+            save_directory=output_dir,
+            max_shard_size="5GB",
+            safe_serialization=True,
         )
         
-        # Load converted state dict into the copy
-        model_copy.load_state_dict(converted_state, strict=False)
+        # Restore original get_state_dict
+        accelerator.get_state_dict = old_get_state
         
-        # Save the model copy (disable safe_serialization for MXFP4 compatibility)
-        model_copy.save_pretrained(output_dir, safe_serialization=False)
+        # Save config and tokenizer
         model.config.to_json_file(f"{output_dir}/config.json")
         
         # Update config with proper quantization settings
@@ -494,11 +499,6 @@ def save_fsdp_gpt_oss_model(
         update_config_for_quantized_format(config_file)
         
         tokenizer.save_pretrained(output_dir)
-        del model_copy
-        
-        # Restore device_map (same as LoRA)
-        if old_device_map:
-            args.base_model_args["device_map"] = old_device_map
 
     dist.barrier()
 
