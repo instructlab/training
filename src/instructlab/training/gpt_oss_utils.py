@@ -107,11 +107,25 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 gpu_tensor = param_tensor
             
             # Perform quantization on GPU
-            quantized_blocks, scales = quantize_to_mxfp4(gpu_tensor)
+            result = quantize_to_mxfp4(gpu_tensor)
+            logger.info(f"quantize_to_mxfp4 returned: {type(result)}")
             
-            # Move results back to original device
-            quantized_blocks = quantized_blocks.to(original_device)
-            scales = scales.to(original_device)
+            if isinstance(result, tuple):
+                quantized_blocks, scales = result
+                logger.info(f"Unpacked: blocks={type(quantized_blocks)}, scales={type(scales)}")
+            else:
+                logger.error(f"Expected tuple, got {type(result)}")
+                raise ValueError(f"Unexpected return type from quantize_to_mxfp4: {type(result)}")
+            
+            # Check what we actually got and handle device movement appropriately
+            logger.info(f"Blocks: type={type(quantized_blocks)}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
+            logger.info(f"Scales: type={type(scales)}, device={getattr(scales, 'device', 'no device attr')}")
+            
+            # Move results back to original device only if they're tensors
+            if torch.is_tensor(quantized_blocks):
+                quantized_blocks = quantized_blocks.to(original_device)
+            if torch.is_tensor(scales):
+                scales = scales.to(original_device)
             
             # Add quantized blocks (this replaces the original parameter)
             metadata[new_name] = quantized_blocks
