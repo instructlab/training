@@ -121,18 +121,46 @@ def _generate_real_quantization_metadata(expert_params_converted):
             logger.info(f"Blocks: type={type(quantized_blocks)}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
             logger.info(f"Scales: type={type(scales)}, device={getattr(scales, 'device', 'no device attr')}")
             
-            # Convert triton tensors to PyTorch tensors and move to original device
-            if hasattr(quantized_blocks, 'torch'):
-                # triton_kernels.tensor.Tensor has a .torch() method to convert to PyTorch tensor
-                quantized_blocks = quantized_blocks.torch().to(original_device)
-            elif hasattr(quantized_blocks, 'to'):
-                quantized_blocks = quantized_blocks.to(original_device)
+            # Convert triton tensors to PyTorch tensors to match original format
+            # Original GPT-OSS uses: blocks=torch.uint8, scales=torch.uint8
             
-            if hasattr(scales, 'torch'):
-                # triton_kernels.tensor.Tensor has a .torch() method to convert to PyTorch tensor
-                scales = scales.torch().to(original_device)
-            elif hasattr(scales, 'to'):
-                scales = scales.to(original_device)
+            # Try multiple methods to extract PyTorch tensor from triton tensor
+            def convert_triton_to_torch(triton_tensor, target_name):
+                methods = ['data', 'tensor', '_tensor', 'value', '__array__']
+                
+                for method in methods:
+                    if hasattr(triton_tensor, method):
+                        try:
+                            attr = getattr(triton_tensor, method)
+                            if callable(attr):
+                                result = attr()
+                            else:
+                                result = attr
+                            
+                            # Convert to PyTorch tensor if needed
+                            if not torch.is_tensor(result):
+                                result = torch.as_tensor(result)
+                            
+                            return result.to(original_device)
+                        except Exception as e:
+                            logger.debug(f"Method {method} failed for {target_name}: {e}")
+                            continue
+                
+                # Last resort: try to get underlying data
+                logger.error(f"Failed to convert {target_name}. Available attributes: {[attr for attr in dir(triton_tensor) if not attr.startswith('__')]}")
+                raise RuntimeError(f"Could not convert triton tensor {target_name} to PyTorch tensor")
+            
+            quantized_blocks = convert_triton_to_torch(quantized_blocks, "blocks")
+            scales = convert_triton_to_torch(scales, "scales")
+            
+            # Ensure correct dtypes to match original format
+            if quantized_blocks.dtype != torch.uint8:
+                logger.info(f"Converting blocks from {quantized_blocks.dtype} to torch.uint8")
+                quantized_blocks = quantized_blocks.to(torch.uint8)
+                
+            if scales.dtype != torch.uint8:
+                logger.info(f"Converting scales from {scales.dtype} to torch.uint8") 
+                scales = scales.to(torch.uint8)
             
             # Verify we now have PyTorch tensors
             logger.info(f"After conversion: blocks={type(quantized_blocks)}, scales={type(scales)}")
