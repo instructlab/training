@@ -484,6 +484,23 @@ def _copy_no_lora_dict(state_dict):
     return cleaned_state_dict
 
 
+def _copy_gpt_oss_converted_dict(state_dict):
+    """Copy and convert GPT-OSS state dict to quantized format."""
+    from .gpt_oss_utils import convert_dequantized_to_quantized_format
+    
+    # First apply standard cleaning like LoRA does
+    cleaned_state_dict = OrderedDict()
+    for param_tensor in state_dict:
+        cleaned_state_dict[
+            param_tensor.replace(".base_layer", "").replace("base_model.model.", "")
+        ] = deepcopy(state_dict[param_tensor]).cpu()
+    
+    # Then apply GPT-OSS parameter name conversion
+    converted_state_dict = convert_dequantized_to_quantized_format(cleaned_state_dict)
+    
+    return converted_state_dict
+
+
 def save_dict_accelerate(
     accelerator: Accelerator,
     state_to_save,
@@ -493,6 +510,34 @@ def save_dict_accelerate(
 ):
     old_get_state = accelerator.get_state_dict
     accelerator.get_state_dict = _copy_no_lora_dict
+
+    def skip_precheck_loops():
+        return []
+
+    # The save model does a loop over modules and params in order to determine how to get state dict. Since we already have the state dict directly, we want to bypass those checks.
+    state_to_save.modules = skip_precheck_loops
+    state_to_save.parameters = skip_precheck_loops
+
+    accelerator.save_model(
+        state_to_save,
+        save_directory=save_directory,
+        max_shard_size=max_shard_size,
+        safe_serialization=safe_serialization,
+    )
+
+    accelerator.get_state_dict = old_get_state
+
+
+def save_dict_accelerate_gpt_oss(
+    accelerator: Accelerator,
+    state_to_save,
+    save_directory,
+    max_shard_size="5GB",
+    safe_serialization=True,
+):
+    """Save state dict with GPT-OSS parameter conversion (same pattern as LoRA)."""
+    old_get_state = accelerator.get_state_dict
+    accelerator.get_state_dict = _copy_gpt_oss_converted_dict
 
     def skip_precheck_loops():
         return []
@@ -596,25 +641,23 @@ def save_hf_format_accelerate(
 
     if not is_lora:
         # Check if this is a GPT-OSS model that needs format conversion
-        from .gpt_oss_utils import should_convert_gpt_oss_format, convert_dequantized_to_quantized_format
+        from .gpt_oss_utils import should_convert_gpt_oss_format
         
-        if should_convert_gpt_oss_format(model.module.config):
-            # For GPT-OSS models, convert parameter names using LoRA-style approach
+        if should_convert_gpt_oss_format(model.module.config) and accelerator.is_main_process:
+            # For GPT-OSS models, use the same pattern as LoRA but with parameter conversion
             log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
             
-            # Get state dict and convert it (similar to LoRA pattern)
+            # Get model state and save using GPT-OSS conversion (same pattern as LoRA)
             model_state = model.module.state_dict()
-            converted_state = convert_dequantized_to_quantized_format(model_state)
             
-            # Save converted state dict using same method as LoRA
-            save_dict_accelerate(
+            save_dict_accelerate_gpt_oss(
                 accelerator,
-                converted_state,
+                model_state,
                 save_directory=output_dir,
                 max_shard_size="5GB",
                 safe_serialization=True,
             )
-        else:
+        elif not should_convert_gpt_oss_format(model.module.config):
             # Standard model saving
             accelerator.save_model(
                 model,
