@@ -473,7 +473,7 @@ def save_fsdp_gpt_oss_model(
         from transformers import AutoConfig
         clean_config = AutoConfig.from_pretrained(args.base_model_args["pretrained_model_name_or_path"])
         if hasattr(clean_config, 'quantization_config'):
-            clean_config.quantization_config = None
+            delattr(clean_config, 'quantization_config')
         
         model_copy = AutoModelForCausalLM.from_pretrained(
             args.base_model_args["pretrained_model_name_or_path"],
