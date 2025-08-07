@@ -466,25 +466,13 @@ def save_fsdp_gpt_oss_model(
         # Convert the state dict to quantized format
         converted_state = convert_dequantized_to_quantized_format(state)
         
-        # Create fresh model copy on CPU using the target quantization config
+        # Create fresh model copy on CPU WITHOUT quantization config
+        # (The converted state dict will provide the correct parameter structure)
         old_device_map = args.base_model_args.pop("device_map", None)
-        
-        # Use the same quantization config we'll save with (not dequantized)
-        from transformers import Mxfp4Config
-        target_quant_config = Mxfp4Config(
-            modules_to_not_convert=[
-                "model.layers.*.self_attn",
-                "model.layers.*.mlp.router", 
-                "model.embed_tokens",
-                "lm_head"
-            ],
-            quant_method="mxfp4"
-        )
         
         model_copy = AutoModelForCausalLM.from_pretrained(
             args.base_model_args["pretrained_model_name_or_path"],
             torch_dtype=args.base_model_args.get("torch_dtype", torch.bfloat16),
-            quantization_config=target_quant_config,
             device_map="cpu"
         )
         
