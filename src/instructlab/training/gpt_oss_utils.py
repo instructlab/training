@@ -83,19 +83,19 @@ def _generate_placeholder_quantization_metadata(expert_params_converted):
         # Generate base name for scales/zeros
         base_name = new_name.replace("_blocks", "")
         
-        # For MXFP4, we need scales and zeros per expert
+        # For MXFP4, we need scales and zeros matching tensor shape[:-1]
         if param_tensor.dim() >= 2:
-            # Use the first dimension as the expert dimension
-            num_experts = param_tensor.shape[0]
+            # Scales and zeros should match all dims except the last one
+            scales_shape = param_tensor.shape[:-1]
             
             # Generate scales (small positive values around 1.0)
             scales_name = f"{base_name}_scales"
-            scales = torch.ones(num_experts, dtype=torch.float32, device=param_tensor.device) * 0.1
+            scales = torch.ones(scales_shape, dtype=torch.float32, device=param_tensor.device) * 0.1
             metadata[scales_name] = scales
             
             # Generate zeros (typically zero for symmetric quantization)
             zeros_name = f"{base_name}_zeros"
-            zeros = torch.zeros(num_experts, dtype=torch.float32, device=param_tensor.device)
+            zeros = torch.zeros(scales_shape, dtype=torch.float32, device=param_tensor.device)
             metadata[zeros_name] = zeros
             
             logger.debug(f"Generated metadata: {scales_name} ({scales.shape}), {zeros_name} ({zeros.shape})")
