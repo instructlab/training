@@ -466,12 +466,18 @@ def save_fsdp_gpt_oss_model(
         # Convert the state dict to quantized format
         converted_state = convert_dequantized_to_quantized_format(state)
         
-        # Create fresh model copy on CPU WITHOUT quantization config
-        # (The converted state dict will provide the correct parameter structure)
+        # Create fresh model copy on CPU with clean config (no quantization)
         old_device_map = args.base_model_args.pop("device_map", None)
+        
+        # Load config and remove any quantization settings
+        from transformers import AutoConfig
+        clean_config = AutoConfig.from_pretrained(args.base_model_args["pretrained_model_name_or_path"])
+        if hasattr(clean_config, 'quantization_config'):
+            clean_config.quantization_config = None
         
         model_copy = AutoModelForCausalLM.from_pretrained(
             args.base_model_args["pretrained_model_name_or_path"],
+            config=clean_config,
             torch_dtype=args.base_model_args.get("torch_dtype", torch.bfloat16),
             device_map="cpu"
         )
