@@ -105,72 +105,73 @@ def _generate_real_quantization_metadata(expert_params_converted):
         # Move FP4_VALUES to same device as weights
         fp4_values = FP4_VALUES.to(full_precision_weights.device, full_precision_weights.dtype)
         
-        # Reshape weights to process in groups of 32 (matches original format)
-        # Input shape: [32, 2880, 2880] or [32, 2880, 5760]
-        # We need to group into chunks of 32 values for quantization
-        experts, dim1, dim2 = full_precision_weights.shape
+        # Reshape weights to process in groups of 32 along the input dimension
+        # Input shape: [32, 2880, 2880] or [32, 2880, 5760] 
+        # The official format groups along the last dimension (input_dim)
+        experts, output_dim, input_dim = full_precision_weights.shape
         
-        # Reshape to [experts, dim1, groups_of_32, 32] then [experts, dim1, groups_of_32, 16, 2]
-        # This groups values into sets of 32, then pairs for nibble packing
-        groups_of_32 = dim2 // 32
-        if dim2 % 32 != 0:
-            raise ValueError(f"Weight dimension {dim2} is not divisible by 32")
+        # Group into chunks of 32 values along input dimension
+        groups_of_32 = input_dim // 32
+        if input_dim % 32 != 0:
+            raise ValueError(f"Input dimension {input_dim} is not divisible by 32")
         
-        # Reshape to group values
-        weights_grouped = full_precision_weights.view(experts, dim1, groups_of_32, 32)
-        weights_pairs = weights_grouped.view(experts, dim1, groups_of_32, 16, 2)
+        # Reshape to group values: [experts, output_dim, groups_of_32, 32]
+        weights_grouped = full_precision_weights.view(experts, output_dim, groups_of_32, 32)
         
-        logger.info(f"📦 Grouped shape: {weights_pairs.shape}")
+        logger.info(f"📦 Grouped shape: {weights_grouped.shape}")
         
-        # For each group of 32 values, find the best scale (exponent)
-        # and quantize the values to FP4 indices
-        blocks = torch.zeros(experts, dim1, groups_of_32, 16, dtype=torch.uint8, device=full_precision_weights.device)
-        scales = torch.zeros(experts, dim1, groups_of_32, dtype=torch.uint8, device=full_precision_weights.device)
+        # Vectorized quantization - much faster than nested loops
+        logger.info(f"🚀 Using vectorized quantization for speed...")
         
-        # Process each group of 32 values
-        for e in range(experts):
-            for d1 in range(dim1):
-                for g in range(groups_of_32):
-                    group_values = weights_grouped[e, d1, g, :]  # 32 values
-                    
-                    # Find the best scale for this group
-                    # We need to find the exponent that minimizes quantization error
-                    max_abs_val = torch.max(torch.abs(group_values))
-                    
-                    if max_abs_val == 0:
-                        # All zeros - use scale 0 (which becomes 127 in uint8)
-                        exponent = 0
-                        quantized_indices = torch.zeros(32, dtype=torch.long, device=full_precision_weights.device)
-                    else:
-                        # Find best exponent (this is a simplified approach)
-                        # In practice, this should try different exponents and pick the best one
-                        log_val = torch.log2(max_abs_val / 6.0).item()
-                        exponent = max(-127, min(127, int(log_val)))
-                        
-                        # Scale the values and quantize to FP4
-                        scale_factor = 2.0 ** (-exponent)
-                        scaled_values = group_values * scale_factor
-                        
-                        # Find closest FP4 values
-                        quantized_indices = torch.zeros(32, dtype=torch.long, device=full_precision_weights.device)
-                        for i in range(32):
-                            val = scaled_values[i].item()
-                            # Find closest FP4 value
-                            distances = torch.abs(fp4_values - val)
-                            closest_idx = torch.argmin(distances).item()
-                            quantized_indices[i] = closest_idx
-                    
-                    # Pack pairs of indices into uint8 blocks (nibble packing)
-                    for i in range(16):
-                        idx_lo = quantized_indices[i * 2].item()      # Lower nibble (even index)
-                        idx_hi = quantized_indices[i * 2 + 1].item() # Upper nibble (odd index)
-                        
-                        # Pack into uint8: upper nibble << 4 | lower nibble
-                        packed_byte = (idx_hi << 4) | (idx_lo & 0x0F)
-                        blocks[e, d1, g, i] = packed_byte
-                    
-                    # Store scale with +127 offset for uint8 storage
-                    scales[e, d1, g] = max(0, min(255, exponent + 127))
+        # Find the best scale (exponent) for each group of 32 values
+        # Shape: [experts, output_dim, groups_of_32]
+        max_abs_vals = torch.max(torch.abs(weights_grouped), dim=-1)[0]
+        
+        # Handle zero groups (avoid log of zero)
+        non_zero_mask = max_abs_vals > 0
+        log_vals = torch.zeros_like(max_abs_vals)
+        log_vals[non_zero_mask] = torch.log2(max_abs_vals[non_zero_mask] / 6.0)
+        
+        # Clamp exponents to valid range and convert to integers
+        exponents = torch.clamp(log_vals, -127, 127).round().long()
+        
+        # Create scale factors for each group: 2^(-exponent)
+        scale_factors = torch.pow(2.0, -exponents.float())  # [experts, output_dim, groups_of_32]
+        scale_factors = scale_factors.unsqueeze(-1)  # [experts, output_dim, groups_of_32, 1]
+        
+        # Scale all values by their group's scale factor
+        scaled_values = weights_grouped * scale_factors  # [experts, output_dim, groups_of_32, 32]
+        
+        # Find closest FP4 values for all scaled values at once
+        # Expand dimensions for broadcasting: scaled_values [..., :, None] vs fp4_values [None, ..., :]
+        scaled_expanded = scaled_values.unsqueeze(-1)  # [..., 32, 1]
+        fp4_expanded = fp4_values.unsqueeze(0).unsqueeze(0).unsqueeze(0).unsqueeze(0)  # [1, 1, 1, 1, 16]
+        
+        # Compute distances and find closest indices
+        distances = torch.abs(scaled_expanded - fp4_expanded)  # [..., 32, 16]
+        quantized_indices = torch.argmin(distances, dim=-1)  # [..., 32] with values 0-15
+        
+        logger.info(f"📊 Quantized indices shape: {quantized_indices.shape}")
+        
+        # CRITICAL: Pack nibbles according to official transformers format
+        # The official dequantization does: sub[:, 0::2] = lut[idx_lo], sub[:, 1::2] = lut[idx_hi]
+        # This means: even positions in final output come from lower nibble, odd from upper nibble
+        # So for each pair of output positions [i, i+1], we pack as: (indices[i+1] << 4) | indices[i]
+        
+        # Reshape to pairs: [..., 32] -> [..., 16, 2] where each pair will become one uint8
+        indices_pairs = quantized_indices.view(experts, output_dim, groups_of_32, 16, 2)
+        
+        # Pack according to official format: 
+        # indices_pairs[..., 0] goes to even positions (lower nibble)
+        # indices_pairs[..., 1] goes to odd positions (upper nibble)
+        idx_even = indices_pairs[..., 0]  # Even positions -> lower nibble
+        idx_odd = indices_pairs[..., 1]   # Odd positions -> upper nibble
+        
+        # Pack into uint8: (odd_index << 4) | (even_index & 0x0F)
+        blocks = ((idx_odd << 4) | (idx_even & 0x0F)).to(torch.uint8)
+        
+        # Store scales with +127 offset for uint8 storage
+        scales = torch.clamp(exponents + 127, 0, 255).to(torch.uint8)
         
         logger.info(f"✅ Quantization complete:")
         logger.info(f"   Blocks: {blocks.shape} {blocks.dtype}")
