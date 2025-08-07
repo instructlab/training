@@ -163,6 +163,30 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 logger.info(f"Converting scales from {scales.dtype} to torch.uint8") 
                 scales = scales.to(torch.uint8)
             
+            # Reshape tensors to match original GPT-OSS format
+            # Original format: blocks=[experts, dim, 90, 16], scales=[experts, dim, 90]
+            if "gate_up_proj" in original_name:
+                # gate_up_proj: input [32, 2880, 5760] -> blocks [32, 5760, 90, 16], scales [32, 5760, 90]
+                expected_blocks_shape = (32, 5760, 90, 16)
+                expected_scales_shape = (32, 5760, 90)
+            elif "down_proj" in original_name:
+                # down_proj: input [32, 2880, 2880] -> blocks [32, 2880, 90, 16], scales [32, 2880, 90]
+                expected_blocks_shape = (32, 2880, 90, 16)
+                expected_scales_shape = (32, 2880, 90)
+            else:
+                logger.error(f"Unknown parameter type: {original_name}")
+                raise ValueError(f"Cannot determine expected shape for {original_name}")
+            
+            # Reshape blocks tensor
+            if quantized_blocks.shape != expected_blocks_shape:
+                logger.info(f"Reshaping blocks from {quantized_blocks.shape} to {expected_blocks_shape}")
+                quantized_blocks = quantized_blocks.view(expected_blocks_shape)
+            
+            # Reshape scales tensor  
+            if scales.shape != expected_scales_shape:
+                logger.info(f"Reshaping scales from {scales.shape} to {expected_scales_shape}")
+                scales = scales.view(expected_scales_shape)
+            
             # Ensure tensors are contiguous for safetensors compatibility
             quantized_blocks = quantized_blocks.contiguous()
             scales = scales.contiguous()
