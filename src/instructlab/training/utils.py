@@ -437,6 +437,62 @@ def save_fsdp_lora_model(
     dist.barrier()
 
 
+def save_fsdp_gpt_oss_model(
+    args: Namespace,
+    model: FSDP,
+    tokenizer: PreTrainedTokenizer,
+    accelerator: Accelerator,
+    output_dir: Path,
+):
+    """Save GPT-OSS model with parameter conversion, following FSDP LoRA pattern."""
+    from .gpt_oss_utils import convert_dequantized_to_quantized_format, update_config_for_quantized_format
+    
+    if accelerator.distributed_type != DistributedType.FSDP:
+        raise RuntimeError(
+            "`save_fsdp_gpt_oss_model` was called when FSDP was not being used."
+        )
+    if not wraps(model, FSDP):
+        raise RuntimeError(
+            "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
+        )
+
+    # Extract state dict with FSDP configuration (same as LoRA)
+    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
+        state = model.state_dict()
+
+    # Convert parameters on main process only (same pattern as LoRA)
+    if accelerator.is_main_process:
+        # Convert the state dict to quantized format
+        converted_state = convert_dequantized_to_quantized_format(state)
+        
+        # Create fresh model copy on CPU (same as LoRA)
+        old_device_map = args.base_model_args.pop("device_map", None)
+        model_copy = AutoModelForCausalLM.from_pretrained(
+            **args.base_model_args, device_map="cpu"
+        )
+        
+        # Load converted state dict into the copy
+        model_copy.load_state_dict(converted_state, strict=False)
+        
+        # Save the model copy (same as LoRA)
+        model_copy.save_pretrained(output_dir, safe_serialization=True)
+        model.config.to_json_file(f"{output_dir}/config.json")
+        
+        # Update config with proper quantization settings
+        config_file = output_dir / "config.json"
+        update_config_for_quantized_format(config_file)
+        
+        tokenizer.save_pretrained(output_dir)
+        del model_copy
+        
+        # Restore device_map (same as LoRA)
+        if old_device_map:
+            args.base_model_args["device_map"] = old_device_map
+
+    dist.barrier()
+
+
 def get_module_class_from_name(
     model: torch.nn.Module, name: str
 ) -> torch.nn.Module | None:
@@ -643,20 +699,32 @@ def save_hf_format_accelerate(
         # Check if this is a GPT-OSS model that needs format conversion
         from .gpt_oss_utils import should_convert_gpt_oss_format
         
-        if should_convert_gpt_oss_format(model.module.config) and accelerator.is_main_process:
-            # For GPT-OSS models, use same pattern as LoRA
-            log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
+        if should_convert_gpt_oss_format(model.module.config):
+            # For GPT-OSS models, check if we need FSDP handling like LoRA does
+            is_fsdp_gpt_oss = accelerator.distributed_type == DistributedType.FSDP
             
-            # Get model state dict directly like LoRA does
-            model_state = model.module.state_dict()
-            
-            save_dict_accelerate_gpt_oss(
-                accelerator,
-                model_state,
-                save_directory=output_dir,
-                max_shard_size="5GB",
-                safe_serialization=True,
-            )
+            if is_fsdp_gpt_oss:
+                # Use FSDP GPT-OSS saving (same pattern as LoRA FSDP)
+                log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility (FSDP)")
+                save_fsdp_gpt_oss_model(
+                    args=args,
+                    model=model,
+                    tokenizer=tokenizer,
+                    accelerator=accelerator,
+                    output_dir=output_dir,
+                )
+            elif accelerator.is_main_process:
+                # Non-FSDP path
+                log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
+                model_state = model.module.state_dict()
+                
+                save_dict_accelerate_gpt_oss(
+                    accelerator,
+                    model_state,
+                    save_directory=output_dir,
+                    max_shard_size="5GB",
+                    safe_serialization=True,
+                )
         elif not should_convert_gpt_oss_format(model.module.config):
             # Standard model saving
             accelerator.save_model(
