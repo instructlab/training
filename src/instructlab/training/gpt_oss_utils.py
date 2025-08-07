@@ -97,62 +97,87 @@ def _generate_real_quantization_metadata(expert_params_converted):
         
         try:
             # Perform actual MXFP4 quantization (requires GPU for Triton kernels)
-            logger.info(f"Performing real MXFP4 quantization for {original_name}")
-            logger.info(f"Input tensor shape: {param_tensor.shape}, dtype: {param_tensor.dtype}")
+            logger.info(f"🔧 Performing real MXFP4 quantization for {original_name}")
+            logger.info(f"📥 INPUT: shape={param_tensor.shape}, dtype={param_tensor.dtype}, device={param_tensor.device}")
+            
+            # Expected output format based on original GPT-OSS:
+            if "gate_up_proj" in original_name:
+                expected_blocks_shape = (32, 5760, 90, 16)
+                expected_scales_shape = (32, 5760, 90)
+                logger.info(f"🎯 EXPECTED OUTPUT: blocks={expected_blocks_shape}, scales={expected_scales_shape}")
+            elif "down_proj" in original_name:
+                expected_blocks_shape = (32, 2880, 90, 16)
+                expected_scales_shape = (32, 2880, 90)
+                logger.info(f"🎯 EXPECTED OUTPUT: blocks={expected_blocks_shape}, scales={expected_scales_shape}")
             
             # Move to GPU if not already there
             original_device = param_tensor.device
             if param_tensor.device.type == 'cpu':
                 gpu_tensor = param_tensor.cuda()
+                logger.info(f"📱 Moved to GPU: {gpu_tensor.device}")
             else:
                 gpu_tensor = param_tensor
+                logger.info(f"📱 Already on GPU: {gpu_tensor.device}")
             
             # Perform quantization on GPU
+            logger.info(f"🏃 Calling quantize_to_mxfp4...")
             result = quantize_to_mxfp4(gpu_tensor)
-            logger.info(f"quantize_to_mxfp4 returned: {type(result)}")
+            logger.info(f"📤 quantize_to_mxfp4 returned: {type(result)}")
             
             if isinstance(result, tuple):
                 quantized_blocks, scales = result
-                logger.info(f"Unpacked: blocks={type(quantized_blocks)}, scales={type(scales)}")
+                logger.info(f"📦 Unpacked tuple: blocks={type(quantized_blocks)}, scales={type(scales)}")
             else:
-                logger.error(f"Expected tuple, got {type(result)}")
+                logger.error(f"❌ Expected tuple, got {type(result)}")
                 raise ValueError(f"Unexpected return type from quantize_to_mxfp4: {type(result)}")
             
-            # Check what we actually got and handle device movement appropriately
-            logger.info(f"Blocks: type={type(quantized_blocks)}, shape={getattr(quantized_blocks, 'shape', 'no shape')}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
-            logger.info(f"Scales: type={type(scales)}, shape={getattr(scales, 'shape', 'no shape')}, device={getattr(scales, 'device', 'no device attr')}")
+            # Check what we actually got
+            logger.info(f"📊 ACTUAL OUTPUT:")
+            logger.info(f"   Blocks: type={type(quantized_blocks)}, shape={getattr(quantized_blocks, 'shape', 'no shape')}, device={getattr(quantized_blocks, 'device', 'no device attr')}")
+            logger.info(f"   Scales: type={type(scales)}, shape={getattr(scales, 'shape', 'no shape')}, device={getattr(scales, 'device', 'no device attr')}")
             
             # Convert triton tensors to PyTorch tensors to match original format
             # Original GPT-OSS uses: blocks=torch.uint8, scales=torch.uint8
+            logger.info(f"🔄 Converting triton tensors to PyTorch tensors...")
             
             # Try multiple methods to extract PyTorch tensor from triton tensor
             def convert_triton_to_torch(triton_tensor, target_name):
+                logger.info(f"🔧 Converting {target_name}: {type(triton_tensor)}")
                 methods = ['data', 'tensor', '_tensor', 'value', '__array__']
                 
                 for method in methods:
                     if hasattr(triton_tensor, method):
                         try:
+                            logger.info(f"   Trying method: {method}")
                             attr = getattr(triton_tensor, method)
                             if callable(attr):
                                 result = attr()
                             else:
                                 result = attr
                             
+                            logger.info(f"   Method {method} returned: {type(result)}")
+                            
                             # Convert to PyTorch tensor if needed
                             if not torch.is_tensor(result):
                                 result = torch.as_tensor(result)
                             
+                            logger.info(f"   Converted to tensor: shape={result.shape}, dtype={result.dtype}")
                             return result.to(original_device)
                         except Exception as e:
-                            logger.debug(f"Method {method} failed for {target_name}: {e}")
+                            logger.debug(f"   Method {method} failed for {target_name}: {e}")
                             continue
                 
                 # Last resort: try to get underlying data
-                logger.error(f"Failed to convert {target_name}. Available attributes: {[attr for attr in dir(triton_tensor) if not attr.startswith('__')]}")
+                available_attrs = [attr for attr in dir(triton_tensor) if not attr.startswith('__')]
+                logger.error(f"❌ Failed to convert {target_name}. Available attributes: {available_attrs}")
                 raise RuntimeError(f"Could not convert triton tensor {target_name} to PyTorch tensor")
             
             quantized_blocks = convert_triton_to_torch(quantized_blocks, "blocks")
             scales = convert_triton_to_torch(scales, "scales")
+            
+            logger.info(f"✅ Converted tensors:")
+            logger.info(f"   Blocks: {quantized_blocks.shape} {quantized_blocks.dtype} {quantized_blocks.device}")
+            logger.info(f"   Scales: {scales.shape} {scales.dtype} {scales.device}")
             
             # Ensure correct dtypes to match original format
             if quantized_blocks.dtype != torch.uint8:
@@ -165,27 +190,44 @@ def _generate_real_quantization_metadata(expert_params_converted):
             
             # Reshape tensors to match original GPT-OSS format
             # Original format: blocks=[experts, dim, 90, 16], scales=[experts, dim, 90]
-            if "gate_up_proj" in original_name:
-                # gate_up_proj: input [32, 2880, 5760] -> blocks [32, 5760, 90, 16], scales [32, 5760, 90]
-                expected_blocks_shape = (32, 5760, 90, 16)
-                expected_scales_shape = (32, 5760, 90)
-            elif "down_proj" in original_name:
-                # down_proj: input [32, 2880, 2880] -> blocks [32, 2880, 90, 16], scales [32, 2880, 90]
-                expected_blocks_shape = (32, 2880, 90, 16)
-                expected_scales_shape = (32, 2880, 90)
-            else:
-                logger.error(f"Unknown parameter type: {original_name}")
-                raise ValueError(f"Cannot determine expected shape for {original_name}")
+            logger.info(f"🔀 Reshaping tensors to match original GPT-OSS format...")
+            
+            # Check if reshaping is even possible (total elements must match)
+            blocks_total_elements = quantized_blocks.numel()
+            scales_total_elements = scales.numel()
+            
+            expected_blocks_elements = 32 * expected_blocks_shape[1] * 90 * 16
+            expected_scales_elements = 32 * expected_scales_shape[1] * 90
+            
+            logger.info(f"📊 Element count check:")
+            logger.info(f"   Blocks: actual={blocks_total_elements}, expected={expected_blocks_elements}")
+            logger.info(f"   Scales: actual={scales_total_elements}, expected={expected_scales_elements}")
+            
+            if blocks_total_elements != expected_blocks_elements:
+                logger.error(f"❌ Blocks element count mismatch! Cannot reshape {quantized_blocks.shape} -> {expected_blocks_shape}")
+                logger.error(f"   Actual elements: {blocks_total_elements}, Expected: {expected_blocks_elements}")
+                raise ValueError(f"Cannot reshape blocks tensor: element count mismatch")
+            
+            if scales_total_elements != expected_scales_elements:
+                logger.error(f"❌ Scales element count mismatch! Cannot reshape {scales.shape} -> {expected_scales_shape}")
+                logger.error(f"   Actual elements: {scales_total_elements}, Expected: {expected_scales_elements}")
+                raise ValueError(f"Cannot reshape scales tensor: element count mismatch")
             
             # Reshape blocks tensor (use reshape instead of view for non-contiguous tensors)
             if quantized_blocks.shape != expected_blocks_shape:
-                logger.info(f"Reshaping blocks from {quantized_blocks.shape} to {expected_blocks_shape}")
+                logger.info(f"🔀 Reshaping blocks from {quantized_blocks.shape} to {expected_blocks_shape}")
                 quantized_blocks = quantized_blocks.reshape(expected_blocks_shape)
+                logger.info(f"✅ Blocks reshaped successfully")
+            else:
+                logger.info(f"✅ Blocks already correct shape: {quantized_blocks.shape}")
             
             # Reshape scales tensor (use reshape instead of view for non-contiguous tensors)
             if scales.shape != expected_scales_shape:
-                logger.info(f"Reshaping scales from {scales.shape} to {expected_scales_shape}")
+                logger.info(f"🔀 Reshaping scales from {scales.shape} to {expected_scales_shape}")
                 scales = scales.reshape(expected_scales_shape)
+                logger.info(f"✅ Scales reshaped successfully")
+            else:
+                logger.info(f"✅ Scales already correct shape: {scales.shape}")
             
             # Ensure tensors are contiguous for safetensors compatibility
             quantized_blocks = quantized_blocks.contiguous()
