@@ -21,13 +21,18 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
     - experts.down_proj -> experts.down_proj_blocks
     - experts.gate_up_proj -> experts.gate_up_proj_blocks
     
+    And generates placeholder quantization metadata (scales/zeros).
+    
     Args:
         state_dict: Model state dict with dequantized parameters
         
     Returns:
-        State dict with quantized format parameter names
+        State dict with quantized format parameter names and metadata
     """
     converted_state_dict = {}
+    expert_params_converted = []
+    
+    logger.info("Starting GPT-OSS parameter conversion...")
     
     for param_name, param_tensor in state_dict.items():
         new_name = param_name
@@ -35,15 +40,61 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
         # Convert expert parameter names to quantized block format
         if ".mlp.experts.down_proj" in param_name and not param_name.endswith("_bias"):
             new_name = param_name.replace(".mlp.experts.down_proj", ".mlp.experts.down_proj_blocks")
-            logger.debug(f"Converting {param_name} -> {new_name}")
+            expert_params_converted.append((param_name, new_name, param_tensor))
+            logger.info(f"Converting {param_name} -> {new_name}")
             
         elif ".mlp.experts.gate_up_proj" in param_name and not param_name.endswith("_bias"):
             new_name = param_name.replace(".mlp.experts.gate_up_proj", ".mlp.experts.gate_up_proj_blocks")
-            logger.debug(f"Converting {param_name} -> {new_name}")
+            expert_params_converted.append((param_name, new_name, param_tensor))
+            logger.info(f"Converting {param_name} -> {new_name}")
         
         converted_state_dict[new_name] = param_tensor
     
+    # Generate quantization metadata for converted expert parameters
+    if expert_params_converted:
+        logger.info(f"Generating quantization metadata for {len(expert_params_converted)} expert parameters")
+        metadata = _generate_placeholder_quantization_metadata(expert_params_converted)
+        converted_state_dict.update(metadata)
+        logger.info(f"Added {len(metadata)} quantization metadata parameters")
+    
+    logger.info(f"Conversion complete: {len(converted_state_dict)} total parameters")
     return converted_state_dict
+
+
+def _generate_placeholder_quantization_metadata(expert_params_converted):
+    """
+    Generate placeholder quantization scales and zeros for dequantized expert parameters.
+    
+    Args:
+        expert_params_converted: List of (original_name, new_name, tensor) tuples
+        
+    Returns:
+        Dict of quantization metadata parameters
+    """
+    metadata = {}
+    
+    for original_name, new_name, param_tensor in expert_params_converted:
+        # Generate base name for scales/zeros
+        base_name = new_name.replace("_blocks", "")
+        
+        # For MXFP4, we need scales and zeros per expert
+        if param_tensor.dim() >= 2:
+            # Use the first dimension as the expert dimension
+            num_experts = param_tensor.shape[0]
+            
+            # Generate scales (small positive values around 1.0)
+            scales_name = f"{base_name}_scales"
+            scales = torch.ones(num_experts, dtype=torch.float32, device=param_tensor.device) * 0.1
+            metadata[scales_name] = scales
+            
+            # Generate zeros (typically zero for symmetric quantization)
+            zeros_name = f"{base_name}_zeros"
+            zeros = torch.zeros(num_experts, dtype=torch.float32, device=param_tensor.device)
+            metadata[zeros_name] = zeros
+            
+            logger.debug(f"Generated metadata: {scales_name} ({scales.shape}), {zeros_name} ({zeros.shape})")
+    
+    return metadata
 
 
 def should_convert_gpt_oss_format(model_config) -> bool:
