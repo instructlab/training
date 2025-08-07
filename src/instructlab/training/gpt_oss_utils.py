@@ -105,18 +105,25 @@ def _generate_real_quantization_metadata(expert_params_converted):
         # Move FP4_VALUES to same device as weights
         fp4_values = FP4_VALUES.to(full_precision_weights.device, full_precision_weights.dtype)
         
-        # Reshape weights to process in groups of 32 along the input dimension
-        # Input shape: [32, 2880, 2880] or [32, 2880, 5760] 
-        # The official format groups along the last dimension (input_dim)
+        # CRITICAL: The original format requires transposing dimensions first!
+        # Input shape: [32, 2880, 2880] or [32, 2880, 5760]
+        # Original format: [32, 5760, 90, 16] means we need to transpose [2880, 5760] → [5760, 2880]
+        # Then group the 2880 dimension: 2880 ÷ 32 = 90 groups
+        
         experts, output_dim, input_dim = full_precision_weights.shape
+        logger.info(f"🔄 Original shape: {full_precision_weights.shape}")
         
-        # Group into chunks of 32 values along input dimension
-        groups_of_32 = input_dim // 32
-        if input_dim % 32 != 0:
-            raise ValueError(f"Input dimension {input_dim} is not divisible by 32")
+        # Transpose to match original format: [experts, output_dim, input_dim] → [experts, input_dim, output_dim]
+        weights_transposed = full_precision_weights.transpose(1, 2)  # [experts, input_dim, output_dim]
+        logger.info(f"🔄 After transpose: {weights_transposed.shape}")
         
-        # Reshape to group values: [experts, output_dim, groups_of_32, 32]
-        weights_grouped = full_precision_weights.view(experts, output_dim, groups_of_32, 32)
+        # Now group along the output dimension (which is now the last dimension)
+        groups_of_32 = output_dim // 32
+        if output_dim % 32 != 0:
+            raise ValueError(f"Output dimension {output_dim} is not divisible by 32")
+        
+        # Reshape to group values: [experts, input_dim, groups_of_32, 32]
+        weights_grouped = weights_transposed.view(experts, input_dim, groups_of_32, 32)
         
         logger.info(f"📦 Grouped shape: {weights_grouped.shape}")
         
@@ -124,7 +131,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
         logger.info(f"🚀 Using vectorized quantization for speed...")
         
         # Find the best scale (exponent) for each group of 32 values
-        # Shape: [experts, output_dim, groups_of_32]
+        # Shape: [experts, input_dim, groups_of_32]
         max_abs_vals = torch.max(torch.abs(weights_grouped), dim=-1)[0]
         
         # Handle zero groups (avoid log of zero)
@@ -136,11 +143,11 @@ def _generate_real_quantization_metadata(expert_params_converted):
         exponents = torch.clamp(log_vals, -127, 127).round().long()
         
         # Create scale factors for each group: 2^(-exponent)
-        scale_factors = torch.pow(2.0, -exponents.float())  # [experts, output_dim, groups_of_32]
-        scale_factors = scale_factors.unsqueeze(-1)  # [experts, output_dim, groups_of_32, 1]
+        scale_factors = torch.pow(2.0, -exponents.float())  # [experts, input_dim, groups_of_32]
+        scale_factors = scale_factors.unsqueeze(-1)  # [experts, input_dim, groups_of_32, 1]
         
         # Scale all values by their group's scale factor
-        scaled_values = weights_grouped * scale_factors  # [experts, output_dim, groups_of_32, 32]
+        scaled_values = weights_grouped * scale_factors  # [experts, input_dim, groups_of_32, 32]
         
         # Find closest FP4 values for all scaled values at once
         # Expand dimensions for broadcasting: scaled_values [..., :, None] vs fp4_values [None, ..., :]
@@ -159,7 +166,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
         # So for each pair of output positions [i, i+1], we pack as: (indices[i+1] << 4) | indices[i]
         
         # Reshape to pairs: [..., 32] -> [..., 16, 2] where each pair will become one uint8
-        indices_pairs = quantized_indices.view(experts, output_dim, groups_of_32, 16, 2)
+        indices_pairs = quantized_indices.view(experts, input_dim, groups_of_32, 16, 2)
         
         # Pack according to official format: 
         # indices_pairs[..., 0] goes to even positions (lower nibble)
