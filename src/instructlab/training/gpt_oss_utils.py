@@ -177,15 +177,15 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 logger.error(f"Unknown parameter type: {original_name}")
                 raise ValueError(f"Cannot determine expected shape for {original_name}")
             
-            # Reshape blocks tensor
+            # Reshape blocks tensor (use reshape instead of view for non-contiguous tensors)
             if quantized_blocks.shape != expected_blocks_shape:
                 logger.info(f"Reshaping blocks from {quantized_blocks.shape} to {expected_blocks_shape}")
-                quantized_blocks = quantized_blocks.view(expected_blocks_shape)
+                quantized_blocks = quantized_blocks.reshape(expected_blocks_shape)
             
-            # Reshape scales tensor  
+            # Reshape scales tensor (use reshape instead of view for non-contiguous tensors)
             if scales.shape != expected_scales_shape:
                 logger.info(f"Reshaping scales from {scales.shape} to {expected_scales_shape}")
-                scales = scales.view(expected_scales_shape)
+                scales = scales.reshape(expected_scales_shape)
             
             # Ensure tensors are contiguous for safetensors compatibility
             quantized_blocks = quantized_blocks.contiguous()
