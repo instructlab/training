@@ -576,6 +576,12 @@ def save_hf_format_accelerate(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
                 )
         model.module.config.to_json_file(output_config_file)
+        
+        # For GPT-OSS models, ensure the config has proper quantization settings
+        from .gpt_oss_utils import should_convert_gpt_oss_format, update_config_for_quantized_format
+        if should_convert_gpt_oss_format(model.module.config):
+            update_config_for_quantized_format(output_config_file)
+        
         tokenizer.save_pretrained(output_dir)
 
         if is_lora:
@@ -589,12 +595,41 @@ def save_hf_format_accelerate(
             model.module.unmerge_adapter()
 
     if not is_lora:
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
+        # Check if this is a GPT-OSS model that needs format conversion
+        from .gpt_oss_utils import should_convert_gpt_oss_format, convert_dequantized_to_quantized_format
+        
+        if should_convert_gpt_oss_format(model.module.config):
+            # For GPT-OSS models, we need to convert parameter names for compatibility
+            log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
+            
+            # Get the state dict and convert parameter names
+            original_get_state_dict = accelerator.get_state_dict
+            
+            def get_converted_state_dict(model_obj, unwrap=False):
+                state_dict = original_get_state_dict(model_obj, unwrap=unwrap)
+                return convert_dequantized_to_quantized_format(state_dict)
+            
+            # Temporarily replace the get_state_dict method
+            accelerator.get_state_dict = get_converted_state_dict
+            
+            # Save with converted parameter names
+            accelerator.save_model(
+                model,
+                save_directory=output_dir,
+                max_shard_size="5GB",
+                safe_serialization=True,
+            )
+            
+            # Restore original method
+            accelerator.get_state_dict = original_get_state_dict
+        else:
+            # Standard model saving
+            accelerator.save_model(
+                model,
+                save_directory=output_dir,
+                max_shard_size="5GB",
+                safe_serialization=True,
+            )
 
     log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
