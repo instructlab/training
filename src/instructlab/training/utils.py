@@ -491,8 +491,8 @@ def save_fsdp_gpt_oss_model(
         # Load converted state dict into the copy
         model_copy.load_state_dict(converted_state, strict=False)
         
-        # Save the model copy (same as LoRA)
-        model_copy.save_pretrained(output_dir, safe_serialization=True)
+        # Save the model copy (disable safe_serialization for MXFP4 compatibility)
+        model_copy.save_pretrained(output_dir, safe_serialization=False)
         model.config.to_json_file(f"{output_dir}/config.json")
         
         # Update config with proper quantization settings
