@@ -144,7 +144,8 @@ def _generate_real_quantization_metadata(expert_params_converted):
                     else:
                         # Find best exponent (this is a simplified approach)
                         # In practice, this should try different exponents and pick the best one
-                        exponent = int(torch.log2(max_abs_val / 6.0).clamp(-127, 127).item())
+                        log_val = torch.log2(max_abs_val / 6.0).item()
+                        exponent = max(-127, min(127, int(log_val)))
                         
                         # Scale the values and quantize to FP4
                         scale_factor = 2.0 ** (-exponent)
@@ -169,7 +170,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
                         blocks[e, d1, g, i] = packed_byte
                     
                     # Store scale with +127 offset for uint8 storage
-                    scales[e, d1, g] = (exponent + 127).clamp(0, 255)
+                    scales[e, d1, g] = max(0, min(255, exponent + 127))
         
         logger.info(f"✅ Quantization complete:")
         logger.info(f"   Blocks: {blocks.shape} {blocks.dtype}")
