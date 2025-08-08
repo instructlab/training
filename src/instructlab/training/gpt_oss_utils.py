@@ -183,7 +183,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
         
         print(f"   Final scale range: {scales_tensor.min().item()} to {scales_tensor.max().item()}")
         
-        # Step 4: Analyze triton format and convert to transformers format
+        # Step 4: CRITICAL FIX - Understanding triton's actual format
         experts, output_dim, input_dim = param_tensor.shape
         
         print(f"🔍 Analyzing triton format:")
@@ -191,58 +191,60 @@ def _generate_real_quantization_metadata(expert_params_converted):
         print(f"   Triton blocks: {blocks_tensor.shape}")
         print(f"   Triton scales: {scales_tensor.shape}")
         
-        # Analyze the actual grouping from triton's output
+        # CRITICAL INSIGHT: Triton might be transposing the input tensor before quantization!
+        # The debug shows our data at [0, :8, 0] and [0, :8, 1] doesn't appear at blocks [0, 0, *, *]
+        # But instead appears at different input dimension indices
+        
+        # Let's check if triton transposed the tensor: [experts, output_dim, input_dim] → [experts, input_dim, output_dim]
+        triton_experts, triton_dim1, triton_dim2 = blocks_tensor.shape
         scale_experts, scale_groups, scale_input = scales_tensor.shape
         
-        print(f"📐 Grouping analysis:")
-        print(f"   Scale groups: {scale_groups}")
-        print(f"   Output dim: {output_dim}")
-        print(f"   Expected groups (output_dim//32): {output_dim // 32}")
-        print(f"   Scale input dim: {scale_input}")
-        print(f"   Actual input dim: {input_dim}")
+        print(f"📐 Dimension analysis:")
+        print(f"   Input shape: [{experts}, {output_dim}, {input_dim}]")
+        print(f"   Triton blocks: [{triton_experts}, {triton_dim1}, {triton_dim2}]")
+        print(f"   Triton scales: [{scale_experts}, {scale_groups}, {scale_input}]")
         
-        # Handle case where output_dim < 32
-        if output_dim < 32:
-            # For small dimensions, triton might handle differently
-            # Let's infer the grouping from triton's actual output
-            if scale_groups == 1:
-                # Single group - use actual dimensions
-                output_groups = 1
-            else:
-                output_groups = scale_groups
-        else:
-            output_groups = output_dim // 32
+        # HYPOTHESIS: Triton transposed [experts, output_dim, input_dim] → [experts, input_dim, output_dim]
+        # Then grouped the output_dim: input_dim=128, output_dim=64, groups=64//32=2
+        
+        if triton_dim1 == input_dim and scale_input == input_dim:
+            print(f"✅ DETECTED: Triton transposed input tensor!")
+            print(f"   Original: [experts={experts}, output_dim={output_dim}, input_dim={input_dim}]")
+            print(f"   Triton processed: [experts={experts}, input_dim={input_dim}, output_dim={output_dim}]")
+            
+            # Triton's layout: [experts, input_dim, output_groups*16]
+            # Where output_groups = output_dim // 32
+            triton_output_groups = output_dim // 32
             if output_dim % 32 != 0:
                 print(f"⚠️ Output dimension {output_dim} not divisible by 32")
-                output_groups = scale_groups  # Use triton's actual grouping
-        
-        print(f"   Using output_groups: {output_groups}")
-        
-        # For transformers format, we need: [experts, input_dim, output_groups, 16]
-        target_blocks_shape = (experts, input_dim, output_groups, 16)
-        target_scales_shape = (experts, input_dim, output_groups)
-        
-        print(f"🎯 Target transformers format:")
-        print(f"   Target blocks: {target_blocks_shape}")
-        print(f"   Target scales: {target_scales_shape}")
-        
-        # Handle scales: need to understand triton's actual layout
-        print(f"🔄 Analyzing scale tensor layout:")
-        print(f"   Triton scales: {scales_tensor.shape}")
-        print(f"   Target: {target_scales_shape}")
-        
-        # The triton scales are [experts, output_groups, input_dim] 
-        # We need [experts, input_dim, output_groups]
-        # So we need to transpose dimensions 1 and 2
-        if scales_tensor.shape == (experts, output_groups, input_dim):
-            print(f"   Transposing: [experts, output_groups, input_dim] → [experts, input_dim, output_groups]")
-            scales_reshaped = scales_tensor.transpose(1, 2)  # [32, 128, 2]
-            print(f"   Result: {scales_reshaped.shape}")
+                triton_output_groups = triton_dim2 // 16  # Infer from actual data
+            
+            print(f"   Triton output groups: {triton_output_groups}")
+            
+            # For transformers: we need [experts, input_dim, output_groups, 16] - SAME as triton!
+            target_blocks_shape = (experts, input_dim, triton_output_groups, 16)
+            target_scales_shape = (experts, input_dim, triton_output_groups)
+            
+            print(f"🎯 Target format (matches triton!):")
+            print(f"   Blocks: {target_blocks_shape}")
+            print(f"   Scales: {target_scales_shape}")
+            
+            # Scales: triton gives [experts, output_groups, input_dim], we need [experts, input_dim, output_groups]
+            if scales_tensor.shape == (experts, triton_output_groups, input_dim):
+                print(f"   Transposing scales: {scales_tensor.shape} → [experts, input_dim, output_groups]")
+                scales_reshaped = scales_tensor.transpose(1, 2)
+            else:
+                print(f"   Unexpected scale shape: {scales_tensor.shape}")
+                scales_reshaped = scales_tensor.reshape(target_scales_shape)
         else:
-            print(f"   Unexpected scale shape - attempting reshape")
-            scales_reshaped = scales_tensor.reshape(target_scales_shape)
+            print(f"❌ UNEXPECTED: Triton format doesn't match expected transpose pattern")
+            # Fall back to original logic
+            output_groups = output_dim // 32 if output_dim >= 32 else scale_groups
+            target_blocks_shape = (experts, input_dim, output_groups, 16)
+            target_scales_shape = (experts, input_dim, output_groups)
+            scales_reshaped = scales_tensor.transpose(1, 2) if scales_tensor.shape == (experts, output_groups, input_dim) else scales_tensor.reshape(target_scales_shape)
         
-        # Handle blocks (more complex due to extra elements)
+        # Handle blocks conversion based on transpose detection
         target_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
         actual_blocks_elements = blocks_tensor.numel()
         
@@ -251,46 +253,47 @@ def _generate_real_quantization_metadata(expert_params_converted):
         print(f"   Target: {target_blocks_elements}")
         print(f"   Ratio: {actual_blocks_elements / target_blocks_elements:.3f}")
         
-        print(f"🔧 Analyzing block tensor layout:")
+        print(f"🔧 Converting blocks tensor:")
         print(f"   Triton blocks: {blocks_tensor.shape}")
         print(f"   Target: {target_blocks_shape}")
         
-        if actual_blocks_elements == target_blocks_elements:
-            # Perfect match - but need to ensure correct mapping
-            print(f"   Element counts match - reshaping directly")
+        if triton_dim1 == input_dim and scale_input == input_dim:
+            # TRANSPOSE DETECTED case: triton already in [experts, input_dim, packed] format
+            print(f"   ✅ Using transpose-aware conversion")
             
-            # Triton format: [experts, input_dim, output_groups*16]
-            # Target format: [experts, input_dim, output_groups, 16]
             triton_experts, triton_input_dim, triton_packed = blocks_tensor.shape
+            expected_packed = triton_output_groups * 16
             
-            if triton_packed == output_groups * 16:
-                # Simple reshape: [32, 128, 32] → [32, 128, 2, 16]
-                print(f"   Reshaping: [experts, input_dim, packed] → [experts, input_dim, groups, 16]")
-                final_blocks = blocks_tensor.view(experts, input_dim, output_groups, 16).contiguous()
+            if triton_packed == expected_packed:
+                # Perfect match - simple reshape
+                print(f"   Reshaping: [{triton_experts}, {triton_input_dim}, {triton_packed}] → {target_blocks_shape}")
+                final_blocks = blocks_tensor.view(experts, input_dim, triton_output_groups, 16).contiguous()
                 print(f"   Result: {final_blocks.shape}")
             else:
-                print(f"   Unexpected packed dimension: {triton_packed} vs expected {output_groups * 16}")
-                final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
-        
-        elif actual_blocks_elements > target_blocks_elements:
-            # Triton has extra elements - likely padding
-            print(f"🔧 Triton has extra elements - extracting relevant portion")
-            triton_experts, triton_dim1, triton_dim2 = blocks_tensor.shape
+                print(f"   ⚠️ Packed dimension mismatch: {triton_packed} vs expected {expected_packed}")
+                if actual_blocks_elements == target_blocks_elements:
+                    # Force reshape - element counts match
+                    final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
+                    print(f"   Force reshaped to: {final_blocks.shape}")
+                else:
+                    raise ValueError(f"Cannot reshape {blocks_tensor.shape} to {target_blocks_shape}: element count mismatch")
+        else:
+            # FALLBACK: original logic for non-transpose case
+            print(f"   Using fallback conversion logic")
             
-            if triton_dim2 == output_groups * 16:
-                # Reshape and extract: [32, padded_dim, groups*16] → [32, input_dim, groups, 16]
-                blocks_reshaped = blocks_tensor.view(triton_experts, triton_dim1, output_groups, 16)
-                final_blocks = blocks_reshaped[:, :input_dim, :, :].contiguous()
-                print(f"   Extracted: {final_blocks.shape}")
-            else:
-                print(f"⚠️ Complex triton format - attempting heuristic extraction")
-                # Calculate how many elements to take per expert
-                elements_per_expert = target_blocks_elements // experts
+            if actual_blocks_elements == target_blocks_elements:
+                # Element counts match - reshape directly
+                print(f"   Element counts match - direct reshape")
+                final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
+                print(f"   Result: {final_blocks.shape}")
+            elif actual_blocks_elements > target_blocks_elements:
+                # Triton has extra elements - extract relevant portion
+                print(f"   Triton has extra elements - extracting relevant portion")
                 extracted = blocks_tensor.flatten()[:target_blocks_elements]
                 final_blocks = extracted.reshape(target_blocks_shape).contiguous()
-        
-        else:
-            raise ValueError(f"Triton has fewer elements than expected: {actual_blocks_elements} < {target_blocks_elements}")
+                print(f"   Extracted and reshaped to: {final_blocks.shape}")
+            else:
+                raise ValueError(f"Triton has fewer elements than expected: {actual_blocks_elements} < {target_blocks_elements}")
         
         final_scales = scales_reshaped
         
