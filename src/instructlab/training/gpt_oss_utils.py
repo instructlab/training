@@ -174,16 +174,36 @@ def _generate_real_quantization_metadata(expert_params_converted):
         print(f"   Triton blocks: {blocks_tensor.shape}")
         print(f"   Triton scales: {scales_tensor.shape}")
         
-        # The scales tensor tells us the grouping structure
-        # scales: [32, 9, 576] means 9 groups along output dim (288/32=9), 576 along input dim
+        # Analyze the actual grouping from triton's output
         scale_experts, scale_groups, scale_input = scales_tensor.shape
         
-        if scale_groups != output_dim // 32:
-            print(f"⚠️ Unexpected scale grouping: {scale_groups} vs expected {output_dim // 32}")
+        print(f"📐 Grouping analysis:")
+        print(f"   Scale groups: {scale_groups}")
+        print(f"   Output dim: {output_dim}")
+        print(f"   Expected groups (output_dim//32): {output_dim // 32}")
+        print(f"   Scale input dim: {scale_input}")
+        print(f"   Actual input dim: {input_dim}")
+        
+        # Handle case where output_dim < 32
+        if output_dim < 32:
+            # For small dimensions, triton might handle differently
+            # Let's infer the grouping from triton's actual output
+            if scale_groups == 1:
+                # Single group - use actual dimensions
+                output_groups = 1
+            else:
+                output_groups = scale_groups
+        else:
+            output_groups = output_dim // 32
+            if output_dim % 32 != 0:
+                print(f"⚠️ Output dimension {output_dim} not divisible by 32")
+                output_groups = scale_groups  # Use triton's actual grouping
+        
+        print(f"   Using output_groups: {output_groups}")
         
         # For transformers format, we need: [experts, input_dim, output_groups, 16]
-        target_blocks_shape = (experts, input_dim, output_dim // 32, 16)
-        target_scales_shape = (experts, input_dim, output_dim // 32)
+        target_blocks_shape = (experts, input_dim, output_groups, 16)
+        target_scales_shape = (experts, input_dim, output_groups)
         
         print(f"🎯 Target transformers format:")
         print(f"   Target blocks: {target_blocks_shape}")
