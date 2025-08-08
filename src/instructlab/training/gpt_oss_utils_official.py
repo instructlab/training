@@ -132,13 +132,56 @@ def _generate_official_quantization_metadata(expert_params_converted):
             elif scales.max().item() < 50:
                 scales = (scales + 127).clamp(0, 255)
             
-            # Add to metadata (use triton's output format directly)
-            metadata[new_name] = blocks
-            scales_name = f"{base_name}_scales"
-            metadata[scales_name] = scales
+            # Make tensors contiguous and fix format to match transformers expectations
+            # Based on transformers conversion: they expect 4D tensors [experts, output_dim, groups, 16]
             
-            logger.info(f"✅ Added {new_name}: {blocks.shape} {blocks.dtype}")
-            logger.info(f"✅ Added {scales_name}: {scales.shape} {scales.dtype}")
+            logger.info(f"🔧 Converting triton format to transformers format...")
+            
+            # Triton gives us 3D: [experts, packed_dim1, packed_dim2]
+            # We need 4D: [experts, output_dim, groups, 16]
+            experts, dim1, dim2 = blocks.shape
+            
+            # Based on expected dimensions:
+            # gate_up_proj should be [32, 5760, 90, 16] 
+            # down_proj should be [32, 2880, 90, 16]
+            
+            if "gate_up_proj" in original_name:
+                # Expected: [32, 5760, 90, 16] = [experts, 5760, 90, 16]
+                expected_output_dim = 5760
+                expected_groups = 90
+            else:  # down_proj
+                # Expected: [32, 2880, 90, 16] = [experts, 2880, 90, 16]
+                expected_output_dim = 2880
+                expected_groups = 90
+            
+            expected_blocks_shape = (experts, expected_output_dim, expected_groups, 16)
+            expected_scales_shape = (experts, expected_output_dim, expected_groups)
+            
+            logger.info(f"   Current: blocks={blocks.shape}, scales={scales.shape}")
+            logger.info(f"   Expected: blocks={expected_blocks_shape}, scales={expected_scales_shape}")
+            
+            # Reshape triton output to match transformers format
+            if blocks.numel() == expected_blocks_shape[0] * expected_blocks_shape[1] * expected_blocks_shape[2] * expected_blocks_shape[3]:
+                blocks_reshaped = blocks.reshape(expected_blocks_shape).contiguous()
+                logger.info(f"   ✅ Reshaped blocks: {blocks_reshaped.shape}")
+            else:
+                logger.warning(f"   ❌ Block element count mismatch: {blocks.numel()} vs expected {expected_blocks_shape[0] * expected_blocks_shape[1] * expected_blocks_shape[2] * expected_blocks_shape[3]}")
+                blocks_reshaped = blocks.contiguous()
+            
+            if scales.numel() == expected_scales_shape[0] * expected_scales_shape[1] * expected_scales_shape[2]:
+                scales_reshaped = scales.reshape(expected_scales_shape).contiguous()
+                logger.info(f"   ✅ Reshaped scales: {scales_reshaped.shape}")
+            else:
+                logger.warning(f"   ❌ Scale element count mismatch: {scales.numel()} vs expected {expected_scales_shape[0] * expected_scales_shape[1] * expected_scales_shape[2]}")
+                scales_reshaped = scales.contiguous()
+            
+            # Add to metadata
+            metadata[new_name] = blocks_reshaped
+            scales_name = f"{base_name}_scales"
+            metadata[scales_name] = scales_reshaped
+            
+            logger.info(f"✅ Added {new_name}: {blocks_reshaped.shape} {blocks_reshaped.dtype}")
+            logger.info(f"✅ Added {scales_name}: {scales_reshaped.shape} {scales_reshaped.dtype}")
             
         except Exception as e:
             logger.error(f"❌ Failed to convert {original_name}: {e}")
