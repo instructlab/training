@@ -258,25 +258,52 @@ def _generate_real_quantization_metadata(expert_params_converted):
         print(f"   Target: {target_blocks_shape}")
         
         if triton_dim1 == input_dim and scale_input == input_dim:
-            # TRANSPOSE DETECTED case: triton already in [experts, input_dim, packed] format
-            print(f"   ✅ Using transpose-aware conversion")
+            # TRANSPOSE DETECTED: triton quantized in [experts, input_dim, output_dim] format
+            # Need to convert back to transformers [experts, output_dim, input_dim//32, 16] format
+            print(f"   ✅ TRANSPOSE DETECTED - Converting back to transformers format")
             
-            triton_experts, triton_input_dim, triton_packed = blocks_tensor.shape
-            expected_packed = triton_output_groups * 16
+            transformers_input_groups = input_dim // 32
+            transformers_blocks_shape = (experts, output_dim, transformers_input_groups, 16)
+            transformers_scales_shape = (experts, output_dim, transformers_input_groups)
             
-            if triton_packed == expected_packed:
-                # Perfect match - simple reshape
-                print(f"   Reshaping: [{triton_experts}, {triton_input_dim}, {triton_packed}] → {target_blocks_shape}")
-                final_blocks = blocks_tensor.view(experts, input_dim, triton_output_groups, 16).contiguous()
-                print(f"   Result: {final_blocks.shape}")
-            else:
-                print(f"   ⚠️ Packed dimension mismatch: {triton_packed} vs expected {expected_packed}")
-                if actual_blocks_elements == target_blocks_elements:
-                    # Force reshape - element counts match
-                    final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
-                    print(f"   Force reshaped to: {final_blocks.shape}")
+            print(f"   Target transformers format:")
+            print(f"     blocks: {transformers_blocks_shape}")
+            print(f"     scales: {transformers_scales_shape}")
+            
+            # Step 1: Reshape triton blocks to [experts, input_dim, output_groups, 16]
+            triton_expected_packed = triton_output_groups * 16
+            if blocks_tensor.shape[2] == triton_expected_packed:
+                triton_reshaped = blocks_tensor.view(experts, input_dim, triton_output_groups, 16)
+                print(f"   Triton reshaped: {triton_reshaped.shape}")
+                
+                # Check if we can convert element counts
+                triton_total_per_expert = triton_output_groups * 16 * 2
+                transformers_total_per_expert = transformers_input_groups * 16 * 2
+                
+                if triton_total_per_expert == transformers_total_per_expert:
+                    print(f"   ✅ Element counts match - converting layout")
+                    
+                    # Convert blocks: [experts, input_dim, triton_groups, 16] → [experts, output_dim, transformers_groups, 16]
+                    temp_blocks = triton_reshaped.permute(0, 2, 1, 3)  # [experts, triton_groups, input_dim, 16]
+                    temp_blocks = temp_blocks.reshape(experts, triton_output_groups * input_dim, 16)
+                    final_blocks = temp_blocks.view(experts, output_dim, transformers_input_groups, 16).contiguous()
+                    
+                    # Convert scales: [experts, input_dim, triton_groups] → [experts, output_dim, transformers_groups]
+                    temp_scales = scales_reshaped.permute(0, 2, 1)  # [experts, triton_groups, input_dim]
+                    temp_scales = temp_scales.reshape(experts, triton_output_groups * input_dim)
+                    final_scales = temp_scales.view(experts, output_dim, transformers_input_groups).contiguous()
+                    
+                    scales_reshaped = final_scales
+                    target_blocks_shape = transformers_blocks_shape
+                    
+                    print(f"   Final blocks: {final_blocks.shape}")
+                    print(f"   Final scales: {final_scales.shape}")
                 else:
-                    raise ValueError(f"Cannot reshape {blocks_tensor.shape} to {target_blocks_shape}: element count mismatch")
+                    print(f"   ❌ Element count mismatch: {triton_total_per_expert} vs {transformers_total_per_expert}")
+                    final_blocks = triton_reshaped.contiguous()
+            else:
+                print(f"   ⚠️ Unexpected triton format - using fallback")
+                final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
         else:
             # FALLBACK: original logic for non-transpose case
             print(f"   Using fallback conversion logic")
