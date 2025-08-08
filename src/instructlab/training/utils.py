@@ -456,28 +456,66 @@ def save_fsdp_gpt_oss_model(
             "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
         )
 
-    REASONING_LANGUAGE = "Chinese"  # or Hindi, or any other language...
-    SYSTEM_PROMPT = f"reasoning language: {REASONING_LANGUAGE}"
-    USER_PROMPT = "What is the national symbol of Canada?"
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": USER_PROMPT},
-    ]
-
-    gen_kwargs = {"max_new_tokens": 512, "do_sample": True, "temperature": 0.6, "top_p": None, "top_k": None}
-
-
-    input_ids = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-    ).to(model.device)
-
-    output_ids = model.generate(input_ids, **gen_kwargs)
-    response = tokenizer.batch_decode(output_ids)[0]
-    logger.info("HEY LOOK HERE ------------------------------------- ")
-    logger.info(f"Response: {response}")
+    # Test generation before quantization (only on main process to avoid FSDP issues)
+    if accelerator.is_main_process:
+        try:
+            logger.info("🧪 Testing model generation BEFORE quantization...")
+            
+            # Simple test prompt
+            test_prompt = "What is the national symbol of Canada?"
+            
+            # Tokenize input
+            input_ids = tokenizer.encode(test_prompt, return_tensors="pt")
+            if torch.cuda.is_available():
+                input_ids = input_ids.cuda()
+            
+            # Generate with minimal settings to avoid FSDP complications
+            with torch.no_grad():
+                # Use the model directly, avoiding FSDP wrapper complications
+                if hasattr(model, 'module'):
+                    # FSDP wrapped model
+                    model_for_gen = model.module
+                else:
+                    model_for_gen = model
+                
+                # Set to eval mode for generation
+                model_for_gen.eval()
+                
+                # Simple generation without fancy sampling
+                output_ids = model_for_gen.generate(
+                    input_ids,
+                    max_new_tokens=50,  # Short generation to avoid memory issues
+                    do_sample=False,    # Greedy to be deterministic
+                    pad_token_id=tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                )
+                
+                # Decode response
+                response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+                
+                logger.info("=" * 60)
+                logger.info("🔍 PRE-QUANTIZATION GENERATION TEST")
+                logger.info(f"📝 Prompt: {test_prompt}")
+                logger.info(f"📤 Response: {response}")
+                logger.info("=" * 60)
+                
+                # Check if response looks reasonable
+                if len(response) > len(test_prompt) + 5:  # Generated some text
+                    if any(word in response.lower() for word in ['maple', 'leaf', 'canada', 'symbol', 'beaver']):
+                        logger.info("✅ Pre-quantization generation looks reasonable!")
+                    else:
+                        logger.warning("⚠️ Pre-quantization generation may be unusual...")
+                else:
+                    logger.warning("⚠️ Pre-quantization generation too short or failed")
+                
+                # Switch back to train mode
+                model_for_gen.train()
+                
+        except Exception as e:
+            logger.error(f"❌ Pre-quantization generation test failed: {e}")
+            logger.error("This may indicate the model was already corrupted before quantization")
+            import traceback
+            traceback.print_exc()
 
     # Extract state dict with FSDP configuration (same as LoRA)
     sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
