@@ -164,8 +164,8 @@ def _generate_real_quantization_metadata(expert_params_converted):
         total_groups = experts * output_dim * input_groups
         quantized_indices = torch.empty(experts, output_dim, input_groups, 32, dtype=torch.long, device=param_tensor.device)
         
-        # Flatten for chunk processing
-        scaled_flat = scaled_values.view(-1, 32)  # [total_groups, 32]
+        # Flatten for chunk processing (use reshape to handle non-contiguous tensors)
+        scaled_flat = scaled_values.reshape(-1, 32)  # [total_groups, 32]
         indices_flat = quantized_indices.view(-1, 32)
         
         for i in range(0, total_groups, chunk_size):
