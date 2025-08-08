@@ -159,14 +159,26 @@ def _generate_real_quantization_metadata(expert_params_converted):
         
         logger.info(f"🔢 Quantizing to FP4 indices...")
         
-        # Find closest FP4 values for all scaled values at once
-        # Expand dimensions for broadcasting
-        scaled_expanded = scaled_values.unsqueeze(-1)  # [..., 32, 1]
-        fp4_expanded = FP4_VALUES.view(1, 1, 1, 1, 16)  # [1, 1, 1, 1, 16]
+        # OPTIMIZED: Process in chunks to avoid memory explosion and use faster ops
+        chunk_size = 1024  # Process 1024 groups at a time
+        total_groups = experts * output_dim * input_groups
+        quantized_indices = torch.empty(experts, output_dim, input_groups, 32, dtype=torch.long, device=param_tensor.device)
         
-        # Compute distances and find closest indices
-        distances = torch.abs(scaled_expanded - fp4_expanded)  # [..., 32, 16]
-        quantized_indices = torch.argmin(distances, dim=-1)  # [..., 32] with values 0-15
+        # Flatten for chunk processing
+        scaled_flat = scaled_values.view(-1, 32)  # [total_groups, 32]
+        indices_flat = quantized_indices.view(-1, 32)
+        
+        for i in range(0, total_groups, chunk_size):
+            end_i = min(i + chunk_size, total_groups)
+            chunk = scaled_flat[i:end_i]  # [chunk_size, 32]
+            
+            # Fast quantization using broadcasting (smaller chunks)
+            chunk_expanded = chunk.unsqueeze(-1)  # [chunk_size, 32, 1]
+            fp4_expanded = FP4_VALUES.unsqueeze(0).unsqueeze(0)  # [1, 1, 16]
+            
+            # Compute distances and find closest indices
+            distances = torch.abs(chunk_expanded - fp4_expanded)  # [chunk_size, 32, 16]
+            indices_flat[i:end_i] = torch.argmin(distances, dim=-1)  # [chunk_size, 32]
         
         logger.info(f"📦 Packing nibbles...")
         
