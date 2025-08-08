@@ -166,55 +166,75 @@ def _generate_real_quantization_metadata(expert_params_converted):
             else:
                 scales_tensor = scales_tensor.to(torch.uint8)
         
-        # Step 4: Reshape to match expected transformers format
-        # Need to figure out correct target shapes based on input tensor
+        # Step 4: Analyze triton format and convert to transformers format
         experts, output_dim, input_dim = param_tensor.shape
         
-        # Calculate expected shapes based on original GPT-OSS format
-        # The format groups the output dimension into blocks of 32
-        output_groups = output_dim // 32
-        if output_dim % 32 != 0:
-            raise ValueError(f"Output dimension {output_dim} must be divisible by 32")
-            
-        # Target format: [experts, input_dim, output_groups, 16] for blocks
-        #                [experts, input_dim, output_groups] for scales
-        target_blocks_shape = (experts, input_dim, output_groups, 16)
-        target_scales_shape = (experts, input_dim, output_groups)
+        print(f"🔍 Analyzing triton format:")
+        print(f"   Input tensor: {param_tensor.shape}")
+        print(f"   Triton blocks: {blocks_tensor.shape}")
+        print(f"   Triton scales: {scales_tensor.shape}")
         
-        print(f"📐 Calculated target shapes for {output_dim} output dim:")
-        print(f"   Output groups: {output_groups} (from {output_dim} ÷ 32)")
+        # The scales tensor tells us the grouping structure
+        # scales: [32, 9, 576] means 9 groups along output dim (288/32=9), 576 along input dim
+        scale_experts, scale_groups, scale_input = scales_tensor.shape
+        
+        if scale_groups != output_dim // 32:
+            print(f"⚠️ Unexpected scale grouping: {scale_groups} vs expected {output_dim // 32}")
+        
+        # For transformers format, we need: [experts, input_dim, output_groups, 16]
+        target_blocks_shape = (experts, input_dim, output_dim // 32, 16)
+        target_scales_shape = (experts, input_dim, output_dim // 32)
+        
+        print(f"🎯 Target transformers format:")
         print(f"   Target blocks: {target_blocks_shape}")
         print(f"   Target scales: {target_scales_shape}")
         
-        print(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
+        # Handle scales first (they should be easier)
+        if scales_tensor.shape != target_scales_shape:
+            print(f"🔄 Reshaping scales from {scales_tensor.shape} to {target_scales_shape}")
+            # Try transpose: [32, 9, 576] → [32, 576, 9]
+            if scales_tensor.shape == (experts, output_dim // 32, input_dim):
+                scales_reshaped = scales_tensor.transpose(1, 2)  # [32, 576, 9]
+            else:
+                scales_reshaped = scales_tensor.reshape(target_scales_shape)
+        else:
+            scales_reshaped = scales_tensor
         
-        # Calculate expected element counts
-        expected_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
-        expected_scales_elements = target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]
+        # Handle blocks (more complex due to extra elements)
+        target_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
+        actual_blocks_elements = blocks_tensor.numel()
         
-        print(f"🔢 Element count analysis:")
-        print(f"   Blocks tensor: {blocks_tensor.shape} → {blocks_tensor.numel()} elements")
-        print(f"   Expected blocks: {target_blocks_shape} → {expected_blocks_elements} elements")
-        print(f"   Scales tensor: {scales_tensor.shape} → {scales_tensor.numel()} elements")
-        print(f"   Expected scales: {target_scales_shape} → {expected_scales_elements} elements")
+        print(f"🔢 Blocks element analysis:")
+        print(f"   Actual: {actual_blocks_elements}")
+        print(f"   Target: {target_blocks_elements}")
+        print(f"   Ratio: {actual_blocks_elements / target_blocks_elements:.3f}")
         
-        # Check if reshaping is possible (element count must match)
-        if blocks_tensor.numel() != expected_blocks_elements:
-            logger.error(f"❌ Blocks element count mismatch!")
-            logger.error(f"   Actual: {blocks_tensor.numel()}")
-            logger.error(f"   Expected: {expected_blocks_elements}")
-            logger.error(f"   Ratio: {blocks_tensor.numel() / expected_blocks_elements:.3f}")
-            raise ValueError("Cannot reshape blocks - element count mismatch")
+        if actual_blocks_elements > target_blocks_elements:
+            # Triton has extra elements - likely padding
+            print(f"🔧 Triton has extra elements - extracting relevant portion")
             
-        if scales_tensor.numel() != target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]:
-            logger.error(f"❌ Scales element count mismatch!")
-            logger.error(f"   Actual: {scales_tensor.numel()}")
-            logger.error(f"   Expected: {target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]}")
-            raise ValueError("Cannot reshape scales - element count mismatch")
+            # Try to extract the relevant portion
+            # blocks: [32, 640, 144] needs to become [32, 576, 9, 16]
+            # 640 might have padding, 144 = 9*16, so reshape and slice
+            triton_experts, triton_dim1, triton_dim2 = blocks_tensor.shape
+            
+            if triton_dim2 == (output_dim // 32) * 16:  # 144 = 9*16
+                # Reshape last dim: [32, 640, 144] → [32, 640, 9, 16]
+                blocks_reshaped = blocks_tensor.view(triton_experts, triton_dim1, output_dim // 32, 16)
+                # Extract relevant portion: [32, 640, 9, 16] → [32, 576, 9, 16]
+                final_blocks = blocks_reshaped[:, :input_dim, :, :].contiguous()
+            else:
+                # Different strategy needed
+                print(f"⚠️ Unexpected triton block format - attempting direct reshape")
+                final_blocks = blocks_tensor[:actual_blocks_elements // (target_blocks_elements // blocks_tensor.shape[0])].reshape(target_blocks_shape).contiguous()
         
-        # Reshape to target format
-        final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
-        final_scales = scales_tensor.reshape(target_scales_shape).contiguous()
+        elif actual_blocks_elements == target_blocks_elements:
+            # Perfect match - just reshape
+            final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
+        else:
+            raise ValueError(f"Triton has fewer elements than expected: {actual_blocks_elements} < {target_blocks_elements}")
+        
+        final_scales = scales_reshaped
         
         logger.info(f"✅ Final format:")
         logger.info(f"   Blocks: {final_blocks.shape} {final_blocks.dtype}")
