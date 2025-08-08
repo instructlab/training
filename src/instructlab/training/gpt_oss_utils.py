@@ -171,14 +171,20 @@ def _generate_real_quantization_metadata(expert_params_converted):
         experts, output_dim, input_dim = param_tensor.shape
         
         # Calculate expected shapes based on original GPT-OSS format
-        if input_dim == 5760:  # gate_up_proj
-            target_blocks_shape = (32, 5760, 90, 16)  # [experts, input_dim, output_groups, packed_bytes]
-            target_scales_shape = (32, 5760, 90)      # [experts, input_dim, output_groups]
-        elif input_dim == 2880:  # down_proj  
-            target_blocks_shape = (32, 2880, 90, 16)
-            target_scales_shape = (32, 2880, 90)
-        else:
-            raise ValueError(f"Unexpected input dimension: {input_dim}")
+        # The format groups the output dimension into blocks of 32
+        output_groups = output_dim // 32
+        if output_dim % 32 != 0:
+            raise ValueError(f"Output dimension {output_dim} must be divisible by 32")
+            
+        # Target format: [experts, input_dim, output_groups, 16] for blocks
+        #                [experts, input_dim, output_groups] for scales
+        target_blocks_shape = (experts, input_dim, output_groups, 16)
+        target_scales_shape = (experts, input_dim, output_groups)
+        
+        logger.info(f"📐 Calculated target shapes for {output_dim} output dim:")
+        logger.info(f"   Output groups: {output_groups} (from {output_dim} ÷ 32)")
+        logger.info(f"   Target blocks: {target_blocks_shape}")
+        logger.info(f"   Target scales: {target_scales_shape}")
         
         logger.info(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
         
@@ -323,8 +329,8 @@ def _generate_real_quantization_metadata(expert_params_converted):
             logger.error(f"❌ Failed to convert {original_name}: {e}")
             import traceback
             traceback.print_exc()
-            logger.info("🔄 Falling back to placeholder quantization")
-            return _generate_placeholder_quantization_metadata(expert_params_converted)
+            # For debugging, don't fall back immediately - let's see what's wrong
+            raise e
     
     return metadata
 
