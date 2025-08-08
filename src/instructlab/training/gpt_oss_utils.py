@@ -92,243 +92,96 @@ def _generate_real_quantization_metadata(expert_params_converted):
         logger.error("MXFP4 quantization not available - falling back to placeholder")
         return _generate_placeholder_quantization_metadata(expert_params_converted)
     
-    def convert_triton_to_transformers_format(param_tensor, param_name):
+    def convert_native_pytorch_mxfp4(param_tensor, param_name):
         """
-        Convert using triton quantization, then carefully convert to transformers uint8 format.
+        Native PyTorch MXFP4 quantization that directly produces transformers-compatible format.
         
-        The key is ensuring the conversion preserves the exact semantics that transformers
-        expects when it dequantizes using convert_moe_packed_tensors.
+        This avoids triton's incompatible layout and implements the quantization directly
+        in the format that transformers expects for convert_moe_packed_tensors.
         """
-        logger.info(f"🚀 Using triton quantization for {param_name}")
+        logger.info(f"🔧 Using native PyTorch MXFP4 quantization for {param_name}")
         logger.info(f"📥 Input: {param_tensor.shape} {param_tensor.dtype}")
         
-        # Step 1: Use triton quantization (fast and accurate)
-        original_device = param_tensor.device
-        if param_tensor.device.type == 'cpu':
-            gpu_tensor = param_tensor.cuda()
-        else:
-            gpu_tensor = param_tensor
-            
-        # Call triton quantization
-        triton_result = quantize_to_mxfp4(gpu_tensor)
-        if not isinstance(triton_result, tuple) or len(triton_result) != 2:
-            raise ValueError(f"Expected tuple of 2 from quantize_to_mxfp4, got {type(triton_result)}")
+        # FP4 lookup table (same as transformers)
+        FP4_VALUES = torch.tensor([
+            +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
+            -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+        ], dtype=param_tensor.dtype, device=param_tensor.device)
         
-        triton_blocks, triton_scales = triton_result
-        print(f"📤 Triton returned: blocks={type(triton_blocks)}, scales={type(triton_scales)}")
-        
-        # Step 2: Extract underlying data from triton tensors
-        def extract_tensor_data(triton_tensor, name):
-            print(f"🔧 Extracting {name}: {type(triton_tensor)}")
-            
-            # Try different methods to get PyTorch tensor
-            if torch.is_tensor(triton_tensor):
-                return triton_tensor
-            elif hasattr(triton_tensor, 'data') and torch.is_tensor(triton_tensor.data):
-                return triton_tensor.data
-            elif hasattr(triton_tensor, 'tensor') and torch.is_tensor(triton_tensor.tensor):
-                return triton_tensor.tensor
-            elif hasattr(triton_tensor, '_tensor') and torch.is_tensor(triton_tensor._tensor):
-                return triton_tensor._tensor
-            else:
-                # Last resort: convert to tensor
-                return torch.as_tensor(triton_tensor)
-        
-        blocks_tensor = extract_tensor_data(triton_blocks, "blocks").to(original_device)
-        scales_tensor = extract_tensor_data(triton_scales, "scales").to(original_device)
-        
-        print(f"📊 Extracted tensors:")
-        print(f"   Blocks: {blocks_tensor.shape} {blocks_tensor.dtype}")
-        print(f"   Scales: {scales_tensor.shape} {scales_tensor.dtype}")
-        
-        # Step 3: Convert to transformers uint8 format
-        # The critical part: triton may return different format than transformers expects
-        
-        # For blocks: need to ensure they're uint8 with correct nibble packing
-        if blocks_tensor.dtype != torch.uint8:
-            logger.info(f"🔄 Converting blocks from {blocks_tensor.dtype} to uint8")
-            # If these are indices or already packed, just convert dtype
-            if blocks_tensor.dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
-                blocks_tensor = blocks_tensor.clamp(0, 255).to(torch.uint8)
-            else:
-                # For float types, assume they need to be converted to indices
-                blocks_tensor = blocks_tensor.to(torch.uint8)
-        
-        # For scales: triton might already have the correct format
-        print(f"🔍 Scale tensor analysis:")
-        print(f"   Dtype: {scales_tensor.dtype}")
-        print(f"   Range: {scales_tensor.min().item()} to {scales_tensor.max().item()}")
-        print(f"   Sample values: {scales_tensor.flatten()[:10].tolist()}")
-        
-        if scales_tensor.dtype != torch.uint8:
-            print(f"🔄 Converting scales from {scales_tensor.dtype} to uint8")
-            if scales_tensor.dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
-                # These are likely raw exponents - add 127 offset
-                scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
-            elif scales_tensor.dtype in [torch.float32, torch.float16, torch.bfloat16]:
-                # These might be raw exponents as floats
-                scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
-            else:
-                scales_tensor = scales_tensor.to(torch.uint8)
-        else:
-            # Triton might already be giving us uint8 values - check if they need offset
-            # If all values are very small (0-50), they might be raw exponents needing +127
-            # If values are around 127, they might already have the offset
-            print(f"🤔 Scales are already uint8 - checking if offset is needed")
-            if scales_tensor.max().item() < 50:
-                print("   Scales look like raw exponents - adding 127 offset")
-                scales_tensor = (scales_tensor + 127).clamp(0, 255)
-            else:
-                print("   Scales look like they already have offset")
-        
-        print(f"   Final scale range: {scales_tensor.min().item()} to {scales_tensor.max().item()}")
-        
-        # Step 4: CRITICAL FIX - Understanding triton's actual format
         experts, output_dim, input_dim = param_tensor.shape
         
-        print(f"🔍 Analyzing triton format:")
-        print(f"   Input tensor: {param_tensor.shape}")
-        print(f"   Triton blocks: {blocks_tensor.shape}")
-        print(f"   Triton scales: {scales_tensor.shape}")
+        # Transformers expects: [experts, output_dim, input_groups, 16]
+        input_groups = input_dim // 32
+        if input_dim % 32 != 0:
+            raise ValueError(f"Input dimension {input_dim} is not divisible by 32")
         
-        # CRITICAL INSIGHT: Triton might be transposing the input tensor before quantization!
-        # The debug shows our data at [0, :8, 0] and [0, :8, 1] doesn't appear at blocks [0, 0, *, *]
-        # But instead appears at different input dimension indices
+        target_blocks_shape = (experts, output_dim, input_groups, 16)
+        target_scales_shape = (experts, output_dim, input_groups)
         
-        # Let's check if triton transposed the tensor: [experts, output_dim, input_dim] → [experts, input_dim, output_dim]
-        triton_experts, triton_dim1, triton_dim2 = blocks_tensor.shape
-        scale_experts, scale_groups, scale_input = scales_tensor.shape
+        logger.info(f"📦 Target transformers format:")
+        logger.info(f"   Blocks: {target_blocks_shape}")
+        logger.info(f"   Scales: {target_scales_shape}")
         
-        print(f"📐 Dimension analysis:")
-        print(f"   Input shape: [{experts}, {output_dim}, {input_dim}]")
-        print(f"   Triton blocks: [{triton_experts}, {triton_dim1}, {triton_dim2}]")
-        print(f"   Triton scales: [{scale_experts}, {scale_groups}, {scale_input}]")
+        # Reshape input for group-wise quantization
+        # [experts, output_dim, input_dim] → [experts, output_dim, input_groups, 32]
+        weights_grouped = param_tensor.view(experts, output_dim, input_groups, 32)
         
-        # HYPOTHESIS: Triton transposed [experts, output_dim, input_dim] → [experts, input_dim, output_dim]
-        # Then grouped the output_dim: input_dim=128, output_dim=64, groups=64//32=2
+        logger.info(f"📊 Grouped weights: {weights_grouped.shape}")
         
-        if triton_dim1 == input_dim and scale_input == input_dim:
-            print(f"✅ DETECTED: Triton transposed input tensor!")
-            print(f"   Original: [experts={experts}, output_dim={output_dim}, input_dim={input_dim}]")
-            print(f"   Triton processed: [experts={experts}, input_dim={input_dim}, output_dim={output_dim}]")
-            
-            # Triton's layout: [experts, input_dim, output_groups*16]
-            # Where output_groups = output_dim // 32
-            triton_output_groups = output_dim // 32
-            if output_dim % 32 != 0:
-                print(f"⚠️ Output dimension {output_dim} not divisible by 32")
-                triton_output_groups = triton_dim2 // 16  # Infer from actual data
-            
-            print(f"   Triton output groups: {triton_output_groups}")
-            
-            # For transformers: we need [experts, input_dim, output_groups, 16] - SAME as triton!
-            target_blocks_shape = (experts, input_dim, triton_output_groups, 16)
-            target_scales_shape = (experts, input_dim, triton_output_groups)
-            
-            print(f"🎯 Target format (matches triton!):")
-            print(f"   Blocks: {target_blocks_shape}")
-            print(f"   Scales: {target_scales_shape}")
-            
-            # Scales: triton gives [experts, output_groups, input_dim], we need [experts, input_dim, output_groups]
-            if scales_tensor.shape == (experts, triton_output_groups, input_dim):
-                print(f"   Transposing scales: {scales_tensor.shape} → [experts, input_dim, output_groups]")
-                scales_reshaped = scales_tensor.transpose(1, 2)
-            else:
-                print(f"   Unexpected scale shape: {scales_tensor.shape}")
-                scales_reshaped = scales_tensor.reshape(target_scales_shape)
-        else:
-            print(f"❌ UNEXPECTED: Triton format doesn't match expected transpose pattern")
-            # Fall back to original logic
-            output_groups = output_dim // 32 if output_dim >= 32 else scale_groups
-            target_blocks_shape = (experts, input_dim, output_groups, 16)
-            target_scales_shape = (experts, input_dim, output_groups)
-            scales_reshaped = scales_tensor.transpose(1, 2) if scales_tensor.shape == (experts, output_groups, input_dim) else scales_tensor.reshape(target_scales_shape)
+        # Find the best scale (exponent) for each group of 32 values
+        # Shape: [experts, output_dim, input_groups]
+        max_abs_vals = torch.max(torch.abs(weights_grouped), dim=-1)[0]
         
-        # Handle blocks conversion based on transpose detection
-        target_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
-        actual_blocks_elements = blocks_tensor.numel()
+        # Handle zero groups (avoid log of zero)
+        non_zero_mask = max_abs_vals > 1e-8
+        log_vals = torch.zeros_like(max_abs_vals)
+        log_vals[non_zero_mask] = torch.log2(max_abs_vals[non_zero_mask] / 6.0)  # 6.0 is max FP4 value
         
-        print(f"🔢 Blocks element analysis:")
-        print(f"   Actual: {actual_blocks_elements}")
-        print(f"   Target: {target_blocks_elements}")
-        print(f"   Ratio: {actual_blocks_elements / target_blocks_elements:.3f}")
+        # Clamp exponents to valid range and convert to integers
+        exponents = torch.clamp(log_vals, -127, 127).round().long()
         
-        print(f"🔧 Converting blocks tensor:")
-        print(f"   Triton blocks: {blocks_tensor.shape}")
-        print(f"   Target: {target_blocks_shape}")
+        # Create scale factors for each group: 2^(-exponent)
+        scale_factors = torch.pow(2.0, -exponents.float())  # [experts, output_dim, input_groups]
+        scale_factors = scale_factors.unsqueeze(-1)  # [experts, output_dim, input_groups, 1]
         
-        if triton_dim1 == input_dim and scale_input == input_dim:
-            # TRANSPOSE DETECTED: triton quantized in [experts, input_dim, output_dim] format
-            # Need to convert back to transformers [experts, output_dim, input_dim//32, 16] format
-            print(f"   ✅ TRANSPOSE DETECTED - Converting back to transformers format")
-            
-            transformers_input_groups = input_dim // 32
-            transformers_blocks_shape = (experts, output_dim, transformers_input_groups, 16)
-            transformers_scales_shape = (experts, output_dim, transformers_input_groups)
-            
-            print(f"   Target transformers format:")
-            print(f"     blocks: {transformers_blocks_shape}")
-            print(f"     scales: {transformers_scales_shape}")
-            
-            # Step 1: Reshape triton blocks to [experts, input_dim, output_groups, 16]
-            triton_expected_packed = triton_output_groups * 16
-            if blocks_tensor.shape[2] == triton_expected_packed:
-                triton_reshaped = blocks_tensor.view(experts, input_dim, triton_output_groups, 16)
-                print(f"   Triton reshaped: {triton_reshaped.shape}")
-                
-                # Check if we can convert element counts
-                triton_total_per_expert = triton_output_groups * 16 * 2
-                transformers_total_per_expert = transformers_input_groups * 16 * 2
-                
-                if triton_total_per_expert == transformers_total_per_expert:
-                    print(f"   ✅ Element counts match - converting layout")
-                    
-                    # Convert blocks: [experts, input_dim, triton_groups, 16] → [experts, output_dim, transformers_groups, 16]
-                    temp_blocks = triton_reshaped.permute(0, 2, 1, 3)  # [experts, triton_groups, input_dim, 16]
-                    temp_blocks = temp_blocks.reshape(experts, triton_output_groups * input_dim, 16)
-                    final_blocks = temp_blocks.view(experts, output_dim, transformers_input_groups, 16).contiguous()
-                    
-                    # Convert scales: [experts, input_dim, triton_groups] → [experts, output_dim, transformers_groups]
-                    temp_scales = scales_reshaped.permute(0, 2, 1)  # [experts, triton_groups, input_dim]
-                    temp_scales = temp_scales.reshape(experts, triton_output_groups * input_dim)
-                    final_scales = temp_scales.view(experts, output_dim, transformers_input_groups).contiguous()
-                    
-                    scales_reshaped = final_scales
-                    target_blocks_shape = transformers_blocks_shape
-                    
-                    print(f"   Final blocks: {final_blocks.shape}")
-                    print(f"   Final scales: {final_scales.shape}")
-                else:
-                    print(f"   ❌ Element count mismatch: {triton_total_per_expert} vs {transformers_total_per_expert}")
-                    final_blocks = triton_reshaped.contiguous()
-            else:
-                print(f"   ⚠️ Unexpected triton format - using fallback")
-                final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
-        else:
-            # FALLBACK: original logic for non-transpose case
-            print(f"   Using fallback conversion logic")
-            
-            if actual_blocks_elements == target_blocks_elements:
-                # Element counts match - reshape directly
-                print(f"   Element counts match - direct reshape")
-                final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
-                print(f"   Result: {final_blocks.shape}")
-            elif actual_blocks_elements > target_blocks_elements:
-                # Triton has extra elements - extract relevant portion
-                print(f"   Triton has extra elements - extracting relevant portion")
-                extracted = blocks_tensor.flatten()[:target_blocks_elements]
-                final_blocks = extracted.reshape(target_blocks_shape).contiguous()
-                print(f"   Extracted and reshaped to: {final_blocks.shape}")
-            else:
-                raise ValueError(f"Triton has fewer elements than expected: {actual_blocks_elements} < {target_blocks_elements}")
+        # Scale all values by their group's scale factor
+        scaled_values = weights_grouped * scale_factors  # [experts, output_dim, input_groups, 32]
         
-        final_scales = scales_reshaped
+        logger.info(f"🔢 Quantizing to FP4 indices...")
         
-        logger.info(f"✅ Final format:")
-        logger.info(f"   Blocks: {final_blocks.shape} {final_blocks.dtype}")
-        logger.info(f"   Scales: {final_scales.shape} {final_scales.dtype}")
+        # Find closest FP4 values for all scaled values at once
+        # Expand dimensions for broadcasting
+        scaled_expanded = scaled_values.unsqueeze(-1)  # [..., 32, 1]
+        fp4_expanded = FP4_VALUES.view(1, 1, 1, 1, 16)  # [1, 1, 1, 1, 16]
         
-        return final_blocks, final_scales
+        # Compute distances and find closest indices
+        distances = torch.abs(scaled_expanded - fp4_expanded)  # [..., 32, 16]
+        quantized_indices = torch.argmin(distances, dim=-1)  # [..., 32] with values 0-15
+        
+        logger.info(f"📦 Packing nibbles...")
+        
+        # Pack nibbles according to transformers format
+        # The official dequantization does: sub[:, 0::2] = lut[idx_lo], sub[:, 1::2] = lut[idx_hi]
+        # This means: even positions come from lower nibble, odd from upper nibble
+        # So for each pair [i, i+1], we pack as: (indices[i+1] << 4) | indices[i]
+        
+        # Reshape to pairs: [..., 32] -> [..., 16, 2]
+        indices_pairs = quantized_indices.view(experts, output_dim, input_groups, 16, 2)
+        
+        # Pack into uint8: (odd_index << 4) | (even_index & 0x0F)
+        idx_even = indices_pairs[..., 0]  # Even positions -> lower nibble
+        idx_odd = indices_pairs[..., 1]   # Odd positions -> upper nibble
+        
+        blocks = ((idx_odd << 4) | (idx_even & 0x0F)).to(torch.uint8)
+        
+        # Store scales with +127 offset for uint8 storage
+        scales = torch.clamp(exponents + 127, 0, 255).to(torch.uint8)
+        
+        logger.info(f"✅ Native quantization complete:")
+        logger.info(f"   Blocks: {blocks.shape} {blocks.dtype}")
+        logger.info(f"   Scales: {scales.shape} {scales.dtype}")
+        
+        return blocks, scales
     
     def quantize_weights_to_mxfp4_format(full_precision_weights):
         """
@@ -433,8 +286,8 @@ def _generate_real_quantization_metadata(expert_params_converted):
             logger.info(f"🔧 Converting {original_name} to transformers-compatible MXFP4 format")
             logger.info(f"📥 INPUT: shape={param_tensor.shape}, dtype={param_tensor.dtype}")
             
-            # Use triton quantization + careful format conversion
-            blocks, scales = convert_triton_to_transformers_format(param_tensor, original_name)
+            # Use native PyTorch quantization for perfect transformers compatibility
+            blocks, scales = convert_native_pytorch_mxfp4(param_tensor, original_name)
             
             # Add to metadata
             metadata[new_name] = blocks
