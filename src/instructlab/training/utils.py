@@ -445,7 +445,7 @@ def save_fsdp_gpt_oss_model(
     output_dir: Path,
 ):
     """Save GPT-OSS model with parameter conversion, following FSDP LoRA pattern."""
-    from .gpt_oss_utils_official import convert_dequantized_to_quantized_format, update_config_for_quantized_format
+    from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct, update_config_for_quantized_format
     
     if accelerator.distributed_type != DistributedType.FSDP:
         raise RuntimeError(
@@ -471,8 +471,8 @@ def save_fsdp_gpt_oss_model(
         logger.info("🔍 CORRUPTION DEBUG: Testing model BEFORE quantization conversion...")
         test_model_inference_quick(model, tokenizer, "BEFORE_CONVERSION")
         
-        # Convert the state dict to quantized format
-        converted_state = convert_dequantized_to_quantized_format(state)
+        # Convert the state dict to quantized format using CORRECT algorithm
+        converted_state = convert_dequantized_to_quantized_format_correct(state)
         
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)

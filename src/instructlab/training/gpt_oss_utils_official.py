@@ -67,6 +67,7 @@ def _generate_official_quantization_metadata(expert_params_converted):
     """
     try:
         from transformers.integrations.mxfp4 import quantize_to_mxfp4
+        logger.info("✅ Using official transformers quantize_to_mxfp4 function")
     except ImportError:
         logger.error("MXFP4 quantization not available - falling back to placeholder")
         return _generate_placeholder_quantization_metadata(expert_params_converted)
