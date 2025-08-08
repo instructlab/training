@@ -102,6 +102,16 @@ def _generate_real_quantization_metadata(expert_params_converted):
         logger.info(f"🔧 Using native PyTorch MXFP4 quantization for {param_name}")
         logger.info(f"📥 Input: {param_tensor.shape} {param_tensor.dtype}")
         
+        # CRITICAL: Handle gate_up_proj vs down_proj orientation difference
+        # gate_up_proj comes as [experts, hidden_size, 2*intermediate_size] 
+        # but transformers expects [experts, 2*intermediate_size, hidden_size//32, 16]
+        # So we need to transpose gate_up_proj before quantization
+        
+        if "gate_up_proj" in param_name:
+            logger.info(f"🔄 Transposing gate_up_proj tensor for correct orientation")
+            param_tensor = param_tensor.transpose(1, 2)  # [experts, hidden, 2*inter] → [experts, 2*inter, hidden]
+            logger.info(f"📥 After transpose: {param_tensor.shape}")
+        
         # FP4 lookup table (same as transformers)
         FP4_VALUES = torch.tensor([
             +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
