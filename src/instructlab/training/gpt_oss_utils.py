@@ -115,11 +115,11 @@ def _generate_real_quantization_metadata(expert_params_converted):
             raise ValueError(f"Expected tuple of 2 from quantize_to_mxfp4, got {type(triton_result)}")
         
         triton_blocks, triton_scales = triton_result
-        logger.info(f"📤 Triton returned: blocks={type(triton_blocks)}, scales={type(triton_scales)}")
+        print(f"📤 Triton returned: blocks={type(triton_blocks)}, scales={type(triton_scales)}")
         
         # Step 2: Extract underlying data from triton tensors
         def extract_tensor_data(triton_tensor, name):
-            logger.info(f"🔧 Extracting {name}: {type(triton_tensor)}")
+            print(f"🔧 Extracting {name}: {type(triton_tensor)}")
             
             # Try different methods to get PyTorch tensor
             if torch.is_tensor(triton_tensor):
@@ -137,9 +137,9 @@ def _generate_real_quantization_metadata(expert_params_converted):
         blocks_tensor = extract_tensor_data(triton_blocks, "blocks").to(original_device)
         scales_tensor = extract_tensor_data(triton_scales, "scales").to(original_device)
         
-        logger.info(f"📊 Extracted tensors:")
-        logger.info(f"   Blocks: {blocks_tensor.shape} {blocks_tensor.dtype}")
-        logger.info(f"   Scales: {scales_tensor.shape} {scales_tensor.dtype}")
+        print(f"📊 Extracted tensors:")
+        print(f"   Blocks: {blocks_tensor.shape} {blocks_tensor.dtype}")
+        print(f"   Scales: {scales_tensor.shape} {scales_tensor.dtype}")
         
         # Step 3: Convert to transformers uint8 format
         # The critical part: triton may return different format than transformers expects
@@ -181,22 +181,22 @@ def _generate_real_quantization_metadata(expert_params_converted):
         target_blocks_shape = (experts, input_dim, output_groups, 16)
         target_scales_shape = (experts, input_dim, output_groups)
         
-        logger.info(f"📐 Calculated target shapes for {output_dim} output dim:")
-        logger.info(f"   Output groups: {output_groups} (from {output_dim} ÷ 32)")
-        logger.info(f"   Target blocks: {target_blocks_shape}")
-        logger.info(f"   Target scales: {target_scales_shape}")
+        print(f"📐 Calculated target shapes for {output_dim} output dim:")
+        print(f"   Output groups: {output_groups} (from {output_dim} ÷ 32)")
+        print(f"   Target blocks: {target_blocks_shape}")
+        print(f"   Target scales: {target_scales_shape}")
         
-        logger.info(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
+        print(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
         
         # Calculate expected element counts
         expected_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
         expected_scales_elements = target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]
         
-        logger.info(f"🔢 Element count analysis:")
-        logger.info(f"   Blocks tensor: {blocks_tensor.shape} → {blocks_tensor.numel()} elements")
-        logger.info(f"   Expected blocks: {target_blocks_shape} → {expected_blocks_elements} elements")
-        logger.info(f"   Scales tensor: {scales_tensor.shape} → {scales_tensor.numel()} elements")
-        logger.info(f"   Expected scales: {target_scales_shape} → {expected_scales_elements} elements")
+        print(f"🔢 Element count analysis:")
+        print(f"   Blocks tensor: {blocks_tensor.shape} → {blocks_tensor.numel()} elements")
+        print(f"   Expected blocks: {target_blocks_shape} → {expected_blocks_elements} elements")
+        print(f"   Scales tensor: {scales_tensor.shape} → {scales_tensor.numel()} elements")
+        print(f"   Expected scales: {target_scales_shape} → {expected_scales_elements} elements")
         
         # Check if reshaping is possible (element count must match)
         if blocks_tensor.numel() != expected_blocks_elements:
