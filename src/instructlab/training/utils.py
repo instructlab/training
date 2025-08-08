@@ -456,63 +456,9 @@ def save_fsdp_gpt_oss_model(
             "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
         )
 
-    # Test generation before quantization (very simple test to avoid FSDP issues)
-    if accelerator.is_main_process:
-        try:
-            logger.info("🧪 Testing model forward pass BEFORE quantization...")
-            
-            # Very simple forward pass test instead of full generation
-            test_input = torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.long)  # Simple token sequence
-            if torch.cuda.is_available():
-                test_input = test_input.cuda()
-            
-            with torch.no_grad():
-                # Use the unwrapped model
-                if hasattr(model, 'module'):
-                    model_for_test = model.module
-                else:
-                    model_for_test = model
-                
-                model_for_test.eval()
-                
-                # Just do a forward pass, not full generation
-                outputs = model_for_test(test_input)
-                logits = outputs.logits if hasattr(outputs, 'logits') else outputs
-                
-                # Check if logits look reasonable
-                logits_mean = logits.mean().item()
-                logits_std = logits.std().item()
-                logits_max = logits.max().item()
-                logits_min = logits.min().item()
-                
-                logger.info("=" * 60)
-                logger.info("🔍 PRE-QUANTIZATION FORWARD PASS TEST")
-                logger.info(f"📊 Logits shape: {logits.shape}")
-                logger.info(f"📊 Logits stats: mean={logits_mean:.3f}, std={logits_std:.3f}")
-                logger.info(f"📊 Logits range: [{logits_min:.3f}, {logits_max:.3f}]")
-                
-                # Check for reasonable values
-                if abs(logits_mean) < 100 and logits_std > 0.01 and logits_std < 100:
-                    logger.info("✅ Pre-quantization forward pass looks reasonable!")
-                else:
-                    logger.warning("⚠️ Pre-quantization forward pass has unusual values!")
-                
-                if torch.isnan(logits).any():
-                    logger.error("❌ NaN values detected in pre-quantization logits!")
-                elif torch.isinf(logits).any():
-                    logger.error("❌ Inf values detected in pre-quantization logits!")
-                else:
-                    logger.info("✅ No NaN/Inf values in pre-quantization logits")
-                
-                logger.info("=" * 60)
-                
-                model_for_test.train()
-                
-        except Exception as e:
-            logger.error(f"❌ Pre-quantization test failed: {e}")
-            logger.error("This indicates the model was corrupted BEFORE quantization")
-            import traceback
-            traceback.print_exc()
+    # Skip pre-quantization test due to FSDP complications
+    # Focus on debugging the quantization process itself
+    logger.info("🔄 Starting GPT-OSS quantization process...")
 
     # Extract state dict with FSDP configuration (same as LoRA)
     sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -521,6 +467,10 @@ def save_fsdp_gpt_oss_model(
 
     # Convert parameters on main process only (same pattern as LoRA)
     if accelerator.is_main_process:
+        # CORRUPTION DEBUG: Test model before quantization conversion
+        logger.info("🔍 CORRUPTION DEBUG: Testing model BEFORE quantization conversion...")
+        test_model_inference_quick(model, tokenizer, "BEFORE_CONVERSION")
+        
         # Convert the state dict to quantized format
         converted_state = convert_dequantized_to_quantized_format(state)
         
@@ -915,3 +865,42 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
+
+
+def test_model_inference_quick(model, tokenizer, stage_name):
+    """Quick inference test to check if model outputs are coherent."""
+    try:
+        logger.info(f"🧪 Running quick inference test at stage: {stage_name}")
+        
+        # Simple test prompt
+        test_prompt = "The quick brown fox"
+        inputs = tokenizer(test_prompt, return_tensors="pt")
+        
+        # Move inputs to model device
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Generate a few tokens
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=10,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id
+            )
+        
+        # Decode and log result
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        logger.info(f"🔤 {stage_name} OUTPUT: '{generated_text}'")
+        
+        # Check if output looks reasonable (not just repeated tokens or gibberish)
+        output_tokens = generated_text.split()
+        if len(set(output_tokens)) < 3:
+            logger.warning(f"⚠️ {stage_name}: Output looks repetitive/corrupted!")
+        else:
+            logger.info(f"✅ {stage_name}: Output looks reasonable")
+            
+    except Exception as e:
+        logger.error(f"❌ {stage_name} inference test failed: {e}")
+        import traceback
+        traceback.print_exc()
