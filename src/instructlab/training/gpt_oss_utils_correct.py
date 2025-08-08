@@ -136,9 +136,9 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
                 blocks_name = param_name + "_blocks"
                 scales_name = param_name + "_scales"
                 
-                # Store quantized parameters
-                converted_state_dict[blocks_name] = blocks_u8
-                converted_state_dict[scales_name] = scales_i8
+                # Store quantized parameters (move to CPU to save GPU memory)
+                converted_state_dict[blocks_name] = blocks_u8.cpu()
+                converted_state_dict[scales_name] = scales_i8.cpu()
                 
                 logger.info(f"✅ {blocks_name}: {blocks_u8.shape} {blocks_u8.dtype}")
                 logger.info(f"✅ {scales_name}: {scales_i8.shape} {scales_i8.dtype}")
@@ -149,8 +149,17 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
                 logger.error(f"❌ Failed to convert {param_name}: {e}")
                 raise e
         else:
-            # Keep non-expert parameters as-is
-            converted_state_dict[param_name] = param_tensor
+            # Keep non-expert parameters - move to CPU and convert to bf16 for memory efficiency
+            if param_tensor.dtype == torch.float32:
+                # Convert float32 to bf16 to save memory
+                converted_param = param_tensor.to(torch.bfloat16).cpu()
+                logger.debug(f"💾 {param_name}: converted float32 → bf16 and moved to CPU")
+            else:
+                # Move to CPU but keep original dtype
+                converted_param = param_tensor.cpu()
+                logger.debug(f"💾 {param_name}: moved to CPU, kept {param_tensor.dtype}")
+            
+            converted_state_dict[param_name] = converted_param
     
     logger.info(f"🎯 Converted {conversion_count} expert parameters using correct MXFP4 algorithm")
     logger.info(f"📊 Output state dict has {len(converted_state_dict)} parameters")
