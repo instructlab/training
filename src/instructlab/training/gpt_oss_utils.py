@@ -188,11 +188,22 @@ def _generate_real_quantization_metadata(expert_params_converted):
         
         logger.info(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
         
+        # Calculate expected element counts
+        expected_blocks_elements = target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]
+        expected_scales_elements = target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]
+        
+        logger.info(f"🔢 Element count analysis:")
+        logger.info(f"   Blocks tensor: {blocks_tensor.shape} → {blocks_tensor.numel()} elements")
+        logger.info(f"   Expected blocks: {target_blocks_shape} → {expected_blocks_elements} elements")
+        logger.info(f"   Scales tensor: {scales_tensor.shape} → {scales_tensor.numel()} elements")
+        logger.info(f"   Expected scales: {target_scales_shape} → {expected_scales_elements} elements")
+        
         # Check if reshaping is possible (element count must match)
-        if blocks_tensor.numel() != target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]:
+        if blocks_tensor.numel() != expected_blocks_elements:
             logger.error(f"❌ Blocks element count mismatch!")
             logger.error(f"   Actual: {blocks_tensor.numel()}")
-            logger.error(f"   Expected: {target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]}")
+            logger.error(f"   Expected: {expected_blocks_elements}")
+            logger.error(f"   Ratio: {blocks_tensor.numel() / expected_blocks_elements:.3f}")
             raise ValueError("Cannot reshape blocks - element count mismatch")
             
         if scales_tensor.numel() != target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]:
