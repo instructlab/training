@@ -154,9 +154,14 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 # For float types, assume they need to be converted to indices
                 blocks_tensor = blocks_tensor.to(torch.uint8)
         
-        # For scales: need uint8 with +127 offset 
+        # For scales: triton might already have the correct format
+        print(f"🔍 Scale tensor analysis:")
+        print(f"   Dtype: {scales_tensor.dtype}")
+        print(f"   Range: {scales_tensor.min().item()} to {scales_tensor.max().item()}")
+        print(f"   Sample values: {scales_tensor.flatten()[:10].tolist()}")
+        
         if scales_tensor.dtype != torch.uint8:
-            logger.info(f"🔄 Converting scales from {scales_tensor.dtype} to uint8")
+            print(f"🔄 Converting scales from {scales_tensor.dtype} to uint8")
             if scales_tensor.dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
                 # These are likely raw exponents - add 127 offset
                 scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
@@ -165,6 +170,18 @@ def _generate_real_quantization_metadata(expert_params_converted):
                 scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
             else:
                 scales_tensor = scales_tensor.to(torch.uint8)
+        else:
+            # Triton might already be giving us uint8 values - check if they need offset
+            # If all values are very small (0-50), they might be raw exponents needing +127
+            # If values are around 127, they might already have the offset
+            print(f"🤔 Scales are already uint8 - checking if offset is needed")
+            if scales_tensor.max().item() < 50:
+                print("   Scales look like raw exponents - adding 127 offset")
+                scales_tensor = (scales_tensor + 127).clamp(0, 255)
+            else:
+                print("   Scales look like they already have offset")
+        
+        print(f"   Final scale range: {scales_tensor.min().item()} to {scales_tensor.max().item()}")
         
         # Step 4: Analyze triton format and convert to transformers format
         experts, output_dim, input_dim = param_tensor.shape
