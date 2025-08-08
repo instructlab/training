@@ -456,6 +456,29 @@ def save_fsdp_gpt_oss_model(
             "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
         )
 
+    REASONING_LANGUAGE = "Chinese"  # or Hindi, or any other language...
+    SYSTEM_PROMPT = f"reasoning language: {REASONING_LANGUAGE}"
+    USER_PROMPT = "What is the national symbol of Canada?"
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": USER_PROMPT},
+    ]
+
+    gen_kwargs = {"max_new_tokens": 512, "do_sample": True, "temperature": 0.6, "top_p": None, "top_k": None}
+
+
+    input_ids = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    ).to(model.device)
+
+    output_ids = model.generate(input_ids, **gen_kwargs)
+    response = tokenizer.batch_decode(output_ids)[0]
+    logger.info("HEY LOOK HERE ------------------------------------- ")
+    logger.info(f"Response: {response}")
+
     # Extract state dict with FSDP configuration (same as LoRA)
     sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
