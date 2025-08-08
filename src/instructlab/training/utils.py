@@ -456,64 +456,61 @@ def save_fsdp_gpt_oss_model(
             "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
         )
 
-    # Test generation before quantization (only on main process to avoid FSDP issues)
+    # Test generation before quantization (very simple test to avoid FSDP issues)
     if accelerator.is_main_process:
         try:
-            logger.info("🧪 Testing model generation BEFORE quantization...")
+            logger.info("🧪 Testing model forward pass BEFORE quantization...")
             
-            # Simple test prompt
-            test_prompt = "What is the national symbol of Canada?"
-            
-            # Tokenize input
-            input_ids = tokenizer.encode(test_prompt, return_tensors="pt")
+            # Very simple forward pass test instead of full generation
+            test_input = torch.tensor([[1, 2, 3, 4, 5]], dtype=torch.long)  # Simple token sequence
             if torch.cuda.is_available():
-                input_ids = input_ids.cuda()
+                test_input = test_input.cuda()
             
-            # Generate with minimal settings to avoid FSDP complications
             with torch.no_grad():
-                # Use the model directly, avoiding FSDP wrapper complications
+                # Use the unwrapped model
                 if hasattr(model, 'module'):
-                    # FSDP wrapped model
-                    model_for_gen = model.module
+                    model_for_test = model.module
                 else:
-                    model_for_gen = model
+                    model_for_test = model
                 
-                # Set to eval mode for generation
-                model_for_gen.eval()
+                model_for_test.eval()
                 
-                # Simple generation without fancy sampling
-                output_ids = model_for_gen.generate(
-                    input_ids,
-                    max_new_tokens=50,  # Short generation to avoid memory issues
-                    do_sample=False,    # Greedy to be deterministic
-                    pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                )
+                # Just do a forward pass, not full generation
+                outputs = model_for_test(test_input)
+                logits = outputs.logits if hasattr(outputs, 'logits') else outputs
                 
-                # Decode response
-                response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+                # Check if logits look reasonable
+                logits_mean = logits.mean().item()
+                logits_std = logits.std().item()
+                logits_max = logits.max().item()
+                logits_min = logits.min().item()
                 
                 logger.info("=" * 60)
-                logger.info("🔍 PRE-QUANTIZATION GENERATION TEST")
-                logger.info(f"📝 Prompt: {test_prompt}")
-                logger.info(f"📤 Response: {response}")
+                logger.info("🔍 PRE-QUANTIZATION FORWARD PASS TEST")
+                logger.info(f"📊 Logits shape: {logits.shape}")
+                logger.info(f"📊 Logits stats: mean={logits_mean:.3f}, std={logits_std:.3f}")
+                logger.info(f"📊 Logits range: [{logits_min:.3f}, {logits_max:.3f}]")
+                
+                # Check for reasonable values
+                if abs(logits_mean) < 100 and logits_std > 0.01 and logits_std < 100:
+                    logger.info("✅ Pre-quantization forward pass looks reasonable!")
+                else:
+                    logger.warning("⚠️ Pre-quantization forward pass has unusual values!")
+                
+                if torch.isnan(logits).any():
+                    logger.error("❌ NaN values detected in pre-quantization logits!")
+                elif torch.isinf(logits).any():
+                    logger.error("❌ Inf values detected in pre-quantization logits!")
+                else:
+                    logger.info("✅ No NaN/Inf values in pre-quantization logits")
+                
                 logger.info("=" * 60)
                 
-                # Check if response looks reasonable
-                if len(response) > len(test_prompt) + 5:  # Generated some text
-                    if any(word in response.lower() for word in ['maple', 'leaf', 'canada', 'symbol', 'beaver']):
-                        logger.info("✅ Pre-quantization generation looks reasonable!")
-                    else:
-                        logger.warning("⚠️ Pre-quantization generation may be unusual...")
-                else:
-                    logger.warning("⚠️ Pre-quantization generation too short or failed")
-                
-                # Switch back to train mode
-                model_for_gen.train()
+                model_for_test.train()
                 
         except Exception as e:
-            logger.error(f"❌ Pre-quantization generation test failed: {e}")
-            logger.error("This may indicate the model was already corrupted before quantization")
+            logger.error(f"❌ Pre-quantization test failed: {e}")
+            logger.error("This indicates the model was corrupted BEFORE quantization")
             import traceback
             traceback.print_exc()
 
