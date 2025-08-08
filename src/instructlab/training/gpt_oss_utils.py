@@ -92,7 +92,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
         logger.error("MXFP4 quantization not available - falling back to placeholder")
         return _generate_placeholder_quantization_metadata(expert_params_converted)
     
-    def convert_native_pytorch_mxfp4(param_tensor, param_name):
+    def convert_official_mxfp4(param_tensor, param_name):
         """
         Native PyTorch MXFP4 quantization that directly produces transformers-compatible format.
         

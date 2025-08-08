@@ -445,7 +445,7 @@ def save_fsdp_gpt_oss_model(
     output_dir: Path,
 ):
     """Save GPT-OSS model with parameter conversion, following FSDP LoRA pattern."""
-    from .gpt_oss_utils import convert_dequantized_to_quantized_format, update_config_for_quantized_format
+    from .gpt_oss_utils_official import convert_dequantized_to_quantized_format, update_config_for_quantized_format
     
     if accelerator.distributed_type != DistributedType.FSDP:
         raise RuntimeError(
@@ -673,7 +673,7 @@ def save_hf_format_accelerate(
         model.module.config.to_json_file(output_config_file)
         
         # For GPT-OSS models, ensure the config has proper quantization settings
-        from .gpt_oss_utils import should_convert_gpt_oss_format, update_config_for_quantized_format
+        from .gpt_oss_utils_official import should_convert_gpt_oss_format, update_config_for_quantized_format
         if should_convert_gpt_oss_format(model.module.config):
             update_config_for_quantized_format(output_config_file)
         
@@ -691,7 +691,7 @@ def save_hf_format_accelerate(
 
     if not is_lora:
         # Check if this is a GPT-OSS model that needs format conversion
-        from .gpt_oss_utils import should_convert_gpt_oss_format
+        from .gpt_oss_utils_official import should_convert_gpt_oss_format
         
         if should_convert_gpt_oss_format(model.module.config):
             # For GPT-OSS models, check if we need FSDP handling like LoRA does
