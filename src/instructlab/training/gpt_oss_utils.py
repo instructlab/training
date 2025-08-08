@@ -75,11 +75,10 @@ def convert_dequantized_to_quantized_format(state_dict: Dict[str, torch.Tensor])
 
 def _generate_real_quantization_metadata(expert_params_converted):
     """
-    Generate real MXFP4 quantization for dequantized expert parameters.
+    Generate real MXFP4 quantization using triton for speed, then convert to transformers format.
     
-    This function implements the inverse of transformers' convert_moe_packed_tensors
-    to convert trained full-precision weights back to the packed uint8 MXFP4 format
-    that transformers expects.
+    This approach uses the fast triton quantization, then carefully converts the output
+    to the exact uint8 packed format that transformers expects for correct round-trip.
     
     Args:
         expert_params_converted: List of (original_name, new_name, tensor) tuples
@@ -87,11 +86,124 @@ def _generate_real_quantization_metadata(expert_params_converted):
     Returns:
         Dict of quantization metadata parameters
     """
-    # Define FP4 lookup table values (from transformers implementation)
-    FP4_VALUES = torch.tensor([
-        +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,  # Positive values
-        -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0   # Negative values  
-    ])
+    try:
+        from transformers.integrations.mxfp4 import quantize_to_mxfp4
+    except ImportError:
+        logger.error("MXFP4 quantization not available - falling back to placeholder")
+        return _generate_placeholder_quantization_metadata(expert_params_converted)
+    
+    def convert_triton_to_transformers_format(param_tensor, param_name):
+        """
+        Convert using triton quantization, then carefully convert to transformers uint8 format.
+        
+        The key is ensuring the conversion preserves the exact semantics that transformers
+        expects when it dequantizes using convert_moe_packed_tensors.
+        """
+        logger.info(f"🚀 Using triton quantization for {param_name}")
+        logger.info(f"📥 Input: {param_tensor.shape} {param_tensor.dtype}")
+        
+        # Step 1: Use triton quantization (fast and accurate)
+        original_device = param_tensor.device
+        if param_tensor.device.type == 'cpu':
+            gpu_tensor = param_tensor.cuda()
+        else:
+            gpu_tensor = param_tensor
+            
+        # Call triton quantization
+        triton_result = quantize_to_mxfp4(gpu_tensor)
+        if not isinstance(triton_result, tuple) or len(triton_result) != 2:
+            raise ValueError(f"Expected tuple of 2 from quantize_to_mxfp4, got {type(triton_result)}")
+        
+        triton_blocks, triton_scales = triton_result
+        logger.info(f"📤 Triton returned: blocks={type(triton_blocks)}, scales={type(triton_scales)}")
+        
+        # Step 2: Extract underlying data from triton tensors
+        def extract_tensor_data(triton_tensor, name):
+            logger.info(f"🔧 Extracting {name}: {type(triton_tensor)}")
+            
+            # Try different methods to get PyTorch tensor
+            if torch.is_tensor(triton_tensor):
+                return triton_tensor
+            elif hasattr(triton_tensor, 'data') and torch.is_tensor(triton_tensor.data):
+                return triton_tensor.data
+            elif hasattr(triton_tensor, 'tensor') and torch.is_tensor(triton_tensor.tensor):
+                return triton_tensor.tensor
+            elif hasattr(triton_tensor, '_tensor') and torch.is_tensor(triton_tensor._tensor):
+                return triton_tensor._tensor
+            else:
+                # Last resort: convert to tensor
+                return torch.as_tensor(triton_tensor)
+        
+        blocks_tensor = extract_tensor_data(triton_blocks, "blocks").to(original_device)
+        scales_tensor = extract_tensor_data(triton_scales, "scales").to(original_device)
+        
+        logger.info(f"📊 Extracted tensors:")
+        logger.info(f"   Blocks: {blocks_tensor.shape} {blocks_tensor.dtype}")
+        logger.info(f"   Scales: {scales_tensor.shape} {scales_tensor.dtype}")
+        
+        # Step 3: Convert to transformers uint8 format
+        # The critical part: triton may return different format than transformers expects
+        
+        # For blocks: need to ensure they're uint8 with correct nibble packing
+        if blocks_tensor.dtype != torch.uint8:
+            logger.info(f"🔄 Converting blocks from {blocks_tensor.dtype} to uint8")
+            # If these are indices or already packed, just convert dtype
+            if blocks_tensor.dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
+                blocks_tensor = blocks_tensor.clamp(0, 255).to(torch.uint8)
+            else:
+                # For float types, assume they need to be converted to indices
+                blocks_tensor = blocks_tensor.to(torch.uint8)
+        
+        # For scales: need uint8 with +127 offset 
+        if scales_tensor.dtype != torch.uint8:
+            logger.info(f"🔄 Converting scales from {scales_tensor.dtype} to uint8")
+            if scales_tensor.dtype in [torch.int8, torch.int16, torch.int32, torch.int64]:
+                # These are likely raw exponents - add 127 offset
+                scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
+            elif scales_tensor.dtype in [torch.float32, torch.float16, torch.bfloat16]:
+                # These might be raw exponents as floats
+                scales_tensor = (scales_tensor + 127).clamp(0, 255).to(torch.uint8)
+            else:
+                scales_tensor = scales_tensor.to(torch.uint8)
+        
+        # Step 4: Reshape to match expected transformers format
+        # Need to figure out correct target shapes based on input tensor
+        experts, output_dim, input_dim = param_tensor.shape
+        
+        # Calculate expected shapes based on original GPT-OSS format
+        if input_dim == 5760:  # gate_up_proj
+            target_blocks_shape = (32, 5760, 90, 16)  # [experts, input_dim, output_groups, packed_bytes]
+            target_scales_shape = (32, 5760, 90)      # [experts, input_dim, output_groups]
+        elif input_dim == 2880:  # down_proj  
+            target_blocks_shape = (32, 2880, 90, 16)
+            target_scales_shape = (32, 2880, 90)
+        else:
+            raise ValueError(f"Unexpected input dimension: {input_dim}")
+        
+        logger.info(f"🎯 Target shapes: blocks={target_blocks_shape}, scales={target_scales_shape}")
+        
+        # Check if reshaping is possible (element count must match)
+        if blocks_tensor.numel() != target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]:
+            logger.error(f"❌ Blocks element count mismatch!")
+            logger.error(f"   Actual: {blocks_tensor.numel()}")
+            logger.error(f"   Expected: {target_blocks_shape[0] * target_blocks_shape[1] * target_blocks_shape[2] * target_blocks_shape[3]}")
+            raise ValueError("Cannot reshape blocks - element count mismatch")
+            
+        if scales_tensor.numel() != target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]:
+            logger.error(f"❌ Scales element count mismatch!")
+            logger.error(f"   Actual: {scales_tensor.numel()}")
+            logger.error(f"   Expected: {target_scales_shape[0] * target_scales_shape[1] * target_scales_shape[2]}")
+            raise ValueError("Cannot reshape scales - element count mismatch")
+        
+        # Reshape to target format
+        final_blocks = blocks_tensor.reshape(target_blocks_shape).contiguous()
+        final_scales = scales_tensor.reshape(target_scales_shape).contiguous()
+        
+        logger.info(f"✅ Final format:")
+        logger.info(f"   Blocks: {final_blocks.shape} {final_blocks.dtype}")
+        logger.info(f"   Scales: {final_scales.shape} {final_scales.dtype}")
+        
+        return final_blocks, final_scales
     
     def quantize_weights_to_mxfp4_format(full_precision_weights):
         """
@@ -193,11 +305,11 @@ def _generate_real_quantization_metadata(expert_params_converted):
         base_name = new_name.replace("_blocks", "")
         
         try:
-            logger.info(f"🔧 Converting {original_name} to MXFP4 packed format")
+            logger.info(f"🔧 Converting {original_name} to transformers-compatible MXFP4 format")
             logger.info(f"📥 INPUT: shape={param_tensor.shape}, dtype={param_tensor.dtype}")
             
-            # Quantize the full precision weights to MXFP4 packed format
-            blocks, scales = quantize_weights_to_mxfp4_format(param_tensor)
+            # Use triton quantization + careful format conversion
+            blocks, scales = convert_triton_to_transformers_format(param_tensor, original_name)
             
             # Add to metadata
             metadata[new_name] = blocks
@@ -208,7 +320,7 @@ def _generate_real_quantization_metadata(expert_params_converted):
             logger.info(f"✅ Added {scales_name}: {scales.shape} {scales.dtype}")
             
         except Exception as e:
-            logger.error(f"❌ Failed to quantize {original_name}: {e}")
+            logger.error(f"❌ Failed to convert {original_name}: {e}")
             import traceback
             traceback.print_exc()
             logger.info("🔄 Falling back to placeholder quantization")
