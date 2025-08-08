@@ -33,6 +33,14 @@ except ImportError:
             UserWarning,
         )
 
+from instructlab.training.hpu_utils import is_torch_hpu_available
+
+if is_torch_hpu_available():
+    import habana_frameworks.torch.core as htcore
+    import habana_frameworks.torch.distributed.hccl
+    from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
+    adapt_transformers_to_gaudi()
+
 # Third Party
 from tqdm import tqdm
 from transformers import AutoConfig
@@ -122,7 +130,7 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
-        # blast through the batches in the train loader up to the last step within the epoch.
+        # blast through the batches in the train loader up to the last step within the epoch. 
         for batch in accelerator.train_loader:
             if global_step <= args.last_step:
                 # in the case of resuming, last_step > 0
@@ -137,10 +145,19 @@ def train(
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
             total_length = float(torch.tensor([batch.pop("total_length")]))
             for k in batch:
-                batch[k] = batch[k].to(local_rank)
+                batch[k] = batch[k].to('hpu' if args.device == "hpu" else local_rank)
+
+            hpu_args = {}
+            if args.device == "hpu":
+                hpu_args = {
+                    "use_flash_attention":True,
+                    "lazy_mode":False,
+                }
+
             output = model(
                 **batch,
                 use_cache=False,
+                **hpu_args,
             )
             loss = output.loss
             log_loss = loss.detach().item()
@@ -177,8 +194,14 @@ def train(
                 elapsed_time = time.time() - start
                 overall_throughput = args.samples_per_gpu * world_size / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+
+                if args.device == "hpu":
+                    mem_allocated = torch.hpu.memory_allocated() / (1024**3)
+                    malloc_retries = 0
+                else:
+                    mem_allocated = torch.cuda.memory_allocated() / (1024**3)
+                    malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+
                 global_grad_norm = (
                     model.get_global_grad_norm()
                     if hasattr(model, "get_global_grad_norm")
@@ -200,8 +223,8 @@ def train(
                         "rank": torch.distributed.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
-                        "cuda_mem_allocated": cuda_mem_allocated,
-                        "cuda_malloc_retries": cuda_malloc_retries,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_mem_allocated": mem_allocated,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_malloc_retries": malloc_retries,
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
@@ -234,7 +257,10 @@ def train(
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
+
+            if args.device != "hpu":
+                torch.cuda.empty_cache()
+
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
@@ -312,17 +338,24 @@ def main(args):
     args.model_type = model_conf.model_type
 
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    if args.device == "hpu":
+        torch.hpu.set_device(int(os.environ["LOCAL_RANK"]))
+    else:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
-    if timeout is not None:
-        torch.distributed.init_process_group(timeout=timeout)
-    else:
-        torch.distributed.init_process_group()
+    backend = "hccl" if args.device == "hpu" else None
+    torch.distributed.init_process_group(backend=backend, timeout=timeout)
 
     args.global_rank = torch.distributed.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
+
+    if args.device == "hpu":
+        tensor = torch.ByteTensor([False]).to('hpu')
+    else:
+        tensor = torch.ByteTensor([False]).cuda()
+
     torch.distributed.all_reduce(tensor)
     torch.distributed.barrier()
 
@@ -369,6 +402,7 @@ def main(args):
         flash_enabled=flash_enabled,
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
+        device=args.device,
     )
 
     args.base_model_args = m.base_model_args
@@ -407,6 +441,7 @@ def main(args):
         samples_per_gpu=args.samples_per_gpu,
         sampler=args.sampler,
         seed=args.seed,
+        device=args.device,
     )
     if len(train_loader) == 0:
         # this happens sometimes when we have more GPUs than data to process. In this case
@@ -426,6 +461,7 @@ def main(args):
             samples_per_gpu=args.samples_per_gpu,
             sampler=args.sampler,
             seed=args.seed,
+            device=args.device,
         )
 
     if args.local_rank == 0:
@@ -457,6 +493,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
         save_samples=args.save_samples,
+        device=args.device,
     )
     # optimizer needs model that has been prepared by accelerator
     # and then accelerator needs to be prepared AGAIN once optimizer is initialized
@@ -635,6 +672,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
+
+    command.append(
+        f"--device={train_args.device}"
+    )
 
     logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
@@ -837,6 +878,14 @@ if __name__ == "__main__":
         action="store_true",
         help="Use Liger kernels for training.",
     )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="PyTorch device to use.",
+    )
+
     args = parser.parse_args()
     set_random_seed(args.seed)
     main(args)
