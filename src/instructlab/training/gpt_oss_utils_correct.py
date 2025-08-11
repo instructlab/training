@@ -30,23 +30,27 @@ def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
 def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     table = _e2m1_decode_table(device=normalized.device, dtype=normalized.dtype)  # [16]
     
+    # Try a different quantization approach: clamp to valid range first
+    # HF might clamp values before quantization
+    normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
+    
     # Process in chunks along the expert dimension to avoid memory issues
     # Keep block structure intact: [..., nblocks, GROUP_SIZE]
-    if normalized.dim() >= 3 and normalized.shape[0] > 8:  # Multiple experts
+    if normalized_clamped.dim() >= 3 and normalized_clamped.shape[0] > 8:  # Multiple experts
         # Process experts in small batches
         batch_size = 4  # Process 4 experts at a time
         expert_results = []
-        for start_idx in range(0, normalized.shape[0], batch_size):
-            end_idx = min(start_idx + batch_size, normalized.shape[0])
-            expert_batch = normalized[start_idx:end_idx]
-            # Use absolute error (PyTorch AO approach) with FLOOR-like tie-breaking
-            batch_indices = torch.argmin(torch.abs(expert_batch.unsqueeze(-1) - table), dim=-1)
+        for start_idx in range(0, normalized_clamped.shape[0], batch_size):
+            end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
+            expert_batch = normalized_clamped[start_idx:end_idx]
+            # Use squared error for better precision (revert to original approach)
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Use absolute error (PyTorch AO approach) with FLOOR-like tie-breaking
-        idx = torch.argmin(torch.abs(normalized.unsqueeze(-1) - table), dim=-1)
+        # Use squared error for better precision (revert to original approach)
+        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
@@ -105,11 +109,8 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     G = codes.shape[-1]
     assert G % 2 == 0
     codes2 = codes.view(*codes.shape[:-1], G // 2, 2)                # [..., nblocks, G/2, 2]
-    
-    # Try reversed nibble ordering to match HF/Triton layout
-    # HF might expect: even positions from high nibble, odd from low nibble
-    high = codes2[..., 0]                                            # even index -> high nibble (REVERSED)
-    low  = codes2[..., 1]                                            # odd  index -> low nibble (REVERSED)
+    low  = codes2[..., 0]                                            # even index -> low nibble
+    high = codes2[..., 1]                                            # odd  index -> high nibble
     packed = _pack_nibbles(low, high)                                # [..., nblocks, G/2]
 
     # Keep the 4D structure: [..., nblocks, 16] for blocks
