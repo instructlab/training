@@ -70,14 +70,20 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
             expert_batch = normalized_clamped[start_idx:end_idx]
-            # Use squared error for better precision
-            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            # Use squared error with tiny bias for consistent rounding behavior
+            distances = (expert_batch.unsqueeze(-1) - table)**2
+            # Add tiny bias to break ties in favor of higher indices (like nearest rounding)
+            bias = torch.arange(16, device=table.device, dtype=table.dtype) * 1e-8
+            batch_indices = torch.argmin(distances + bias, dim=-1)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Use squared error for better precision
-        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
+        # Use squared error with tiny bias for consistent rounding behavior  
+        distances = (normalized_clamped.unsqueeze(-1) - table)**2
+        # Add tiny bias to break ties in favor of higher indices (like nearest rounding)
+        bias = torch.arange(16, device=table.device, dtype=table.dtype) * 1e-8
+        idx = torch.argmin(distances + bias, dim=-1)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
@@ -95,9 +101,8 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     maxabs_int32 = maxabs.view(torch.int32)
     extracted_pow2 = ((maxabs_int32 >> 23) & 0xFF) - 127  # Extract FP32 exponent
     
-    # Calculate scale with target maximum power (6.0 = 2^2.58, so target_pow2 = 2.58)
-    # But use exact Triton approach: maxabs / 6.0 instead of maxabs / 4.0
-    target_max_pow2 = torch.log2(torch.tensor(6.0)).item()  # ~2.585 for FP4 E2M1 max value 6.0
+    # Calculate scale with target maximum power (4.0 = 2^2, so target_pow2 = 2)
+    target_max_pow2 = 2  # For FP4 E2M1 max value 4.0
     scale_unbiased = extracted_pow2 - target_max_pow2
     
     # Clamp to valid range and remove keepdim
