@@ -25,6 +25,32 @@ def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
     ], device=device, dtype=torch.float32)  # Always use float32 for consistency
     return fp4_values  # shape [16]
 
+@torch.no_grad()
+def _find_closest_with_last_tie_breaking(values, table):
+    """
+    Find closest FP4 values with custom tie-breaking that picks the last index.
+    """
+    # Calculate squared distances
+    distances = (values.unsqueeze(-1) - table) ** 2  # [..., 16]
+    
+    # Find minimum distance for each value
+    min_distances = torch.min(distances, dim=-1, keepdim=True)[0]  # [..., 1]
+    
+    # Create mask for tied values (equal to minimum distance)
+    is_tied = (distances == min_distances)  # [..., 16]
+    
+    # For each position, find the last (highest) index that's tied
+    # We'll iterate from last to first index and pick the first True we find
+    result_indices = torch.zeros(values.shape, dtype=torch.long, device=values.device)
+    
+    # Iterate through indices in reverse order (15, 14, ..., 1, 0)
+    for idx in range(table.shape[0] - 1, -1, -1):
+        # Update result where this index is tied (this overwrites earlier indices)
+        mask = is_tied[..., idx]
+        result_indices[mask] = idx
+    
+    return result_indices
+
 # Quantize floats (normalized by the block scale) to nearest E2M1 code 0..15
 @torch.no_grad()
 def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
@@ -45,14 +71,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
             expert_batch = normalized_clamped[start_idx:end_idx]
-            # Use squared error for better precision (revert to original approach)
-            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            # Custom tie-breaking: pick last index when distances are equal
+            batch_indices = _find_closest_with_last_tie_breaking(expert_batch, table)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Use squared error for better precision (revert to original approach)
-        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
+        # Custom tie-breaking: pick last index when distances are equal
+        idx = _find_closest_with_last_tie_breaking(normalized_clamped, table)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
