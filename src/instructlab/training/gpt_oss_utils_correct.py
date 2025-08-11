@@ -30,9 +30,25 @@ def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
 @torch.no_grad()
 def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     table = _e2m1_decode_table(device=normalized.device, dtype=normalized.dtype)  # [16]
-    # [*, 16], pick argmin squared error
-    idx = torch.argmin((normalized.unsqueeze(-1) - table)**2, dim=-1)
-    return idx.to(torch.uint8)
+    
+    # Process in chunks along the expert dimension to avoid memory issues
+    # Keep block structure intact: [..., nblocks, GROUP_SIZE]
+    if normalized.dim() >= 3 and normalized.shape[0] > 8:  # Multiple experts
+        # Process experts in small batches
+        batch_size = 4  # Process 4 experts at a time
+        expert_results = []
+        for start_idx in range(0, normalized.shape[0], batch_size):
+            end_idx = min(start_idx + batch_size, normalized.shape[0])
+            expert_batch = normalized[start_idx:end_idx]
+            # [batch_size, nblocks, GROUP_SIZE, 16], pick argmin squared error
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            expert_results.append(batch_indices.to(torch.uint8))
+        return torch.cat(expert_results, dim=0)
+    else:
+        # Small tensor, process normally
+        # [..., nblocks, GROUP_SIZE, 16], pick argmin squared error
+        idx = torch.argmin((normalized.unsqueeze(-1) - table)**2, dim=-1)
+        return idx.to(torch.uint8)
 
 @torch.no_grad()
 def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor:
@@ -123,61 +139,70 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
     # Pattern to match MoE expert weight parameters (not biases)
     moe_param_pattern = re.compile(r"experts\.(gate_up_proj|down_proj)$")
     
+    # First, copy all non-expert parameters to save memory
+    expert_params_to_convert = []
+    
     for param_name, param_tensor in state_dict.items():
-        # Check if this is an expert weight parameter that should be quantized
         if moe_param_pattern.search(param_name):
-            logger.info(f"🔄 Converting {param_name}: {param_tensor.shape} {param_tensor.dtype}")
-            
-            try:
-                # Check if this is gate_up_proj - it needs special dimension handling
-                if "gate_up_proj" in param_name:
-                    logger.info(f"🔄 Processing gate_up_proj with special dimension handling")
-                    # For gate_up_proj: dequantized is [experts, hidden_size, 2*intermediate_size]
-                    # HF expects storage as [experts, 2*intermediate_size, hidden_size//32, 16]
-                    # So we need to transpose before quantization
-                    param_to_quantize = param_tensor.transpose(1, 2).contiguous()
-                    logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
-                else:
-                    # For down_proj: dequantized is [experts, intermediate_size, hidden_size]
-                    # HF expects storage as [experts, hidden_size, intermediate_size//32, 16] 
-                    # So we need to transpose before quantization
-                    param_to_quantize = param_tensor.transpose(1, 2).contiguous()
-                    logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
-                
-                # Apply correct MXFP4 quantization
-                blocks_u8, scales_i8, meta = _quantize_tensor_to_mxfp4_param(param_to_quantize, GROUP_SIZE)
-                
-                # Create new parameter names with _blocks and _scales
-                blocks_name = param_name + "_blocks"
-                scales_name = param_name + "_scales"
-                
-                # Add +127 offset to scales for uint8 storage (HF format)
-                scales_u8 = (scales_i8.to(torch.int32) + 127).clamp(0, 255).to(torch.uint8)
-                
-                # Store quantized parameters (move to CPU to save GPU memory)
-                converted_state_dict[blocks_name] = blocks_u8.cpu()
-                converted_state_dict[scales_name] = scales_u8.cpu()
-                
-                logger.info(f"✅ {blocks_name}: {blocks_u8.shape} {blocks_u8.dtype}")
-                logger.info(f"✅ {scales_name}: {scales_u8.shape} {scales_u8.dtype}")
-                
-                conversion_count += 1
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to convert {param_name}: {e}")
-                raise e
+            # Store expert params for later conversion
+            expert_params_to_convert.append((param_name, param_tensor))
         else:
             # Keep non-expert parameters - move to CPU and convert to bf16 for memory efficiency
             if param_tensor.dtype == torch.float32:
-                # Convert float32 to bf16 to save memory
                 converted_param = param_tensor.to(torch.bfloat16).cpu()
                 logger.debug(f"💾 {param_name}: converted float32 → bf16 and moved to CPU")
             else:
-                # Move to CPU but keep original dtype
                 converted_param = param_tensor.cpu()
                 logger.debug(f"💾 {param_name}: moved to CPU, kept {param_tensor.dtype}")
             
             converted_state_dict[param_name] = converted_param
+    
+    # Now convert expert parameters one at a time to manage GPU memory
+    for param_name, param_tensor in expert_params_to_convert:
+        logger.info(f"🔄 Converting {param_name}: {param_tensor.shape} {param_tensor.dtype}")
+        
+        try:
+            # Check if this is gate_up_proj - it needs special dimension handling
+            if "gate_up_proj" in param_name:
+                logger.info(f"🔄 Processing gate_up_proj with special dimension handling")
+                # For gate_up_proj: dequantized is [experts, hidden_size, 2*intermediate_size]
+                # HF expects storage as [experts, 2*intermediate_size, hidden_size//32, 16]
+                # So we need to transpose before quantization
+                param_to_quantize = param_tensor.transpose(1, 2).contiguous()
+                logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
+            else:
+                # For down_proj: dequantized is [experts, intermediate_size, hidden_size]
+                # HF expects storage as [experts, hidden_size, intermediate_size//32, 16] 
+                # So we need to transpose before quantization
+                param_to_quantize = param_tensor.transpose(1, 2).contiguous()
+                logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
+            
+            # Apply correct MXFP4 quantization (keep on GPU)
+            blocks_u8, scales_i8, meta = _quantize_tensor_to_mxfp4_param(param_to_quantize, GROUP_SIZE)
+            
+            # Create new parameter names with _blocks and _scales
+            blocks_name = param_name + "_blocks"
+            scales_name = param_name + "_scales"
+            
+            # Add +127 offset to scales for uint8 storage (HF format)
+            scales_u8 = (scales_i8.to(torch.int32) + 127).clamp(0, 255).to(torch.uint8)
+            
+            # Store quantized parameters (move to CPU to save GPU memory)
+            converted_state_dict[blocks_name] = blocks_u8.cpu()
+            converted_state_dict[scales_name] = scales_u8.cpu()
+            
+            logger.info(f"✅ {blocks_name}: {blocks_u8.shape} {blocks_u8.dtype}")
+            logger.info(f"✅ {scales_name}: {scales_u8.shape} {scales_u8.dtype}")
+            
+            conversion_count += 1
+            
+            # Clear GPU memory after each conversion
+            del param_to_quantize, blocks_u8, scales_i8, scales_u8
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to convert {param_name}: {e}")
+            raise e
     
     logger.info(f"🎯 Converted {conversion_count} expert parameters using correct MXFP4 algorithm")
     logger.info(f"📊 Output state dict has {len(converted_state_dict)} parameters")
