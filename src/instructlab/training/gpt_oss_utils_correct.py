@@ -46,8 +46,8 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # Max representable magnitude in E2M1 is 6.0 (1.5 * 2^2)
     target = maxabs / 6.0
     e = torch.round(torch.log2(target))  # signed exponent
-    # store exponent with +127 offset as uint8 (OSS format)
-    return (e + 127).clamp(0, 255).to(torch.uint8)  # [..., nblocks]
+    # Return signed int8 exponent (transformers will handle +127 offset)
+    return e.clamp(-127, 127).to(torch.int8)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
@@ -129,19 +129,37 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
             logger.info(f"🔄 Converting {param_name}: {param_tensor.shape} {param_tensor.dtype}")
             
             try:
+                # Check if this is gate_up_proj - it needs special dimension handling
+                if "gate_up_proj" in param_name:
+                    logger.info(f"🔄 Processing gate_up_proj with special dimension handling")
+                    # For gate_up_proj: dequantized is [experts, hidden_size, 2*intermediate_size]
+                    # HF expects storage as [experts, 2*intermediate_size, hidden_size//32, 16]
+                    # So we need to transpose before quantization
+                    param_to_quantize = param_tensor.transpose(1, 2).contiguous()
+                    logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
+                else:
+                    # For down_proj: dequantized is [experts, intermediate_size, hidden_size]
+                    # HF expects storage as [experts, hidden_size, intermediate_size//32, 16] 
+                    # So we need to transpose before quantization
+                    param_to_quantize = param_tensor.transpose(1, 2).contiguous()
+                    logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
+                
                 # Apply correct MXFP4 quantization
-                blocks_u8, scales_i8, meta = _quantize_tensor_to_mxfp4_param(param_tensor, GROUP_SIZE)
+                blocks_u8, scales_i8, meta = _quantize_tensor_to_mxfp4_param(param_to_quantize, GROUP_SIZE)
                 
                 # Create new parameter names with _blocks and _scales
                 blocks_name = param_name + "_blocks"
                 scales_name = param_name + "_scales"
                 
+                # Add +127 offset to scales for uint8 storage (HF format)
+                scales_u8 = (scales_i8.to(torch.int32) + 127).clamp(0, 255).to(torch.uint8)
+                
                 # Store quantized parameters (move to CPU to save GPU memory)
                 converted_state_dict[blocks_name] = blocks_u8.cpu()
-                converted_state_dict[scales_name] = scales_i8.cpu()
+                converted_state_dict[scales_name] = scales_u8.cpu()
                 
                 logger.info(f"✅ {blocks_name}: {blocks_u8.shape} {blocks_u8.dtype}")
-                logger.info(f"✅ {scales_name}: {scales_i8.shape} {scales_i8.dtype}")
+                logger.info(f"✅ {scales_name}: {scales_u8.shape} {scales_u8.dtype}")
                 
                 conversion_count += 1
                 
