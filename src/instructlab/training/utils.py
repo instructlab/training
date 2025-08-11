@@ -500,15 +500,25 @@ def save_fsdp_gpt_oss_model(
         expert_params = [name for name in state.keys() if "experts." in name]
         expert_down_proj = [name for name in expert_params if "down_proj" in name and not name.endswith("_bias")]
         expert_gate_up_proj = [name for name in expert_params if "gate_up_proj" in name and not name.endswith("_bias")]
+        expert_biases = [name for name in expert_params if name.endswith("_bias")]
         
         logger.info(f"📊 Expert parameters: {len(expert_params)} total")
-        logger.info(f"📊 Expert down_proj: {len(expert_down_proj)} parameters")
-        logger.info(f"📊 Expert gate_up_proj: {len(expert_gate_up_proj)} parameters")
+        logger.info(f"📊 Expert down_proj weights: {len(expert_down_proj)} parameters")
+        logger.info(f"📊 Expert gate_up_proj weights: {len(expert_gate_up_proj)} parameters") 
+        logger.info(f"📊 Expert biases: {len(expert_biases)} parameters")
         
         if expert_down_proj:
             logger.info(f"📊 Sample down_proj names: {expert_down_proj[:3]}")
         if expert_gate_up_proj:
             logger.info(f"📊 Sample gate_up_proj names: {expert_gate_up_proj[:3]}")
+        
+        # Show ALL expert parameter types for debugging
+        expert_param_types = {}
+        for name in expert_params:
+            param_type = name.split(".")[-1]  # Get the last part (gate_up_proj, down_proj, etc.)
+            expert_param_types[param_type] = expert_param_types.get(param_type, 0) + 1
+        
+        logger.info(f"📊 Expert parameter breakdown by type: {expert_param_types}")
             
         # Check for non-parameter entries
         non_tensor_entries = {name: type(value) for name, value in state.items() if not isinstance(value, torch.Tensor)}
@@ -567,9 +577,51 @@ def save_fsdp_gpt_oss_model(
         # Check for expert parameters specifically
         expert_param_names = [name for name in param_names if "experts." in name]
         logger.info(f"🔍 Expert parameters: {len(expert_param_names)} found")
-        for name in expert_param_names[:10]:  # Show first 10
+        
+        # Break down expert parameters by type
+        expert_weights = [name for name in expert_param_names if not name.endswith("_bias") and not name.endswith("_blocks") and not name.endswith("_scales")]
+        expert_blocks = [name for name in expert_param_names if name.endswith("_blocks")]
+        expert_scales = [name for name in expert_param_names if name.endswith("_scales")]
+        expert_biases = [name for name in expert_param_names if name.endswith("_bias")]
+        
+        logger.info(f"🔍 Expert weights (original): {len(expert_weights)}")
+        logger.info(f"🔍 Expert blocks (quantized): {len(expert_blocks)}")
+        logger.info(f"🔍 Expert scales (quantized): {len(expert_scales)}")
+        logger.info(f"🔍 Expert biases: {len(expert_biases)}")
+        
+        # Show samples of each type
+        for name in expert_weights[:3]:
             param = converted_state[name]
-            logger.info(f"   {name}: {param.shape} {param.dtype}")
+            logger.info(f"   WEIGHT: {name}: {param.shape} {param.dtype}")
+        for name in expert_blocks[:3]:
+            param = converted_state[name]
+            logger.info(f"   BLOCKS: {name}: {param.shape} {param.dtype}")
+        for name in expert_scales[:3]:
+            param = converted_state[name]
+            logger.info(f"   SCALES: {name}: {param.shape} {param.dtype}")
+        for name in expert_biases[:3]:
+            param = converted_state[name]
+            logger.info(f"   BIAS: {name}: {param.shape} {param.dtype}")
+        
+        # Check if we have the expected parameter structure
+        expected_layers = 36  # GPT-OSS has 36 layers
+        expected_expert_weights = expected_layers * 2  # gate_up_proj + down_proj per layer
+        expected_expert_blocks = expected_layers * 2   # blocks for each weight
+        expected_expert_scales = expected_layers * 2   # scales for each weight
+        expected_expert_biases = expected_layers * 2   # biases for each weight
+        
+        logger.info(f"🔍 Expected vs Actual:")
+        logger.info(f"   Weights: {len(expert_weights)}/{expected_expert_weights}")
+        logger.info(f"   Blocks: {len(expert_blocks)}/{expected_expert_blocks}")
+        logger.info(f"   Scales: {len(expert_scales)}/{expected_expert_scales}")
+        logger.info(f"   Biases: {len(expert_biases)}/{expected_expert_biases}")
+        
+        if len(expert_weights) == 0:
+            logger.error("❌ NO EXPERT WEIGHTS FOUND - This explains the corruption!")
+        if len(expert_blocks) == 0:
+            logger.error("❌ NO EXPERT BLOCKS FOUND - Quantization failed!")
+        if len(expert_scales) == 0:
+            logger.error("❌ NO EXPERT SCALES FOUND - Quantization failed!")
         
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)
