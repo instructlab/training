@@ -546,18 +546,30 @@ def save_fsdp_gpt_oss_model(
             # Convert this parameter
             mini_converted = convert_dequantized_to_quantized_format_correct(mini_state)
             
-            # Move results back to CPU and add to final state
+            # Move all results back to CPU and add to final state
             for conv_name, conv_param in mini_converted.items():
-                if conv_name != clean_name:  # This is the converted blocks/scales
-                    clean_state[conv_name] = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
+                clean_state[conv_name] = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
             
-            # Remove original parameter and clean up GPU memory
-            if clean_name in mini_converted:
-                del mini_converted[clean_name]  # Remove original param from converted dict
+            # Clean up GPU memory
             del mini_state, mini_converted
             torch.cuda.empty_cache()
         
         converted_state = clean_state
+        
+        # Debug: Check final state dict structure before saving
+        logger.info(f"🔍 Final state dict has {len(converted_state)} parameters")
+        logger.info("🔍 Sample parameter names:")
+        param_names = list(converted_state.keys())
+        for name in param_names[:20]:  # Show first 20
+            param = converted_state[name]
+            logger.info(f"   {name}: {param.shape} {param.dtype}")
+        
+        # Check for expert parameters specifically
+        expert_param_names = [name for name in param_names if "experts." in name]
+        logger.info(f"🔍 Expert parameters: {len(expert_param_names)} found")
+        for name in expert_param_names[:10]:  # Show first 10
+            param = converted_state[name]
+            logger.info(f"   {name}: {param.shape} {param.dtype}")
         
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)
