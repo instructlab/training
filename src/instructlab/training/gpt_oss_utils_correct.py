@@ -60,8 +60,9 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     # Clamp to FP4 E2M1 range [-6.0, 6.0]
     normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
     
-    # Convert to uint32 for bit manipulation (like Triton)
-    quant_uint32 = normalized_clamped.view(torch.uint32)
+    # Move to CPU for bit manipulation (PyTorch CUDA doesn't support uint32 ops)
+    normalized_cpu = normalized_clamped.cpu()
+    quant_uint32 = normalized_cpu.view(torch.uint32)
     
     # Extract IEEE 754 components
     signs = quant_uint32 & 0x80000000
@@ -79,12 +80,13 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     
     # Convert to E2M1 format with Triton's exact algorithm
     # Formula: (((exponents << 2) | (mantissas >> 21)) + 1) >> 1
-    e2m1_tmp = torch.min((((exponents << 2) | (mantissas >> 21)) + 1) >> 1, torch.tensor(0x7, device=normalized.device))
+    e2m1_tmp = torch.min((((exponents << 2) | (mantissas >> 21)) + 1) >> 1, torch.tensor(0x7, device=normalized_cpu.device))
     
     # Combine sign and value: (signs >> 28) | e2m1_tmp
     e2m1_value = ((signs >> 28) | e2m1_tmp).to(torch.uint8)
     
-    return e2m1_value
+    # Move back to original device
+    return e2m1_value.to(normalized.device)
 
 @torch.no_grad()
 def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor:
@@ -100,17 +102,19 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # Triton algorithm: scale = max_val / max_quant_val (6.0 for FP4 E2M1)
     dequant_scale = maxabs / 6.0
     
+    # Move to CPU for bit manipulation (PyTorch CUDA doesn't support uint32 ops)
+    dequant_scale_cpu = dequant_scale.cpu()
+    dequant_scale_uint32 = dequant_scale_cpu.view(torch.uint32)
+    
     # Apply Triton's ROUND_UP rounding mode using bit manipulation
-    dequant_scale_uint32 = dequant_scale.view(torch.uint32)
-    # Add 0x007FFFFF for ROUND_UP, then mask to get exponent only
     dequant_scale_exponent = (dequant_scale_uint32 + 0x007FFFFF) & 0x7F800000
     
     # Extract the 8-bit exponent (right shift by 23) and convert to signed
     scale_exponent_u8 = (dequant_scale_exponent >> 23).to(torch.uint8)
     scale_exponent_i8 = (scale_exponent_u8.to(torch.int32) - 127).clamp(-127, 128).to(torch.int8)
     
-    # Remove keepdim dimension
-    return scale_exponent_i8.squeeze(-1)  # [..., nblocks]
+    # Move back to original device and remove keepdim
+    return scale_exponent_i8.to(blocks.device).squeeze(-1)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
