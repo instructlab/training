@@ -18,35 +18,42 @@ GROUP_SIZE = 32  # MXFP4 block size (last-dim groups)
 # ---- E2M1 codebook (FP4: 1 sign, 2 exp, 1 mant, bias=1), 16 values ----
 # Exact values from PyTorch AO MXFP4 implementation
 def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
-    # Exact FP4 E2M1 values from PyTorch AO
+    # Exact FP4 E2M1 values from PyTorch AO - force float32 for consistency
     fp4_values = torch.tensor([
         0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,  # Positive values
         -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0  # Negative values
-    ], device=device, dtype=dtype)
+    ], device=device, dtype=torch.float32)  # Always use float32 for consistency
     return fp4_values  # shape [16]
 
 # Quantize floats (normalized by the block scale) to nearest E2M1 code 0..15
 @torch.no_grad()
 def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
-    table = _e2m1_decode_table(device=normalized.device, dtype=normalized.dtype)  # [16]
-    
-    # Ensure float32 precision for consistent results
+    # Force float32 for all calculations to ensure consistency
     normalized = normalized.to(torch.float32)
-    table = table.to(torch.float32)
+    table = _e2m1_decode_table(device=normalized.device, dtype=torch.float32)  # [16]
     
-    # Clamp to valid FP4 range
+    # Try a different quantization approach: clamp to valid range first
+    # HF might clamp values before quantization
     normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
     
-    # Use simple absolute difference for quantization (matches transformers)
-    # Expand dimensions for broadcasting
-    normalized_expanded = normalized_clamped.unsqueeze(-1)  # [..., 1]
-    table_expanded = table.unsqueeze(0).expand_as(normalized_expanded)  # [..., 16]
-    
-    # Find closest value using absolute difference
-    distances = torch.abs(normalized_expanded - table_expanded)
-    idx = torch.argmin(distances, dim=-1)
-    
-    return idx.to(torch.uint8)
+    # Process in chunks along the expert dimension to avoid memory issues
+    # Keep block structure intact: [..., nblocks, GROUP_SIZE]
+    if normalized_clamped.dim() >= 3 and normalized_clamped.shape[0] > 8:  # Multiple experts
+        # Process experts in small batches
+        batch_size = 4  # Process 4 experts at a time
+        expert_results = []
+        for start_idx in range(0, normalized_clamped.shape[0], batch_size):
+            end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
+            expert_batch = normalized_clamped[start_idx:end_idx]
+            # Use squared error for better precision (revert to original approach)
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            expert_results.append(batch_indices.to(torch.uint8))
+        return torch.cat(expert_results, dim=0)
+    else:
+        # Small tensor, process normally
+        # Use squared error for better precision (revert to original approach)
+        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
+        return idx.to(torch.uint8)
 
 @torch.no_grad()
 def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor:
@@ -56,18 +63,22 @@ def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor
 @torch.no_grad()
 def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # blocks: [..., nblocks, G]
-    # Try simpler approach that matches transformers exactly
-    maxabs = blocks.abs().amax(dim=-1, keepdim=False)  # [..., nblocks]
+    # Use exact PyTorch AO scale calculation with bit manipulation
+    maxabs = blocks.abs().amax(dim=-1, keepdim=True).clamp_min(2**(-126))  # [..., nblocks, 1]
     
-    # Handle zero groups (avoid log of zero)
-    non_zero_mask = maxabs > 1e-8
-    log_vals = torch.zeros_like(maxabs)
-    log_vals[non_zero_mask] = torch.log2(maxabs[non_zero_mask] / 6.0)  # 6.0 is max FP4 value
+    # Extract power-of-2 component from float32 representation (PyTorch AO method)
+    maxabs_int32 = maxabs.view(torch.int32)
+    extracted_pow2 = ((maxabs_int32 >> 23) & 0xFF) - 127  # Extract FP32 exponent
     
-    # Round to nearest integer and clamp to valid range
-    exponents = torch.clamp(log_vals, -127, 127).round().to(torch.int8)
+    # Calculate scale with target maximum power (4.0 = 2^2, so target_pow2 = 2)
+    target_max_pow2 = 2  # For FP4 E2M1 max value 4.0
+    scale_unbiased = extracted_pow2 - target_max_pow2
     
-    return exponents  # [..., nblocks]
+    # Clamp to valid range and remove keepdim
+    scale_unbiased = scale_unbiased.squeeze(-1).clamp(-127, 128)  # [..., nblocks]
+    
+    # Return signed int8 exponent (transformers will handle +127 offset)
+    return scale_unbiased.to(torch.int8)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
@@ -89,9 +100,9 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
 
     # per-block signed exponent e (int8); scale = 2**e
     e_i8 = _power2_scales_from_maxabs(xb.to(torch.float32))         # [..., nblocks] - ensure float32
-    scale = torch.pow(2.0, -e_i8.to(torch.float32)).unsqueeze(-1)  # [..., nblocks, 1] - note the negative sign
+    scale = torch.pow(torch.tensor(2.0, device=x.device, dtype=torch.float32), e_i8.to(torch.float32)).unsqueeze(-1)  # [..., nblocks, 1]
 
-    y = xb * scale                                                   # normalized (multiply by scale factor)
+    y = xb / scale                                                   # normalized
 
     # encode each element to E2M1 code [0..15]
     codes = _e2m1_encode(y)                                          # uint8 [..., nblocks, G]
