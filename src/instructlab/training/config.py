@@ -30,6 +30,7 @@ class DeepSpeedOffloadStrategy(Enum):
 # public API
 class DistributedBackend(Enum):
     FSDP = "fsdp"
+    FSDP2 = "fsdp2"
     DEEPSPEED = "deepspeed"
 
 
@@ -139,6 +140,9 @@ class FSDPOptions(BaseModel):
 
     cpu_offload_params: Optional[bool] = False
     sharding_strategy: ShardingStrategies = ShardingStrategies.HYBRID_SHARD
+
+    # # FSDP2-specific options
+    # fsdp2_reshard_after_forward: Optional[bool] = True
 
 
 class Optimizer(Enum):

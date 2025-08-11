@@ -1,4 +1,4 @@
-flash-attn>=2.4.0
+flash-attn
 bitsandbytes>=0.43.1
 
 # required for FSDP updates

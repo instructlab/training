@@ -7,6 +7,7 @@ from accelerate import Accelerator as TransformersAccel
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
 import torch
+from torch.distributed.fsdp import MixedPrecisionPolicy, MixedPrecision
 
 # First Party
 from instructlab.training.config import (  # Adjust this import if needed
@@ -64,7 +65,7 @@ class Accelerator:
                     ),
                 ),
             }
-        elif self.distributed_framework == DistributedBackend.FSDP:
+        elif self.distributed_framework in [DistributedBackend.FSDP, DistributedBackend.FSDP2]:
             accel_args = {
                 "fsdp_plugin": self.get_fsdp_config(),
                 "mixed_precision": "bf16",
@@ -74,8 +75,11 @@ class Accelerator:
         )
         self.accelerator.even_batches = False
 
-        new_m = self.accelerator.prepare(model.model)
-        self.model.update_model(new_m)
+        # For FSDP2, we need to defer model preparation until we have the optimizer
+        # For FSDP1 and DeepSpeed, we can prepare the model immediately
+        if self.distributed_framework != DistributedBackend.FSDP2:
+            new_m = self.accelerator.prepare(model.model)
+            self.model.update_model(new_m)
 
     def prepare_with_optimizer(
         self,
@@ -91,6 +95,9 @@ class Accelerator:
             num_epochs=num_epochs,
             num_warmup_steps=num_warmup_steps,
         )
+        
+        # For FSDP2, we prepare everything together (model wasn't prepared in __init__)
+        # For others, the model was already prepared, so we prepare it again with optimizer
         new_m, new_opt, _, self.lr_scheduler = self.accelerator.prepare(
             self.model.model,
             optimizer,
@@ -126,7 +133,7 @@ class Accelerator:
         # Third Party
         from accelerate.utils import FullyShardedDataParallelPlugin
         from peft.utils.other import fsdp_auto_wrap_policy
-        from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
+        from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy, CPUOffloadPolicy
         from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
         from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
@@ -152,13 +159,48 @@ class Accelerator:
         prefetch_policy = (
             BackwardPrefetch.BACKWARD_POST if is_lora else BackwardPrefetch.BACKWARD_PRE
         )
+        fsdp_version = 2 if self.distributed_framework == DistributedBackend.FSDP2 else 1
+        fsdp2_kwargs = {}
+        if fsdp_version == 2:
+            reshard_after_forward = self.fsdp_sharding_strategy is not None and self.fsdp_sharding_strategy in [ShardingStrategy.FULL_SHARD, ShardingStrategy.HYBRID_SHARD] 
+            fsdp2_kwargs = {
+                # 'reshard_after_forward': reshard_after_forward,
+                # 'mixed_precision_policy': MixedPrecisionPolicy(
+                #     param_dtype=torch.float16,
+                #     reduce_dtype=torch.bfloat16,
+                #     cast_forward_inputs=False,
+                # ),
+                'reshard_after_forward': False,
+                # 'backward_prefetch': prefetch_policy,
+                # 'sharding_strategy': ShardingStrategy[self.fsdp_sharding_strategy],
+            }
+            # todo: add cpu offload policy here if user wants it
+        else:
+            fsdp2_kwargs = {
+                'cpu_offload': CPUOffload(self.fsdp_cpu_offload_params),
+                'auto_wrap_policy': wrap_policy,
+                'limit_all_gathers': True,
+                'backward_prefetch': prefetch_policy,
+                'sharding_strategy': ShardingStrategy[self.fsdp_sharding_strategy],
+            }
+            
         fsdp_plugin = FullyShardedDataParallelPlugin(
+            fsdp_version=fsdp_version,
             auto_wrap_policy=wrap_policy,
             limit_all_gathers=True,
             backward_prefetch=prefetch_policy,
             sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
-            cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
+            **fsdp2_kwargs
         )
+
+        # old version
+        # fsdp_plugin = FullyShardedDataParallelPlugin(
+        #     auto_wrap_policy=wrap_policy,
+        #     limit_all_gathers=True,
+        #     backward_prefetch=prefetch_policy,
+        #     sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
+        #     cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
+        # )
 
         # `use_orig_params` must be disabled when using LoRA and FSDP together
         # Source: https://huggingface.co/docs/peft/en/accelerate/fsdp#the-important-parts

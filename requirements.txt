@@ -2,8 +2,9 @@ packaging>=20.9
 wheel>=0.43
 pyyaml
 py-cpuinfo
-torch>=2.6.0
+torch>=2.6.0,<2.8
 transformers>=4.45.2
+ninja
 
 datasets>=2.15.0
 numba

@@ -211,7 +211,7 @@ class Model:
                 make_inputs_require_grad
             )
 
-        if self.distributed_framework == DistributedBackend.FSDP.value:
+        if self.distributed_framework in [DistributedBackend.FSDP, DistributedBackend.FSDP2]:
             # FSDP doesn't like `get_peft_model` as it leads to dtype mismatches
             self.model = LoraModel(self.model, self.lora_config, "default")
         else:
@@ -448,7 +448,7 @@ def setup_optimizer(
         else:
             raise ValueError(f"Unknown optimizer type: {name}")
     else:
-        if model.distributed_framework == DistributedBackend.FSDP:
+        if model.distributed_framework in [DistributedBackend.FSDP, DistributedBackend.FSDP2]:
             optimizer_cls = AdamW
         elif model.distributed_framework == DistributedBackend.DEEPSPEED:
             if cpu_offload:

@@ -122,6 +122,8 @@ def train(
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
 
+
+
         # blast through the batches in the train loader up to the last step within the epoch.
         for batch in accelerator.train_loader:
             if global_step <= args.last_step:
@@ -162,10 +164,40 @@ def train(
             loss = (
                 loss / num_loss_counted_tokens * world_size
             )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
+            # if accelerator.distributed_framework in [DistributedBackend.FSDP2, DistributedBackend.FSDP]:
+            #     loss *= world_size
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
             )
             accelerator.backward(loss)
+
+            param_dtypes = set()
+            grad_dtypes = set()
+            optimizer_state_dtypes = set()
+                
+            # Collect parameter data types
+            for param in model.parameters():
+                if param is not None:
+                    param_dtypes.add(str(param.dtype))
+                if param.grad is not None:
+                    grad_dtypes.add(str(param.grad.dtype))
+                
+            # Collect optimizer state data types
+            if hasattr(optimizer, 'state') and optimizer.state:
+                for param_id, state in optimizer.state.items():
+                    for key, value in state.items():
+                        if hasattr(value, 'dtype'):
+                            optimizer_state_dtypes.add(str(value.dtype))
+                
+
+            # Log unique data types for parameters, gradients, and optimizer state
+            if local_rank == 0 and global_step % 10 == 0:  # Log every 10 steps to avoid spam
+                base_logger.info(
+                    f"Data types - Parameters: {param_dtypes}, "
+                    f"Gradients: {grad_dtypes}, "
+                    f"Optimizer state: {optimizer_state_dtypes}"
+                )
+        
 
             if global_step % accelerator.grad_accum == 0:
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
@@ -191,6 +223,10 @@ def train(
                 # weight_norm = float(
                 #     model.optimizer.single_partition_of_fp32_groups[0].norm()
                 # )
+                assert accelerator.distributed_framework in [DistributedBackend.FSDP2, DistributedBackend.FSDP]
+                if accelerator.distributed_framework == DistributedBackend.FSDP2:
+                    global_grad_norm *= world_size ** 0.5
+
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
                 metric_logger.info(
@@ -764,6 +800,7 @@ if __name__ == "__main__":
         choices=[
             DistributedBackend.DEEPSPEED.value,
             DistributedBackend.FSDP.value,
+            DistributedBackend.FSDP2.value,
         ],
         default=DistributedBackend.DEEPSPEED.value,
     )
