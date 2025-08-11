@@ -39,14 +39,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized.shape[0])
             expert_batch = normalized[start_idx:end_idx]
-            # [batch_size, nblocks, GROUP_SIZE, 16], pick argmin squared error
-            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            # Use absolute error (PyTorch AO approach) with FLOOR-like tie-breaking
+            batch_indices = torch.argmin(torch.abs(expert_batch.unsqueeze(-1) - table), dim=-1)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # [..., nblocks, GROUP_SIZE, 16], pick argmin squared error
-        idx = torch.argmin((normalized.unsqueeze(-1) - table)**2, dim=-1)
+        # Use absolute error (PyTorch AO approach) with FLOOR-like tie-breaking
+        idx = torch.argmin(torch.abs(normalized.unsqueeze(-1) - table), dim=-1)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
