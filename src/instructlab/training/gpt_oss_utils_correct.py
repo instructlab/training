@@ -71,14 +71,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
             expert_batch = normalized_clamped[start_idx:end_idx]
-            # Custom tie-breaking: pick last index when distances are equal
-            batch_indices = _find_closest_with_last_tie_breaking(expert_batch, table)
+            # Use standard argmin (matches most quantization libraries)
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Custom tie-breaking: pick last index when distances are equal
-        idx = _find_closest_with_last_tie_breaking(normalized_clamped, table)
+        # Use standard argmin (matches most quantization libraries)
+        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
@@ -112,7 +112,8 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     Returns (blocks_u8, scales_i8, meta) for a single 2D+ tensor quantized along the last dim.
     """
     assert weight.ndim >= 2, "Quantize only 2D+ tensors"
-    x = weight.to(torch.float32)
+    # CRITICAL: Convert to bfloat16 first, just like HF transformers does!
+    x = weight.to(torch.bfloat16).to(torch.float32)
 
     # Pad last dim to multiple of group_size
     last = x.shape[-1]
