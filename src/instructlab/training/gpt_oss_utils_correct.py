@@ -105,8 +105,11 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     G = codes.shape[-1]
     assert G % 2 == 0
     codes2 = codes.view(*codes.shape[:-1], G // 2, 2)                # [..., nblocks, G/2, 2]
-    low  = codes2[..., 0]                                            # even index -> low nibble
-    high = codes2[..., 1]                                            # odd  index -> high nibble
+    
+    # Try reversed nibble ordering to match HF/Triton layout
+    # HF might expect: even positions from high nibble, odd from low nibble
+    high = codes2[..., 0]                                            # even index -> high nibble (REVERSED)
+    low  = codes2[..., 1]                                            # odd  index -> low nibble (REVERSED)
     packed = _pack_nibbles(low, high)                                # [..., nblocks, G/2]
 
     # Keep the 4D structure: [..., nblocks, 16] for blocks
