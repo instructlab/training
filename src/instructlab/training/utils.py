@@ -532,13 +532,13 @@ def save_fsdp_gpt_oss_model(
         
         for name, param in state.items():
             if "experts." in name and ("down_proj" in name or "gate_up_proj" in name) and not name.endswith("_bias"):
-                # Remove 'model.' prefix if present to match test script format
-                clean_name = name.replace("model.", "") if name.startswith("model.") else name
+                # Keep parameter names as-is (with model. prefix if present)
+                clean_name = name
                 # Store expert params for GPU-optimized processing
                 expert_params_to_process.append((clean_name, param))
             else:
                 # Keep non-expert parameters - use deepcopy and ensure CPU placement like LoRA
-                clean_name = name.replace("model.", "") if name.startswith("model.") else name
+                clean_name = name
                 clean_state[clean_name] = deepcopy(param).cpu()
         
         logger.info(f"🔧 Created clean state dict: {len(clean_state)} parameters, {len(expert_params_to_process)} expert params to process")
