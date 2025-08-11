@@ -60,14 +60,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     # Clamp to FP4 E2M1 range [-6.0, 6.0]
     normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
     
-    # Move to CPU for bit manipulation (PyTorch CUDA doesn't support uint32 ops)
+    # Move to CPU for bit manipulation (PyTorch doesn't support uint32 arithmetic)
     normalized_cpu = normalized_clamped.cpu()
-    quant_uint32 = normalized_cpu.view(torch.uint32)
+    quant_int32 = normalized_cpu.view(torch.int32)
     
-    # Extract IEEE 754 components
-    signs = quant_uint32 & 0x80000000
-    exponents = (quant_uint32 >> 23) & 0xFF
-    mantissas = quant_uint32 & 0x7FFFFF
+    # Extract IEEE 754 components using int32 arithmetic
+    signs = quant_int32 & 0x80000000
+    exponents = (quant_int32 >> 23) & 0xFF
+    mantissas = quant_int32 & 0x7FFFFF
     
     # Handle denormals (exponents < 127)
     E8_BIAS = 127
@@ -102,12 +102,13 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # Triton algorithm: scale = max_val / max_quant_val (6.0 for FP4 E2M1)
     dequant_scale = maxabs / 6.0
     
-    # Move to CPU for bit manipulation (PyTorch CUDA doesn't support uint32 ops)
+    # Move to CPU for bit manipulation (PyTorch doesn't support uint32 arithmetic)
     dequant_scale_cpu = dequant_scale.cpu()
-    dequant_scale_uint32 = dequant_scale_cpu.view(torch.uint32)
+    dequant_scale_int32 = dequant_scale_cpu.view(torch.int32)
     
     # Apply Triton's ROUND_UP rounding mode using bit manipulation
-    dequant_scale_exponent = (dequant_scale_uint32 + 0x007FFFFF) & 0x7F800000
+    # Use int32 arithmetic (safe since we're dealing with positive scales)
+    dequant_scale_exponent = (dequant_scale_int32 + 0x007FFFFF) & 0x7F800000
     
     # Extract the 8-bit exponent (right shift by 23) and convert to signed
     scale_exponent_u8 = (dequant_scale_exponent >> 23).to(torch.uint8)
