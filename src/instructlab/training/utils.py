@@ -515,28 +515,49 @@ def save_fsdp_gpt_oss_model(
         if non_tensor_entries:
             logger.info(f"⚠️  Non-tensor entries in state dict: {non_tensor_entries}")
         
-        # Optimize: Create a clean state dict with only expert parameters and consistent device placement
+        # Optimize: Create a clean state dict with proper naming, process expert params on GPU one by one
         logger.info("🔧 Optimizing state dict for conversion...")
         clean_state = {}
-        expert_count = 0
+        expert_params_to_process = []
         
         for name, param in state.items():
             if "experts." in name and ("down_proj" in name or "gate_up_proj" in name) and not name.endswith("_bias"):
                 # Remove 'model.' prefix if present to match test script format
                 clean_name = name.replace("model.", "") if name.startswith("model.") else name
-                # Move to GPU for faster processing
-                clean_param = param.cuda() if param.device.type == 'cpu' else param
-                clean_state[clean_name] = clean_param
-                expert_count += 1
-            elif not ("experts." in name):
+                # Store expert params for GPU-optimized processing
+                expert_params_to_process.append((clean_name, param))
+            else:
                 # Keep non-expert parameters as-is for the final model
                 clean_name = name.replace("model.", "") if name.startswith("model.") else name
                 clean_state[clean_name] = param
         
-        logger.info(f"🔧 Created clean state dict: {len(clean_state)} parameters, {expert_count} expert params moved to GPU")
+        logger.info(f"🔧 Created clean state dict: {len(clean_state)} parameters, {len(expert_params_to_process)} expert params to process")
         
-        # Convert the clean state dict to quantized format using CORRECT algorithm
-        converted_state = convert_dequantized_to_quantized_format_correct(clean_state)
+        # Process expert parameters one by one on GPU to avoid OOM
+        logger.info("🚀 Processing expert parameters with GPU optimization...")
+        from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
+        
+        for i, (clean_name, param) in enumerate(expert_params_to_process):
+            logger.info(f"   Processing {clean_name} ({i+1}/{len(expert_params_to_process)})")
+            
+            # Create mini state dict with just this parameter on GPU
+            mini_state = {clean_name: param.cuda() if param.device.type == 'cpu' else param}
+            
+            # Convert this parameter
+            mini_converted = convert_dequantized_to_quantized_format_correct(mini_state)
+            
+            # Move results back to CPU and add to final state
+            for conv_name, conv_param in mini_converted.items():
+                if conv_name != clean_name:  # This is the converted blocks/scales
+                    clean_state[conv_name] = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
+            
+            # Remove original parameter and clean up GPU memory
+            if clean_name in mini_converted:
+                del mini_converted[clean_name]  # Remove original param from converted dict
+            del mini_state, mini_converted
+            torch.cuda.empty_cache()
+        
+        converted_state = clean_state
         
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)
