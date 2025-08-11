@@ -565,14 +565,12 @@ def save_fsdp_gpt_oss_model(
             del mini_state, mini_converted
             torch.cuda.empty_cache()
         
-        converted_state = clean_state
-        
         # Debug: Check final state dict structure before saving
-        logger.info(f"🔍 Final state dict has {len(converted_state)} parameters")
+        logger.info(f"🔍 Final state dict has {len(clean_state)} parameters")
         logger.info("🔍 Sample parameter names:")
-        param_names = list(converted_state.keys())
+        param_names = list(clean_state.keys())
         for name in param_names[:20]:  # Show first 20
-            param = converted_state[name]
+            param = clean_state[name]
             logger.info(f"   {name}: {param.shape} {param.dtype}")
         
         # Check for expert parameters specifically
@@ -592,16 +590,16 @@ def save_fsdp_gpt_oss_model(
         
         # Show samples of each type
         for name in expert_weights[:3]:
-            param = converted_state[name]
+            param = clean_state[name]
             logger.info(f"   WEIGHT: {name}: {param.shape} {param.dtype}")
         for name in expert_blocks[:3]:
-            param = converted_state[name]
+            param = clean_state[name]
             logger.info(f"   BLOCKS: {name}: {param.shape} {param.dtype}")
         for name in expert_scales[:3]:
-            param = converted_state[name]
+            param = clean_state[name]
             logger.info(f"   SCALES: {name}: {param.shape} {param.dtype}")
         for name in expert_biases[:3]:
-            param = converted_state[name]
+            param = clean_state[name]
             logger.info(f"   BIAS: {name}: {param.shape} {param.dtype}")
         
         # Check if we have the expected parameter structure
@@ -627,7 +625,7 @@ def save_fsdp_gpt_oss_model(
         # Validate tensor integrity before saving
         logger.info("🔍 Validating tensor integrity...")
         corrupted_tensors = []
-        for name, param in converted_state.items():
+        for name, param in clean_state.items():
             try:
                 # Test if tensor is accessible and valid
                 _ = param.shape
@@ -647,14 +645,11 @@ def save_fsdp_gpt_oss_model(
         else:
             logger.info("✅ All tensors are valid")
         
-        # Save converted state dict directly using accelerate utilities
+        # Save state dict using accelerator.save (simpler approach)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save the converted state dict directly using safetensors
-        import safetensors.torch as safe_torch
-        
-        # Save directly to safetensors file
-        safe_torch.save_file(converted_state, output_dir / "model.safetensors")
+        # Use accelerator.save directly on our state dict
+        accelerator.save(clean_state, output_dir / "model.safetensors", safe_serialization=True)
         
         # Save config and tokenizer
         model.config.to_json_file(f"{output_dir}/config.json")
