@@ -537,9 +537,9 @@ def save_fsdp_gpt_oss_model(
                 # Store expert params for GPU-optimized processing
                 expert_params_to_process.append((clean_name, param))
             else:
-                # Keep non-expert parameters as-is for the final model
+                # Keep non-expert parameters - use deepcopy and ensure CPU placement like LoRA
                 clean_name = name.replace("model.", "") if name.startswith("model.") else name
-                clean_state[clean_name] = param
+                clean_state[clean_name] = deepcopy(param).cpu()
         
         logger.info(f"🔧 Created clean state dict: {len(clean_state)} parameters, {len(expert_params_to_process)} expert params to process")
         
@@ -556,9 +556,10 @@ def save_fsdp_gpt_oss_model(
             # Convert this parameter
             mini_converted = convert_dequantized_to_quantized_format_correct(mini_state)
             
-            # Move all results back to CPU and add to final state
+            # Move all results back to CPU and add to final state - use deepcopy for safety
             for conv_name, conv_param in mini_converted.items():
-                clean_state[conv_name] = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
+                tensor_cpu = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
+                clean_state[conv_name] = deepcopy(tensor_cpu)
             
             # Clean up GPU memory
             del mini_state, mini_converted
