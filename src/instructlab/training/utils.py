@@ -456,9 +456,7 @@ def save_fsdp_gpt_oss_model(
             "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
         )
 
-    # Skip pre-quantization test due to FSDP complications
-    # Focus on debugging the quantization process itself
-    logger.info("🔄 Starting GPT-OSS quantization process...")
+    logger.info("Converting GPT-OSS parameters to quantized format for compatibility")
 
     # Extract state dict with FSDP configuration (same as LoRA)
     sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -467,96 +465,26 @@ def save_fsdp_gpt_oss_model(
 
     # Convert parameters on main process only (same pattern as LoRA)
     if accelerator.is_main_process:
-        # Debug: Check what's in the state dict vs test script
-        logger.info(f"📊 Full FSDP state dict has {len(state)} parameters")
-        
-        # Check parameter naming patterns
-        param_patterns = {}
-        param_types = {}
-        param_devices = {}
-        param_requires_grad = {}
-        
-        for name, param in state.items():
-            # Extract pattern (remove numeric indices)
-            import re
-            pattern = re.sub(r'\.\d+\.', '.N.', name)
-            param_patterns[pattern] = param_patterns.get(pattern, 0) + 1
-            
-            # Check parameter properties
-            param_types[param.dtype] = param_types.get(param.dtype, 0) + 1
-            param_devices[str(param.device)] = param_devices.get(str(param.device), 0) + 1
-            if hasattr(param, 'requires_grad'):
-                param_requires_grad[param.requires_grad] = param_requires_grad.get(param.requires_grad, 0) + 1
-        
-        logger.info(f"📋 Parameter naming patterns (top 10):")
-        for pattern, count in sorted(param_patterns.items(), key=lambda x: x[1], reverse=True)[:10]:
-            logger.info(f"   {pattern}: {count} instances")
-            
-        logger.info(f"📋 Parameter dtypes: {param_types}")
-        logger.info(f"📋 Parameter devices: {param_devices}")
-        logger.info(f"📋 Parameter requires_grad: {param_requires_grad}")
-        
-        # Check for expert parameters specifically
-        expert_params = [name for name in state.keys() if "experts." in name]
-        expert_down_proj = [name for name in expert_params if "down_proj" in name and not name.endswith("_bias")]
-        expert_gate_up_proj = [name for name in expert_params if "gate_up_proj" in name and not name.endswith("_bias")]
-        expert_biases = [name for name in expert_params if name.endswith("_bias")]
-        
-        logger.info(f"📊 Expert parameters: {len(expert_params)} total")
-        logger.info(f"📊 Expert down_proj weights: {len(expert_down_proj)} parameters")
-        logger.info(f"📊 Expert gate_up_proj weights: {len(expert_gate_up_proj)} parameters") 
-        logger.info(f"📊 Expert biases: {len(expert_biases)} parameters")
-        
-        if expert_down_proj:
-            logger.info(f"📊 Sample down_proj names: {expert_down_proj[:3]}")
-        if expert_gate_up_proj:
-            logger.info(f"📊 Sample gate_up_proj names: {expert_gate_up_proj[:3]}")
-        
-        # Show ALL expert parameter types for debugging
-        expert_param_types = {}
-        for name in expert_params:
-            param_type = name.split(".")[-1]  # Get the last part (gate_up_proj, down_proj, etc.)
-            expert_param_types[param_type] = expert_param_types.get(param_type, 0) + 1
-        
-        logger.info(f"📊 Expert parameter breakdown by type: {expert_param_types}")
-            
-        # Check for non-parameter entries
-        non_tensor_entries = {name: type(value) for name, value in state.items() if not isinstance(value, torch.Tensor)}
-        if non_tensor_entries:
-            logger.info(f"⚠️  Non-tensor entries in state dict: {non_tensor_entries}")
-        
-        # Optimize: Create a clean state dict with proper naming, process expert params on GPU one by one
-        logger.info("🔧 Optimizing state dict for conversion...")
         clean_state = OrderedDict()
         expert_params_to_process = []
         
         for name, param in state.items():
             if "experts." in name and ("down_proj" in name or "gate_up_proj" in name) and not name.endswith("_bias"):
-                # Keep parameter names as-is (with model. prefix if present)
-                clean_name = name
-                # Store expert params for GPU-optimized processing
-                expert_params_to_process.append((clean_name, param))
+                expert_params_to_process.append((name, param))
             else:
-                # Keep non-expert parameters - use deepcopy and ensure CPU placement like LoRA
-                clean_name = name
-                clean_state[clean_name] = deepcopy(param).cpu()
-        
-        logger.info(f"🔧 Created clean state dict: {len(clean_state)} parameters, {len(expert_params_to_process)} expert params to process")
+                clean_state[name] = deepcopy(param).cpu()
         
         # Process expert parameters one by one on GPU to avoid OOM
-        logger.info("🚀 Processing expert parameters with GPU optimization...")
         from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
         
-        for i, (clean_name, param) in enumerate(expert_params_to_process):
-            logger.info(f"   Processing {clean_name} ({i+1}/{len(expert_params_to_process)})")
-            
+        for clean_name, param in expert_params_to_process:
             # Create mini state dict with just this parameter on GPU
             mini_state = {clean_name: param.cuda() if param.device.type == 'cpu' else param}
             
             # Convert this parameter
             mini_converted = convert_dequantized_to_quantized_format_correct(mini_state)
             
-            # Move all results back to CPU and add to final state - use deepcopy for safety
+            # Move all results back to CPU and add to final state
             for conv_name, conv_param in mini_converted.items():
                 tensor_cpu = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
                 clean_state[conv_name] = deepcopy(tensor_cpu)
@@ -565,87 +493,7 @@ def save_fsdp_gpt_oss_model(
             del mini_state, mini_converted
             torch.cuda.empty_cache()
         
-        # Debug: Check final state dict structure before saving
-        logger.info(f"🔍 Final state dict has {len(clean_state)} parameters")
-        logger.info("🔍 Sample parameter names:")
-        param_names = list(clean_state.keys())
-        for name in param_names[:20]:  # Show first 20
-            param = clean_state[name]
-            logger.info(f"   {name}: {param.shape} {param.dtype}")
-        
-        # Check for expert parameters specifically
-        expert_param_names = [name for name in param_names if "experts." in name]
-        logger.info(f"🔍 Expert parameters: {len(expert_param_names)} found")
-        
-        # Break down expert parameters by type
-        expert_weights = [name for name in expert_param_names if not name.endswith("_bias") and not name.endswith("_blocks") and not name.endswith("_scales")]
-        expert_blocks = [name for name in expert_param_names if name.endswith("_blocks")]
-        expert_scales = [name for name in expert_param_names if name.endswith("_scales")]
-        expert_biases = [name for name in expert_param_names if name.endswith("_bias")]
-        
-        logger.info(f"🔍 Expert weights (original): {len(expert_weights)}")
-        logger.info(f"🔍 Expert blocks (quantized): {len(expert_blocks)}")
-        logger.info(f"🔍 Expert scales (quantized): {len(expert_scales)}")
-        logger.info(f"🔍 Expert biases: {len(expert_biases)}")
-        
-        # Show samples of each type
-        for name in expert_weights[:3]:
-            param = clean_state[name]
-            logger.info(f"   WEIGHT: {name}: {param.shape} {param.dtype}")
-        for name in expert_blocks[:3]:
-            param = clean_state[name]
-            logger.info(f"   BLOCKS: {name}: {param.shape} {param.dtype}")
-        for name in expert_scales[:3]:
-            param = clean_state[name]
-            logger.info(f"   SCALES: {name}: {param.shape} {param.dtype}")
-        for name in expert_biases[:3]:
-            param = clean_state[name]
-            logger.info(f"   BIAS: {name}: {param.shape} {param.dtype}")
-        
-        # Check if we have the expected parameter structure
-        expected_layers = 36  # GPT-OSS has 36 layers
-        expected_expert_weights = expected_layers * 2  # gate_up_proj + down_proj per layer
-        expected_expert_blocks = expected_layers * 2   # blocks for each weight
-        expected_expert_scales = expected_layers * 2   # scales for each weight
-        expected_expert_biases = expected_layers * 2   # biases for each weight
-        
-        logger.info(f"🔍 Expected vs Actual:")
-        logger.info(f"   Weights: {len(expert_weights)}/{expected_expert_weights}")
-        logger.info(f"   Blocks: {len(expert_blocks)}/{expected_expert_blocks}")
-        logger.info(f"   Scales: {len(expert_scales)}/{expected_expert_scales}")
-        logger.info(f"   Biases: {len(expert_biases)}/{expected_expert_biases}")
-        
-        if len(expert_weights) == 0:
-            logger.error("❌ NO EXPERT WEIGHTS FOUND - This explains the corruption!")
-        if len(expert_blocks) == 0:
-            logger.error("❌ NO EXPERT BLOCKS FOUND - Quantization failed!")
-        if len(expert_scales) == 0:
-            logger.error("❌ NO EXPERT SCALES FOUND - Quantization failed!")
-        
-        # Validate tensor integrity before saving
-        logger.info("🔍 Validating tensor integrity...")
-        corrupted_tensors = []
-        for name, param in clean_state.items():
-            try:
-                # Test if tensor is accessible and valid
-                _ = param.shape
-                _ = param.dtype
-                _ = param.device
-                # Try to access tensor data (this will fail if corrupted)
-                if param.numel() > 0:
-                    _ = param.flatten()[0].item()
-            except Exception as e:
-                corrupted_tensors.append((name, str(e)))
-                logger.error(f"❌ Corrupted tensor {name}: {e}")
-        
-        if corrupted_tensors:
-            logger.error(f"❌ Found {len(corrupted_tensors)} corrupted tensors - this explains the corruption!")
-            for name, error in corrupted_tensors[:5]:  # Show first 5
-                logger.error(f"   {name}: {error}")
-        else:
-            logger.info("✅ All tensors are valid")
-        
-        # Save state dict using accelerator.save (simpler approach)
+        # Save state dict using accelerator.save
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Use accelerator.save directly on our state dict
