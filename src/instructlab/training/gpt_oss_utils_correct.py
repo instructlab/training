@@ -16,15 +16,14 @@ logger = logging.getLogger("instructlab.training")
 GROUP_SIZE = 32  # MXFP4 block size (last-dim groups)
 
 # ---- E2M1 codebook (FP4: 1 sign, 2 exp, 1 mant, bias=1), 16 values ----
-# This matches the OSS/vLLM FP4 decode (no NaNs/infs; all finite codes).
+# Exact values from PyTorch AO MXFP4 implementation
 def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
-    codes = torch.arange(16, device=device, dtype=torch.uint8)
-    s = ((codes >> 3) & 1).to(torch.int8)        # 1 bit sign
-    e = ((codes >> 1) & 0x3).to(torch.int8)      # 2 bit exp
-    m = (codes & 0x1).to(torch.int8)             # 1 bit mant
-    sign = torch.where(s == 1, -1.0, 1.0).to(dtype)
-    val = sign * (1.0 + 0.5 * m.to(dtype)) * torch.pow(torch.tensor(2.0, dtype=dtype, device=device), (e - 1).to(dtype))
-    return val  # shape [16]
+    # Exact FP4 E2M1 values from PyTorch AO
+    fp4_values = torch.tensor([
+        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,  # Positive values
+        -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0  # Negative values
+    ], device=device, dtype=dtype)
+    return fp4_values  # shape [16]
 
 # Quantize floats (normalized by the block scale) to nearest E2M1 code 0..15
 @torch.no_grad()
@@ -58,12 +57,22 @@ def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor
 @torch.no_grad()
 def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # blocks: [..., nblocks, G]
-    maxabs = blocks.abs().amax(dim=-1).clamp_min(1e-12)  # [..., nblocks]
-    # Max representable magnitude in E2M1 is 6.0 (1.5 * 2^2)
-    target = maxabs / 6.0
-    e = torch.round(torch.log2(target))  # signed exponent
+    # Use exact PyTorch AO scale calculation with bit manipulation
+    maxabs = blocks.abs().amax(dim=-1, keepdim=True).clamp_min(2**(-126))  # [..., nblocks, 1]
+    
+    # Extract power-of-2 component from float32 representation (PyTorch AO method)
+    maxabs_int32 = maxabs.view(torch.int32)
+    extracted_pow2 = ((maxabs_int32 >> 23) & 0xFF) - 127  # Extract FP32 exponent
+    
+    # Calculate scale with target maximum power (4.0 = 2^2, so target_pow2 = 2)
+    target_max_pow2 = 2  # For FP4 E2M1 max value 4.0
+    scale_unbiased = extracted_pow2 - target_max_pow2
+    
+    # Clamp to valid range and remove keepdim
+    scale_unbiased = scale_unbiased.squeeze(-1).clamp(-127, 128)  # [..., nblocks]
+    
     # Return signed int8 exponent (transformers will handle +127 offset)
-    return e.clamp(-127, 127).to(torch.int8)  # [..., nblocks]
+    return scale_unbiased.to(torch.int8)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
@@ -84,8 +93,8 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     xb = x.view(new_shape)
 
     # per-block signed exponent e (int8); scale = 2**e
-    e_i8 = _power2_scales_from_maxabs(xb)                            # [..., nblocks]
-    scale = torch.pow(torch.tensor(2.0, device=x.device), e_i8.to(torch.float32)).unsqueeze(-1)  # [..., nblocks, 1]
+    e_i8 = _power2_scales_from_maxabs(xb.to(torch.float32))         # [..., nblocks] - ensure float32
+    scale = torch.pow(torch.tensor(2.0, device=x.device, dtype=torch.float32), e_i8.to(torch.float32)).unsqueeze(-1)  # [..., nblocks, 1]
 
     y = xb / scale                                                   # normalized
 
