@@ -461,15 +461,12 @@ def save_fsdp_gpt_oss_model(
     logger.info("🔄 Starting GPT-OSS quantization process...")
 
     # Extract state dict with FSDP configuration (same as LoRA)
-    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    sd_config = FullStateDictConfig(offload_to_cpu=False, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
         state = model.state_dict()
 
     # Convert parameters on main process only (same pattern as LoRA)
     if accelerator.is_main_process:
-        # CORRUPTION DEBUG: Test model before quantization conversion
-        logger.info("🔍 CORRUPTION DEBUG: Testing model BEFORE quantization conversion...")
-        test_model_inference_quick(model, tokenizer, "BEFORE_CONVERSION")
         
         # Convert the state dict to quantized format using CORRECT algorithm
         converted_state = convert_dequantized_to_quantized_format_correct(state)
