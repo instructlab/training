@@ -51,42 +51,34 @@ def _find_closest_with_last_tie_breaking(values, table):
     
     return result_indices
 
-# Quantize floats using exact Triton E2M1 bit manipulation algorithm
+# Quantize floats (normalized by the block scale) to nearest E2M1 code 0..15
 @torch.no_grad()
 def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
-    # Force float32 for all calculations 
+    # Force float32 for all calculations to ensure consistency
     normalized = normalized.to(torch.float32)
+    table = _e2m1_decode_table(device=normalized.device, dtype=torch.float32)  # [16]
     
-    # Clamp to FP4 E2M1 range [-6.0, 6.0]
+    # Clamp to valid range first
     normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
     
-    # Move to CPU for bit manipulation (PyTorch doesn't support uint32 arithmetic)
-    normalized_cpu = normalized_clamped.cpu()
-    quant_int32 = normalized_cpu.view(torch.int32)
-    
-    # Extract IEEE 754 components using int32 arithmetic
-    signs = quant_int32 & 0x80000000
-    exponents = (quant_int32 >> 23) & 0xFF
-    mantissas = quant_int32 & 0x7FFFFF
-    
-    # Handle denormals (exponents < 127)
-    E8_BIAS = 127
-    is_denormal = exponents < E8_BIAS
-    
-    # For denormals: move implicit bit into mantissa and adjust exponent
-    adjusted_exponents = torch.clamp(E8_BIAS - exponents - 1, 0, 255)
-    denormal_mantissas = (0x400000 | (mantissas >> 1)) >> adjusted_exponents
-    mantissas = torch.where(is_denormal, denormal_mantissas, mantissas)
-    
-    # Convert to E2M1 format with Triton's exact algorithm
-    # Formula: (((exponents << 2) | (mantissas >> 21)) + 1) >> 1
-    e2m1_tmp = torch.min((((exponents << 2) | (mantissas >> 21)) + 1) >> 1, torch.tensor(0x7, device=normalized_cpu.device))
-    
-    # Combine sign and value: (signs >> 28) | e2m1_tmp
-    e2m1_value = ((signs >> 28) | e2m1_tmp).to(torch.uint8)
-    
-    # Move back to original device
-    return e2m1_value.to(normalized.device)
+    # Process in chunks along the expert dimension to avoid memory issues
+    # Keep block structure intact: [..., nblocks, GROUP_SIZE]
+    if normalized_clamped.dim() >= 3 and normalized_clamped.shape[0] > 8:  # Multiple experts
+        # Process experts in small batches
+        batch_size = 4  # Process 4 experts at a time
+        expert_results = []
+        for start_idx in range(0, normalized_clamped.shape[0], batch_size):
+            end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
+            expert_batch = normalized_clamped[start_idx:end_idx]
+            # Use squared error for better precision
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            expert_results.append(batch_indices.to(torch.uint8))
+        return torch.cat(expert_results, dim=0)
+    else:
+        # Small tensor, process normally
+        # Use squared error for better precision
+        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
+        return idx.to(torch.uint8)
 
 @torch.no_grad()
 def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor:
@@ -96,26 +88,23 @@ def _pack_nibbles(low_nib: torch.Tensor, high_nib: torch.Tensor) -> torch.Tensor
 @torch.no_grad()
 def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # blocks: [..., nblocks, G]
-    # Use exact Triton MXFP algorithm with ROUND_UP mode
-    maxabs = blocks.abs().amax(dim=-1, keepdim=True)  # [..., nblocks, 1]
+    # Use exact PyTorch AO scale calculation with bit manipulation
+    maxabs = blocks.abs().amax(dim=-1, keepdim=True).clamp_min(2**(-126))  # [..., nblocks, 1]
     
-    # Triton algorithm: scale = max_val / max_quant_val (6.0 for FP4 E2M1)
-    dequant_scale = maxabs / 6.0
+    # Extract power-of-2 component from float32 representation (PyTorch AO method)
+    maxabs_int32 = maxabs.view(torch.int32)
+    extracted_pow2 = ((maxabs_int32 >> 23) & 0xFF) - 127  # Extract FP32 exponent
     
-    # Move to CPU for bit manipulation (PyTorch doesn't support uint32 arithmetic)
-    dequant_scale_cpu = dequant_scale.cpu()
-    dequant_scale_int32 = dequant_scale_cpu.view(torch.int32)
+    # Calculate scale with target maximum power (6.0 = 2^2.58, so target_pow2 = 2.58)
+    # But use exact Triton approach: maxabs / 6.0 instead of maxabs / 4.0
+    target_max_pow2 = torch.log2(torch.tensor(6.0)).item()  # ~2.585 for FP4 E2M1 max value 6.0
+    scale_unbiased = extracted_pow2 - target_max_pow2
     
-    # Apply Triton's ROUND_UP rounding mode using bit manipulation
-    # Use int32 arithmetic (safe since we're dealing with positive scales)
-    dequant_scale_exponent = (dequant_scale_int32 + 0x007FFFFF) & 0x7F800000
+    # Clamp to valid range and remove keepdim
+    scale_unbiased = scale_unbiased.squeeze(-1).clamp(-127, 128)  # [..., nblocks]
     
-    # Extract the 8-bit exponent (right shift by 23) and convert to signed
-    scale_exponent_u8 = (dequant_scale_exponent >> 23).to(torch.uint8)
-    scale_exponent_i8 = (scale_exponent_u8.to(torch.int32) - 127).clamp(-127, 128).to(torch.int8)
-    
-    # Move back to original device and remove keepdim
-    return scale_exponent_i8.to(blocks.device).squeeze(-1)  # [..., nblocks]
+    # Return signed int8 exponent (transformers will handle +127 offset)
+    return scale_unbiased.to(torch.int8)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
@@ -123,8 +112,7 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     Returns (blocks_u8, scales_i8, meta) for a single 2D+ tensor quantized along the last dim.
     """
     assert weight.ndim >= 2, "Quantize only 2D+ tensors"
-    # CRITICAL: Convert to bfloat16 first, just like HF transformers does!
-    x = weight.to(torch.bfloat16).to(torch.float32)
+    x = weight.to(torch.float32)
 
     # Pad last dim to multiple of group_size
     last = x.shape[-1]
