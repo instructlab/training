@@ -461,12 +461,59 @@ def save_fsdp_gpt_oss_model(
     logger.info("🔄 Starting GPT-OSS quantization process...")
 
     # Extract state dict with FSDP configuration (same as LoRA)
-    sd_config = FullStateDictConfig(offload_to_cpu=False, rank0_only=True)
+    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
         state = model.state_dict()
 
     # Convert parameters on main process only (same pattern as LoRA)
     if accelerator.is_main_process:
+        # Debug: Check what's in the state dict vs test script
+        logger.info(f"📊 Full FSDP state dict has {len(state)} parameters")
+        
+        # Check parameter naming patterns
+        param_patterns = {}
+        param_types = {}
+        param_devices = {}
+        param_requires_grad = {}
+        
+        for name, param in state.items():
+            # Extract pattern (remove numeric indices)
+            import re
+            pattern = re.sub(r'\.\d+\.', '.N.', name)
+            param_patterns[pattern] = param_patterns.get(pattern, 0) + 1
+            
+            # Check parameter properties
+            param_types[param.dtype] = param_types.get(param.dtype, 0) + 1
+            param_devices[str(param.device)] = param_devices.get(str(param.device), 0) + 1
+            if hasattr(param, 'requires_grad'):
+                param_requires_grad[param.requires_grad] = param_requires_grad.get(param.requires_grad, 0) + 1
+        
+        logger.info(f"📋 Parameter naming patterns (top 10):")
+        for pattern, count in sorted(param_patterns.items(), key=lambda x: x[1], reverse=True)[:10]:
+            logger.info(f"   {pattern}: {count} instances")
+            
+        logger.info(f"📋 Parameter dtypes: {param_types}")
+        logger.info(f"📋 Parameter devices: {param_devices}")
+        logger.info(f"📋 Parameter requires_grad: {param_requires_grad}")
+        
+        # Check for expert parameters specifically
+        expert_params = [name for name in state.keys() if "experts." in name]
+        expert_down_proj = [name for name in expert_params if "down_proj" in name and not name.endswith("_bias")]
+        expert_gate_up_proj = [name for name in expert_params if "gate_up_proj" in name and not name.endswith("_bias")]
+        
+        logger.info(f"📊 Expert parameters: {len(expert_params)} total")
+        logger.info(f"📊 Expert down_proj: {len(expert_down_proj)} parameters")
+        logger.info(f"📊 Expert gate_up_proj: {len(expert_gate_up_proj)} parameters")
+        
+        if expert_down_proj:
+            logger.info(f"📊 Sample down_proj names: {expert_down_proj[:3]}")
+        if expert_gate_up_proj:
+            logger.info(f"📊 Sample gate_up_proj names: {expert_gate_up_proj[:3]}")
+            
+        # Check for non-parameter entries
+        non_tensor_entries = {name: type(value) for name, value in state.items() if not isinstance(value, torch.Tensor)}
+        if non_tensor_entries:
+            logger.info(f"⚠️  Non-tensor entries in state dict: {non_tensor_entries}")
         
         # Convert the state dict to quantized format using CORRECT algorithm
         converted_state = convert_dequantized_to_quantized_format_correct(state)
