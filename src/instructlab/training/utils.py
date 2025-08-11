@@ -527,7 +527,7 @@ def save_fsdp_gpt_oss_model(
         
         # Optimize: Create a clean state dict with proper naming, process expert params on GPU one by one
         logger.info("🔧 Optimizing state dict for conversion...")
-        clean_state = {}
+        clean_state = OrderedDict()
         expert_params_to_process = []
         
         for name, param in state.items():
@@ -622,6 +622,29 @@ def save_fsdp_gpt_oss_model(
             logger.error("❌ NO EXPERT BLOCKS FOUND - Quantization failed!")
         if len(expert_scales) == 0:
             logger.error("❌ NO EXPERT SCALES FOUND - Quantization failed!")
+        
+        # Validate tensor integrity before saving
+        logger.info("🔍 Validating tensor integrity...")
+        corrupted_tensors = []
+        for name, param in converted_state.items():
+            try:
+                # Test if tensor is accessible and valid
+                _ = param.shape
+                _ = param.dtype
+                _ = param.device
+                # Try to access tensor data (this will fail if corrupted)
+                if param.numel() > 0:
+                    _ = param.flatten()[0].item()
+            except Exception as e:
+                corrupted_tensors.append((name, str(e)))
+                logger.error(f"❌ Corrupted tensor {name}: {e}")
+        
+        if corrupted_tensors:
+            logger.error(f"❌ Found {len(corrupted_tensors)} corrupted tensors - this explains the corruption!")
+            for name, error in corrupted_tensors[:5]:  # Show first 5
+                logger.error(f"   {name}: {error}")
+        else:
+            logger.info("✅ All tensors are valid")
         
         # Save converted state dict directly using accelerate utilities
         output_dir.mkdir(parents=True, exist_ok=True)
