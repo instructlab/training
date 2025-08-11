@@ -39,13 +39,13 @@ def _find_closest_with_last_tie_breaking(values, table):
     # Create mask for tied values (equal to minimum distance)
     is_tied = (distances == min_distances)  # [..., 16]
     
-    # For each position, find the last (highest) index that's tied
-    # We'll iterate from last to first index and pick the first True we find
-    result_indices = torch.zeros(values.shape, dtype=torch.long, device=values.device)
+    # Use a more efficient approach: create index tensor and use where with is_tied
+    # Start with -1 to detect uninitialized positions
+    result_indices = torch.full(values.shape, -1, dtype=torch.long, device=values.device)
     
-    # Iterate through indices in reverse order (15, 14, ..., 1, 0)
-    for idx in range(table.shape[0] - 1, -1, -1):
-        # Update result where this index is tied (this overwrites earlier indices)
+    # Iterate through indices in forward order (0, 1, ..., 15)
+    # Each iteration will overwrite previous values, so the last tied index wins
+    for idx in range(table.shape[0]):
         mask = is_tied[..., idx]
         result_indices[mask] = idx
     
