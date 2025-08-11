@@ -70,20 +70,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
             expert_batch = normalized_clamped[start_idx:end_idx]
-            # Use squared error with tiny bias for consistent rounding behavior
-            distances = (expert_batch.unsqueeze(-1) - table)**2
-            # Add tiny bias to break ties in favor of higher indices (like nearest rounding)
-            bias = torch.arange(16, device=table.device, dtype=table.dtype) * 1e-8
-            batch_indices = torch.argmin(distances + bias, dim=-1)
+            # Use squared error for better precision
+            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Use squared error with tiny bias for consistent rounding behavior  
-        distances = (normalized_clamped.unsqueeze(-1) - table)**2
-        # Add tiny bias to break ties in favor of higher indices (like nearest rounding)
-        bias = torch.arange(16, device=table.device, dtype=table.dtype) * 1e-8
-        idx = torch.argmin(distances + bias, dim=-1)
+        # Use squared error for better precision
+        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
@@ -133,7 +127,7 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     e_i8 = _power2_scales_from_maxabs(xb.to(torch.float32))         # [..., nblocks] - ensure float32
     scale = torch.pow(torch.tensor(2.0, device=x.device, dtype=torch.float32), e_i8.to(torch.float32)).unsqueeze(-1)  # [..., nblocks, 1]
 
-    y = xb / scale                                                   # normalized
+    y = xb * (1.0 / scale)                                           # normalized (use reciprocal like Triton)
 
     # encode each element to E2M1 code [0..15]
     codes = _e2m1_encode(y)                                          # uint8 [..., nblocks, G]
