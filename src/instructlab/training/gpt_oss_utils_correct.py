@@ -46,8 +46,8 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
     # Max representable magnitude in E2M1 is 6.0 (1.5 * 2^2)
     target = maxabs / 6.0
     e = torch.round(torch.log2(target))  # signed exponent
-    # store only exponent as int8; actual scale = 2**e
-    return e.to(torch.int8)  # [..., nblocks]
+    # store exponent with +127 offset as uint8 (OSS format)
+    return (e + 127).clamp(0, 255).to(torch.uint8)  # [..., nblocks]
 
 @torch.no_grad()
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
@@ -84,9 +84,9 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
     high = codes2[..., 1]                                            # odd  index -> high nibble
     packed = _pack_nibbles(low, high)                                # [..., nblocks, G/2]
 
-    # reshape back to merge blocks on last axis
-    bytes_lastdim = (x.shape[-1] // 2)
-    blocks_u8 = packed.reshape(*x.shape[:-1], bytes_lastdim).contiguous()
+    # Keep the 4D structure: [..., nblocks, 16] for blocks
+    # packed shape is [..., nblocks, G/2] where G=32, so G/2=16
+    blocks_u8 = packed.contiguous()  # Keep as [..., nblocks, 16]
 
     meta = {
         "orig_shape": tuple(weight.shape),
