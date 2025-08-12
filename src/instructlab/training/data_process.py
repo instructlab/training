@@ -83,6 +83,7 @@ def unmask_message_content(
     pretrain_token,
     pretrain_end_token,
     tool_resp_tokens=None,
+    tokenizer=None,
 ):
     """
     Create labels for tokens in a sequence with special handling for pretraining tokens and role-specific sequences.
@@ -152,6 +153,55 @@ def unmask_message_content(
             default=None,
         )
 
+    def is_gpt_oss_assistant_channel(start_idx):
+        """Check if the current position starts a GPT-OSS assistant channel pattern."""
+        if not tokenizer:
+            return False
+            
+        # GPT-OSS pattern: <|start|>assistant<|channel|>CHANNEL_NAME<|message|>
+        try:
+            # Get the token sequences for GPT-OSS channel patterns
+            start_token = tokenizer.encode("<|start|>", add_special_tokens=False)
+            assistant_token = tokenizer.encode("assistant", add_special_tokens=False)
+            channel_token = tokenizer.encode("<|channel|>", add_special_tokens=False)
+            message_token = tokenizer.encode("<|message|>", add_special_tokens=False)
+            
+            # Check if we're at the start of a GPT-OSS assistant channel
+            pos = start_idx
+            
+            # Check for <|start|>
+            if pos + len(start_token) > len(sentence_tk):
+                return False
+            if sentence_tk[pos:pos + len(start_token)] != start_token:
+                return False
+            pos += len(start_token)
+            
+            # Check for assistant
+            if pos + len(assistant_token) > len(sentence_tk):
+                return False
+            if sentence_tk[pos:pos + len(assistant_token)] != assistant_token:
+                return False
+            pos += len(assistant_token)
+            
+            # Check for <|channel|>
+            if pos + len(channel_token) > len(sentence_tk):
+                return False
+            if sentence_tk[pos:pos + len(channel_token)] != channel_token:
+                return False
+            pos += len(channel_token)
+            
+            # Skip channel name tokens (analysis, final, etc.) until we find <|message|>
+            while pos < len(sentence_tk):
+                if pos + len(message_token) <= len(sentence_tk):
+                    if sentence_tk[pos:pos + len(message_token)] == message_token:
+                        return True
+                pos += 1
+            
+            return False
+        except:
+            # If any error occurs (like token encoding fails), fall back to normal behavior
+            return False
+
     special_sequences = [user_tokens, assist_tokens, system_tokens]
     if tool_resp_tokens:
         special_sequences.append(tool_resp_tokens)
@@ -175,6 +225,13 @@ def unmask_message_content(
                 example["unmask"] and match != system_tokens
             )
             i += len(match)
+            continue
+        
+        # Special case: Check for GPT-OSS assistant channel patterns
+        if example["unmask"] and is_gpt_oss_assistant_channel(i):
+            unmasking = True
+            # Skip to the next token to continue processing
+            i += 1
             continue
 
         if in_pretraining or unmasking:
@@ -395,6 +452,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>")[0],
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>")[0],
         tool_resp_tokens=tool_resp_tk,
+        tokenizer=tokenizer,
     )
     logger.info("Unmasking the appropriate message content...")
     data_with_labels = data_with_input_ids.map(
