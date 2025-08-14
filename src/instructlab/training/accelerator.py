@@ -162,34 +162,31 @@ class Accelerator:
         fsdp_version = 2 if self.distributed_framework == DistributedBackend.FSDP2 else 1
         fsdp2_kwargs = {}
         if fsdp_version == 2:
-            reshard_after_forward = self.fsdp_sharding_strategy is not None and self.fsdp_sharding_strategy in [ShardingStrategy.FULL_SHARD, ShardingStrategy.HYBRID_SHARD] 
-            fsdp2_kwargs = {
-                # 'reshard_after_forward': reshard_after_forward,
-                # 'mixed_precision_policy': MixedPrecisionPolicy(
-                #     param_dtype=torch.float16,
-                #     reduce_dtype=torch.bfloat16,
-                #     cast_forward_inputs=False,
-                # ),
-                'reshard_after_forward': False,
-                # 'backward_prefetch': prefetch_policy,
-                # 'sharding_strategy': ShardingStrategy[self.fsdp_sharding_strategy],
-            }
+            pass
+            # reshard_after_forward = self.fsdp_sharding_strategy is not None and self.fsdp_sharding_strategy in [ShardingStrategy.FULL_SHARD, ShardingStrategy.HYBRID_SHARD] 
+            # fsdp2_kwargs.update({
+            #     'reshard_after_forward': reshard_after_forward,
+            #     'mixed_precision_policy': MixedPrecisionPolicy(
+            #         param_dtype=torch.bfloat16,
+            #         reduce_dtype=torch.float32,
+            #     ),
+            #     # 'reshard_after_forward': False,
+            #     # 'backward_prefetch': prefetch_policy,
+            #     # 'sharding_strategy': ShardingStrategy[self.fsdp_sharding_strategy],
+            # })
             # todo: add cpu offload policy here if user wants it
+
         else:
-            fsdp2_kwargs = {
+            fsdp2_kwargs.update({
                 'cpu_offload': CPUOffload(self.fsdp_cpu_offload_params),
                 'auto_wrap_policy': wrap_policy,
                 'limit_all_gathers': True,
                 'backward_prefetch': prefetch_policy,
                 'sharding_strategy': ShardingStrategy[self.fsdp_sharding_strategy],
-            }
+            })
             
         fsdp_plugin = FullyShardedDataParallelPlugin(
             fsdp_version=fsdp_version,
-            auto_wrap_policy=wrap_policy,
-            limit_all_gathers=True,
-            backward_prefetch=prefetch_policy,
-            sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
             **fsdp2_kwargs
         )
 

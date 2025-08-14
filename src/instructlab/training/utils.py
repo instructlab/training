@@ -552,8 +552,15 @@ def save_hf_format_accelerate(
 
     get_state_dict_unpatched = accelerator.get_state_dict
 
-    def _get_state_dict_patched(model, unwrap=False):
-        return get_state_dict_unpatched(model, unwrap=unwrap)
+    # Create an abstract function that conditionally handles FSDP2 vs other backends
+    if args.distributed_training_framework == "fsdp2":
+        def _get_state_dict_patched(*args, **kwargs):
+            # For FSDP2, use the default parameters
+            return get_state_dict_unpatched(*args, **kwargs)
+    else:
+        def _get_state_dict_patched(model, unwrap=False):
+            # For non-FSDP2 backends, pass through the unwrap parameter
+            return get_state_dict_unpatched(model, unwrap=unwrap)
 
     accelerator.get_state_dict = _get_state_dict_patched
 
@@ -590,7 +597,7 @@ def save_hf_format_accelerate(
 
     if not is_lora:
         accelerator.save_model(
-            model,
+            model.module if accelerator.distributed_type == DistributedType.FSDP2 else model,
             save_directory=output_dir,
             max_shard_size="5GB",
             safe_serialization=True,

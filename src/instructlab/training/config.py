@@ -250,3 +250,4 @@ class TrainingArgs(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO"
     )
+    short_circuit: Optional[bool] = False

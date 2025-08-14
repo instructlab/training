@@ -223,9 +223,6 @@ def train(
                 # weight_norm = float(
                 #     model.optimizer.single_partition_of_fp32_groups[0].norm()
                 # )
-                assert accelerator.distributed_framework in [DistributedBackend.FSDP2, DistributedBackend.FSDP]
-                if accelerator.distributed_framework == DistributedBackend.FSDP2:
-                    global_grad_norm *= world_size ** 0.5
 
 
                 # TODO - Bring back consistent gradnorm and weight_norm logging
@@ -271,6 +268,11 @@ def train(
             if local_rank == 0:
                 inner_pb.update(1)
             torch.cuda.empty_cache()
+
+            if optimizer_state_dtypes and args.short_circuit:
+                # short-circuit after 1 update
+                break
+            
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
@@ -286,6 +288,9 @@ def train(
             )
             base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
             torch.distributed.barrier()
+        
+        if args.short_circuit:
+            break
 
     if args.save_last:
         save_hf_format_accelerate(
@@ -585,6 +590,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--seed={train_args.random_seed}",
     ]
 
+    if train_args.short_circuit:
+        command.append("--short_circuit")
+
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
 
@@ -873,6 +881,11 @@ if __name__ == "__main__":
         "--use_liger",
         action="store_true",
         help="Use Liger kernels for training.",
+    )
+    parser.add_argument(
+        '--short_circuit',
+        action='store_true',
+        default=False
     )
     args = parser.parse_args()
     set_random_seed(args.seed)
