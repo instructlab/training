@@ -26,28 +26,49 @@ def _e2m1_decode_table(device=torch.device("cpu"), dtype=torch.float32):
     return fp4_values  # shape [16]
 
 @torch.no_grad()
-def _find_closest_with_last_tie_breaking(values, table):
+def _find_closest_with_first_tie_breaking(values, table):
     """
-    Find closest FP4 values with custom tie-breaking that picks the last index.
+    Find closest FP4 values with OpenAI's exact tie-breaking rules.
+    Key insight: OpenAI respects IEEE 754 sign bits for zero values.
+    When input is negative zero (-0.0), prefer index 8 over index 0.
     """
-    # Calculate squared distances
+    # Ensure consistent precision for all calculations
+    values = values.to(torch.float32)
+    table = table.to(torch.float32)
+    
+    # Calculate squared distances with high precision
     distances = (values.unsqueeze(-1) - table) ** 2  # [..., 16]
     
-    # Find minimum distance for each value
-    min_distances = torch.min(distances, dim=-1, keepdim=True)[0]  # [..., 1]
+    # Start with argmin (which handles most cases correctly)
+    result_indices = torch.argmin(distances, dim=-1)
     
-    # Create mask for tied values (equal to minimum distance)
-    is_tied = (distances == min_distances)  # [..., 16]
+    # Special case: handle negative zero
+    # When input is negative zero and distance to both +0.0 and -0.0 is equal,
+    # prefer -0.0 (index 8) over +0.0 (index 0)
     
-    # Use a more efficient approach: create index tensor and use where with is_tied
-    # Start with -1 to detect uninitialized positions
-    result_indices = torch.full(values.shape, -1, dtype=torch.long, device=values.device)
+    min_distances = distances.min(dim=-1, keepdim=True)[0]
+    epsilon = 1e-10
     
-    # Iterate through indices in forward order (0, 1, ..., 15)
-    # Each iteration will overwrite previous values, so the last tied index wins
-    for idx in range(table.shape[0]):
-        mask = is_tied[..., idx]
-        result_indices[mask] = idx
+    # Find positions where both index 0 and 8 are tied (zero case)
+    zero_tie_mask = (
+        (distances[..., 0] <= min_distances[..., 0] + epsilon) &  # Index 0 is tied
+        (distances[..., 8] <= min_distances[..., 0] + epsilon)    # Index 8 is tied
+    )
+    
+    # Check which values are actually negative zero (sign bit = 1)
+    # Use torch.signbit to detect negative zero
+    is_negative_zero = torch.zeros_like(values, dtype=torch.bool)
+    
+    # Only check values that are actually zero
+    zero_mask = (torch.abs(values) < 1e-10)
+    if zero_mask.any():
+        # For zero values, check sign bit
+        with torch.no_grad():
+            is_negative_zero = zero_mask & torch.signbit(values)
+    
+    # Apply the rule: if it's a zero tie and input is negative zero, choose index 8
+    negative_zero_correction = zero_tie_mask & is_negative_zero
+    result_indices = torch.where(negative_zero_correction, 8, result_indices)
     
     return result_indices
 
@@ -70,14 +91,14 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
             expert_batch = normalized_clamped[start_idx:end_idx]
-            # Use squared error for better precision
-            batch_indices = torch.argmin((expert_batch.unsqueeze(-1) - table)**2, dim=-1)
+            # Use proper tie-breaking that matches OpenAI's implementation
+            batch_indices = _find_closest_with_first_tie_breaking(expert_batch, table)
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
         # Small tensor, process normally
-        # Use squared error for better precision
-        idx = torch.argmin((normalized_clamped.unsqueeze(-1) - table)**2, dim=-1)
+        # Use proper tie-breaking that matches OpenAI's implementation
+        idx = _find_closest_with_first_tie_breaking(normalized_clamped, table)
         return idx.to(torch.uint8)
 
 @torch.no_grad()
@@ -109,6 +130,11 @@ def _power2_scales_from_maxabs(blocks: torch.Tensor) -> torch.Tensor:
 def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROUP_SIZE):
     """
     Returns (blocks_u8, scales_i8, meta) for a single 2D+ tensor quantized along the last dim.
+    
+    This function now uses OpenAI's exact algorithm with:
+    1. Perfect signed zero handling in tie-breaking
+    2. Interleaved nibble packing (even positions as low, odd as high)
+    3. Correct dimensional mapping for expert parameters
     """
     assert weight.ndim >= 2, "Quantize only 2D+ tensors"
     x = weight.to(torch.float32)
@@ -129,16 +155,21 @@ def _quantize_tensor_to_mxfp4_param(weight: torch.Tensor, group_size: int = GROU
 
     y = xb * (1.0 / scale)                                           # normalized (use reciprocal like Triton)
 
-    # encode each element to E2M1 code [0..15]
+    # encode each element to E2M1 code [0..15] using OpenAI's exact tie-breaking
     codes = _e2m1_encode(y)                                          # uint8 [..., nblocks, G]
 
-    # pack 2 nibbles -> 1 byte along G
+    # Pack using OpenAI's INTERLEAVED method:
+    # - Even positions (0, 2, 4, ...) become low nibbles
+    # - Odd positions (1, 3, 5, ...) become high nibbles
     G = codes.shape[-1]
     assert G % 2 == 0
-    codes2 = codes.view(*codes.shape[:-1], G // 2, 2)                # [..., nblocks, G/2, 2]
-    low  = codes2[..., 0]                                            # even index -> low nibble
-    high = codes2[..., 1]                                            # odd  index -> high nibble
-    packed = _pack_nibbles(low, high)                                # [..., nblocks, G/2]
+    
+    # Split into even and odd positions (interleaved packing)
+    low_nibbles = codes[..., ::2]    # Even positions: [0, 2, 4, 6, ...]
+    high_nibbles = codes[..., 1::2]  # Odd positions: [1, 3, 5, 7, ...]
+    
+    # Pack nibbles: each byte = low_nibble | (high_nibble << 4)
+    packed = _pack_nibbles(low_nibbles, high_nibbles)                # [..., nblocks, G/2]
 
     # Keep the 4D structure: [..., nblocks, 16] for blocks
     # packed shape is [..., nblocks, G/2] where G=32, so G/2=16
@@ -202,23 +233,101 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
         logger.info(f"🔄 Converting {param_name}: {param_tensor.shape} {param_tensor.dtype}")
         
         try:
-            # Check if this is gate_up_proj - it needs special dimension handling
-            if "gate_up_proj" in param_name:
-                logger.info(f"🔄 Processing gate_up_proj with special dimension handling")
-                # For gate_up_proj: dequantized is [experts, hidden_size, 2*intermediate_size]
-                # HF expects storage as [experts, 2*intermediate_size, hidden_size//32, 16]
-                # So we need to transpose before quantization
-                param_to_quantize = param_tensor.transpose(1, 2).contiguous()
-                logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
-            else:
-                # For down_proj: dequantized is [experts, intermediate_size, hidden_size]
-                # HF expects storage as [experts, hidden_size, intermediate_size//32, 16] 
-                # So we need to transpose before quantization
-                param_to_quantize = param_tensor.transpose(1, 2).contiguous()
-                logger.info(f"   Transposed from {param_tensor.shape} to {param_to_quantize.shape}")
+            # Use OpenAI's exact dimensional mapping discovered through reverse engineering
+            # OpenAI's format: dequant[expert, row, col] -> blocks[expert, col, block_idx, byte_idx]
+            # This means we quantize along the row dimension (dim=1), not the column dimension
             
-            # Apply correct MXFP4 quantization (keep on GPU)
-            blocks_u8, scales_i8, meta = _quantize_tensor_to_mxfp4_param(param_to_quantize, GROUP_SIZE)
+            logger.info(f"🔄 Processing {param_name} with OpenAI's exact dimensional mapping")
+            logger.info(f"   Input shape: {param_tensor.shape}")
+            
+            if "gate_up_proj" in param_name:
+                # gate_up_proj: dequantized is [experts, rows, cols] = [32, 2880, 5760]
+                # OpenAI quantizes each column separately: [32, 2880] -> [32, 90, 16] per column
+                # Result: [experts, cols, blocks_per_col, bytes_per_block] = [32, 5760, 90, 16]
+                experts, rows, cols = param_tensor.shape
+                blocks_per_col = rows // GROUP_SIZE
+                
+                # Initialize output tensors
+                all_blocks = torch.zeros(experts, cols, blocks_per_col, 16, dtype=torch.uint8, device=param_tensor.device)
+                all_scales = torch.zeros(experts, cols, blocks_per_col, dtype=torch.int8, device=param_tensor.device)
+                
+                logger.info(f"   Processing {cols} columns, each with {blocks_per_col} blocks")
+                
+                # Process in smaller batches to balance memory and speed
+                # We need to quantize each column individually since OpenAI's format is column-based
+                batch_size = 64  # Process 64 columns at a time
+                
+                for batch_start in range(0, cols, batch_size):
+                    batch_end = min(batch_start + batch_size, cols)
+                    batch_cols = batch_end - batch_start
+                    
+                    # Process each column in this batch
+                    for i in range(batch_cols):
+                        col_idx = batch_start + i
+                        
+                        # Extract single column: [experts, rows] = [32, 2880]
+                        column_data = param_tensor[:, :, col_idx]  # [32, 2880]
+                        
+                        # Reshape for quantization along the row dimension: [32, 1, 2880]
+                        # This way the quantization happens along the last dim (2880)
+                        column_data = column_data.unsqueeze(1)  # [32, 1, 2880]
+                        
+                        # Quantize this column: output will be [32, 1, 90, 16] and [32, 1, 90]
+                        col_blocks, col_scales, _ = _quantize_tensor_to_mxfp4_param(column_data, GROUP_SIZE)
+                        
+                        # Remove the extra dimension: [32, 1, 90, 16] -> [32, 90, 16]
+                        col_blocks = col_blocks.squeeze(1)  # Remove dimension 1
+                        col_scales = col_scales.squeeze(1)  # Remove dimension 1
+                        
+                        # Store in the correct positions
+                        all_blocks[:, col_idx, :, :] = col_blocks
+                        all_scales[:, col_idx, :] = col_scales
+                
+                blocks_u8 = all_blocks
+                scales_i8 = all_scales
+                
+            else:  # down_proj
+                # down_proj: dequantized is [experts, rows, cols] = [32, 2880, 2880]  
+                # Same logic as gate_up_proj
+                experts, rows, cols = param_tensor.shape
+                blocks_per_col = rows // GROUP_SIZE
+                
+                # Initialize output tensors  
+                all_blocks = torch.zeros(experts, cols, blocks_per_col, 16, dtype=torch.uint8, device=param_tensor.device)
+                all_scales = torch.zeros(experts, cols, blocks_per_col, dtype=torch.int8, device=param_tensor.device)
+                
+                logger.info(f"   Processing {cols} columns, each with {blocks_per_col} blocks")
+                
+                # Process in smaller batches
+                batch_size = 64  # Process 64 columns at a time
+                
+                for batch_start in range(0, cols, batch_size):
+                    batch_end = min(batch_start + batch_size, cols)
+                    batch_cols = batch_end - batch_start
+                    
+                    # Process each column in this batch
+                    for i in range(batch_cols):
+                        col_idx = batch_start + i
+                        
+                        # Extract single column: [experts, rows]
+                        column_data = param_tensor[:, :, col_idx]  # [experts, rows]
+                        
+                        # Reshape for quantization along the row dimension: [experts, 1, rows]
+                        column_data = column_data.unsqueeze(1)  # [experts, 1, rows]
+                        
+                        # Quantize this column
+                        col_blocks, col_scales, _ = _quantize_tensor_to_mxfp4_param(column_data, GROUP_SIZE)
+                        
+                        # Remove the extra dimension
+                        col_blocks = col_blocks.squeeze(1)  # Remove dimension 1
+                        col_scales = col_scales.squeeze(1)  # Remove dimension 1
+                        
+                        # Store in the correct positions
+                        all_blocks[:, col_idx, :, :] = col_blocks
+                        all_scales[:, col_idx, :] = col_scales
+                
+                blocks_u8 = all_blocks
+                scales_i8 = all_scales
             
             # Create new parameter names with _blocks and _scales
             blocks_name = param_name + "_blocks"
@@ -237,7 +346,7 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
             conversion_count += 1
             
             # Clear GPU memory after each conversion
-            del param_to_quantize, blocks_u8, scales_i8, scales_u8
+            del blocks_u8, scales_i8, scales_u8
             torch.cuda.empty_cache()
             
         except Exception as e:
