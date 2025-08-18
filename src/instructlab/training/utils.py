@@ -883,6 +883,36 @@ def load_latest_full_state(args, accelerator) -> None:
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
 
 
+def freeze_gpt_oss_router_params(model) -> bool:
+    """
+    Freeze router parameters for GPT-OSS models before FSDP setup.
+    
+    Args:
+        model: The model to check and potentially freeze parameters
+        
+    Returns:
+        bool: True if this is a GPT-OSS model and parameters were frozen
+    """
+    # Check if this is a GPT-OSS model
+    is_gpt_oss = getattr(model.config, 'model_type', None) == 'gpt_oss'
+    
+    if not is_gpt_oss:
+        return False
+    
+    logger.info("🎯 Detected GPT-OSS model - applying router parameter freezing")
+    
+    # Freeze router parameters BEFORE accelerator setup
+    frozen_count = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad and "router" in name:
+            param.requires_grad = False
+            frozen_count += 1
+            logger.info(f"❄️ Frozen router parameter: {name}")
+    
+    logger.info(f"✅ Frozen {frozen_count} router parameters for GPT-OSS model")
+    return True
+
+
 def test_model_inference_quick(model, tokenizer, stage_name):
     """Quick inference test to check if model outputs are coherent."""
     try:
