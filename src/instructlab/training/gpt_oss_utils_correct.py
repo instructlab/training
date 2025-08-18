@@ -82,11 +82,11 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
     # Clamp to valid range first
     normalized_clamped = torch.clamp(normalized, min=-6.0, max=6.0)
     
-    # Process in chunks along the expert dimension to avoid memory issues
-    # Keep block structure intact: [..., nblocks, GROUP_SIZE]
-    if normalized_clamped.dim() >= 3 and normalized_clamped.shape[0] > 8:  # Multiple experts
-        # Process experts in small batches
-        batch_size = 4  # Process 4 experts at a time
+    # OPTIMIZED: Increased batch sizes and smarter memory management
+    # Process larger chunks since we're now batching more efficiently
+    if normalized_clamped.dim() >= 3 and normalized_clamped.shape[0] > 32:  # Very large tensors
+        # Process in larger batches - modern GPUs can handle much more
+        batch_size = 32  # Increased from 4 to 32 for better GPU utilization
         expert_results = []
         for start_idx in range(0, normalized_clamped.shape[0], batch_size):
             end_idx = min(start_idx + batch_size, normalized_clamped.shape[0])
@@ -96,7 +96,7 @@ def _e2m1_encode(normalized: torch.Tensor) -> torch.Tensor:
             expert_results.append(batch_indices.to(torch.uint8))
         return torch.cat(expert_results, dim=0)
     else:
-        # Small tensor, process normally
+        # Process normally for smaller tensors
         # Use proper tie-breaking that matches OpenAI's implementation
         idx = _find_closest_with_first_tie_breaking(normalized_clamped, table)
         return idx.to(torch.uint8)
@@ -247,87 +247,55 @@ def convert_dequantized_to_quantized_format_correct(state_dict: Dict[str, torch.
                 experts, rows, cols = param_tensor.shape
                 blocks_per_col = rows // GROUP_SIZE
                 
-                # Initialize output tensors
-                all_blocks = torch.zeros(experts, cols, blocks_per_col, 16, dtype=torch.uint8, device=param_tensor.device)
-                all_scales = torch.zeros(experts, cols, blocks_per_col, dtype=torch.int8, device=param_tensor.device)
-                
                 logger.info(f"   Processing {cols} columns, each with {blocks_per_col} blocks")
                 
-                # Process in smaller batches to balance memory and speed
-                # We need to quantize each column individually since OpenAI's format is column-based
-                batch_size = 64  # Process 64 columns at a time
+                # OPTIMIZED: Process ALL columns at once using vectorized operations
+                # Reshape to process all columns simultaneously: [experts, cols, rows] = [32, 5760, 2880]
+                # Transpose to put columns first for efficient memory access
+                tensor_transposed = param_tensor.transpose(1, 2)  # [32, 5760, 2880]
                 
-                for batch_start in range(0, cols, batch_size):
-                    batch_end = min(batch_start + batch_size, cols)
-                    batch_cols = batch_end - batch_start
-                    
-                    # Process each column in this batch
-                    for i in range(batch_cols):
-                        col_idx = batch_start + i
-                        
-                        # Extract single column: [experts, rows] = [32, 2880]
-                        column_data = param_tensor[:, :, col_idx]  # [32, 2880]
-                        
-                        # Reshape for quantization along the row dimension: [32, 1, 2880]
-                        # This way the quantization happens along the last dim (2880)
-                        column_data = column_data.unsqueeze(1)  # [32, 1, 2880]
-                        
-                        # Quantize this column: output will be [32, 1, 90, 16] and [32, 1, 90]
-                        col_blocks, col_scales, _ = _quantize_tensor_to_mxfp4_param(column_data, GROUP_SIZE)
-                        
-                        # Remove the extra dimension: [32, 1, 90, 16] -> [32, 90, 16]
-                        col_blocks = col_blocks.squeeze(1)  # Remove dimension 1
-                        col_scales = col_scales.squeeze(1)  # Remove dimension 1
-                        
-                        # Store in the correct positions
-                        all_blocks[:, col_idx, :, :] = col_blocks
-                        all_scales[:, col_idx, :] = col_scales
+                # Reshape for batch quantization: [32*5760, 1, 2880] 
+                # This allows us to quantize all expert-column pairs at once
+                total_columns = experts * cols
+                reshaped_for_quant = tensor_transposed.reshape(total_columns, 1, rows)
                 
-                blocks_u8 = all_blocks
-                scales_i8 = all_scales
+                logger.info(f"   VECTORIZED: Quantizing {total_columns} columns simultaneously")
+                
+                # Single quantization call for all columns - MASSIVE speedup!
+                all_blocks_flat, all_scales_flat, _ = _quantize_tensor_to_mxfp4_param(reshaped_for_quant, GROUP_SIZE)
+                
+                # Reshape back to the correct format
+                # all_blocks_flat: [32*5760, 1, 90, 16] -> [32, 5760, 90, 16]
+                blocks_u8 = all_blocks_flat.squeeze(1).reshape(experts, cols, blocks_per_col, 16)
+                # all_scales_flat: [32*5760, 1, 90] -> [32, 5760, 90]  
+                scales_i8 = all_scales_flat.squeeze(1).reshape(experts, cols, blocks_per_col)
                 
             else:  # down_proj
                 # down_proj: dequantized is [experts, rows, cols] = [32, 2880, 2880]  
-                # Same logic as gate_up_proj
+                # Same vectorized logic as gate_up_proj
                 experts, rows, cols = param_tensor.shape
                 blocks_per_col = rows // GROUP_SIZE
                 
-                # Initialize output tensors  
-                all_blocks = torch.zeros(experts, cols, blocks_per_col, 16, dtype=torch.uint8, device=param_tensor.device)
-                all_scales = torch.zeros(experts, cols, blocks_per_col, dtype=torch.int8, device=param_tensor.device)
-                
                 logger.info(f"   Processing {cols} columns, each with {blocks_per_col} blocks")
                 
-                # Process in smaller batches
-                batch_size = 64  # Process 64 columns at a time
+                # OPTIMIZED: Process ALL columns at once using vectorized operations
+                # Transpose to put columns first: [32, 2880, 2880] -> [32, 2880, 2880]
+                tensor_transposed = param_tensor.transpose(1, 2)  # [32, 2880, 2880]
                 
-                for batch_start in range(0, cols, batch_size):
-                    batch_end = min(batch_start + batch_size, cols)
-                    batch_cols = batch_end - batch_start
-                    
-                    # Process each column in this batch
-                    for i in range(batch_cols):
-                        col_idx = batch_start + i
-                        
-                        # Extract single column: [experts, rows]
-                        column_data = param_tensor[:, :, col_idx]  # [experts, rows]
-                        
-                        # Reshape for quantization along the row dimension: [experts, 1, rows]
-                        column_data = column_data.unsqueeze(1)  # [experts, 1, rows]
-                        
-                        # Quantize this column
-                        col_blocks, col_scales, _ = _quantize_tensor_to_mxfp4_param(column_data, GROUP_SIZE)
-                        
-                        # Remove the extra dimension
-                        col_blocks = col_blocks.squeeze(1)  # Remove dimension 1
-                        col_scales = col_scales.squeeze(1)  # Remove dimension 1
-                        
-                        # Store in the correct positions
-                        all_blocks[:, col_idx, :, :] = col_blocks
-                        all_scales[:, col_idx, :] = col_scales
+                # Reshape for batch quantization: [32*2880, 1, 2880] 
+                total_columns = experts * cols
+                reshaped_for_quant = tensor_transposed.reshape(total_columns, 1, rows)
                 
-                blocks_u8 = all_blocks
-                scales_i8 = all_scales
+                logger.info(f"   VECTORIZED: Quantizing {total_columns} columns simultaneously")
+                
+                # Single quantization call for all columns - MASSIVE speedup!
+                all_blocks_flat, all_scales_flat, _ = _quantize_tensor_to_mxfp4_param(reshaped_for_quant, GROUP_SIZE)
+                
+                # Reshape back to the correct format
+                # all_blocks_flat: [32*2880, 1, 90, 16] -> [32, 2880, 90, 16]
+                blocks_u8 = all_blocks_flat.squeeze(1).reshape(experts, cols, blocks_per_col, 16)
+                # all_scales_flat: [32*2880, 1, 90] -> [32, 2880, 90]  
+                scales_i8 = all_scales_flat.squeeze(1).reshape(experts, cols, blocks_per_col)
             
             # Create new parameter names with _blocks and _scales
             blocks_name = param_name + "_blocks"
