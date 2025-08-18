@@ -466,8 +466,19 @@ def setup_optimizer(
                 optimizer_cls = DeepSpeedCPUAdam
             else:
                 optimizer_cls = FusedAdam
+    
+    # Filter parameters to only include those that require gradients
+    # This handles cases where some parameters (e.g., frozen router params) have requires_grad=False
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    
+    # Count trainable parameters for logging
+    total_params = sum(1 for _ in model.parameters())
+    trainable_count = sum(1 for p in model.parameters() if p.requires_grad)
+    if total_params != trainable_count:
+        logger.info(f"📊 Using {trainable_count}/{total_params} trainable parameters in optimizer")
+    
     factory = functools.partial(
-        optimizer_cls, model.parameters(), lr=learning_rate, betas=betas
+        optimizer_cls, trainable_params, lr=learning_rate, betas=betas
     )
     if optimizer_cls is AdamW:
         return factory(weight_decay=0.0)

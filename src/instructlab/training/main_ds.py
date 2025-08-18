@@ -69,6 +69,7 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
+    freeze_gpt_oss_router_params,
     load_latest_full_state,
     save_checkpoint,
     save_hf_format_accelerate,
@@ -373,6 +374,10 @@ def main(args):
 
     args.base_model_args = m.base_model_args
 
+    # IMPORTANT: Freeze GPT-OSS router parameters BEFORE accelerator setup
+    # This must happen before FSDP preparation to avoid requires_grad uniformity issues
+    is_gpt_oss = freeze_gpt_oss_router_params(m.model)
+
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
             num_gpus=torch.distributed.get_world_size(),
@@ -456,6 +461,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        fsdp_use_orig_params=is_gpt_oss,  # Enable use_orig_params for GPT-OSS models
         save_samples=args.save_samples,
     )
     # optimizer needs model that has been prepared by accelerator
