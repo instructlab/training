@@ -197,7 +197,63 @@ class StreamablePopen(subprocess.Popen):
                     break
 
 
-def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000):
+def make_batch_aware_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000, grad_accum=1):
+    """
+    Creates a collate function that computes batch_num_loss_counted_tokens following mini_trainer approach.
+    
+    This wrapper groups minibatches into logical batches and pre-computes the total token count
+    across all gradient accumulation steps, embedding this total in each minibatch.
+    """
+    
+    # Create the base collate function
+    base_collate_fn = make_collate_fn(pad_token_id, flash_enabled, max_batch_len, grad_accum)
+    
+    # State for tracking logical batches
+    minibatch_buffer = []
+    batch_token_counts = []
+    
+    def batch_aware_collate_fn(batch):
+        # Process this minibatch with the base collate function
+        minibatch = base_collate_fn(batch)
+        
+        # Add to buffer and track token count
+        minibatch_buffer.append(minibatch)
+        batch_token_counts.append(minibatch["num_loss_counted_tokens"])
+        
+        # When we have enough minibatches for one logical batch, compute total and distribute
+        if len(minibatch_buffer) >= grad_accum:
+            # Compute total tokens across entire logical batch (following mini_trainer)
+            total_batch_tokens = sum(batch_token_counts[:grad_accum])
+            
+            # Embed this total in each minibatch in the logical batch
+            for mb in minibatch_buffer[:grad_accum]:
+                mb["batch_num_loss_counted_tokens"] = total_batch_tokens
+            
+            # Return the first minibatch and update buffer
+            result = minibatch_buffer.pop(0)
+            batch_token_counts.pop(0)
+            
+            return result
+        else:
+            # For incomplete logical batches, estimate the total (this handles the last batch)
+            # Use current accumulated tokens scaled by expected batch size
+            if len(minibatch_buffer) > 0:
+                avg_tokens_per_mb = sum(batch_token_counts) / len(batch_token_counts)
+                estimated_total = avg_tokens_per_mb * grad_accum
+                
+                for mb in minibatch_buffer:
+                    mb["batch_num_loss_counted_tokens"] = estimated_total
+            
+            # Return the first available minibatch
+            if minibatch_buffer:
+                result = minibatch_buffer.pop(0)
+                batch_token_counts.pop(0)
+                return result
+    
+    return batch_aware_collate_fn
+
+
+def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000, grad_accum=1):
     if flash_enabled:
 
         def pad_collate_fn(batch):

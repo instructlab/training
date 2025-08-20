@@ -11,7 +11,7 @@ import torch
 
 # First Party
 from instructlab.training.multipack_sampler import MultipackDistributedBatchSampler
-from instructlab.training.utils import log_rank_0, make_collate_fn
+from instructlab.training.utils import log_rank_0, make_batch_aware_collate_fn
 
 
 class TokenDataset(Dataset):
@@ -96,9 +96,10 @@ def setup_dataloader(
     samples_per_gpu=None,
     sampler="multipack",
     seed=47,
+    grad_accum=1,
 ) -> DataLoader:
-    collate_fn = make_collate_fn(
-        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len
+    collate_fn = make_batch_aware_collate_fn(
+        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len, grad_accum=grad_accum
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])
