@@ -319,9 +319,8 @@ class Model:
             )
 
         # Local
-        from .utils import add_noisy_embeddings, convert_loss_to_reduce_sum
+        from .utils import add_noisy_embeddings
 
-        self.model = convert_loss_to_reduce_sum(self.model)
         self.model = add_noisy_embeddings(self.model, noise_alpha=self.noise_alpha)
 
     @staticmethod
