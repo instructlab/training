@@ -616,7 +616,7 @@ def _copy_no_lora_dict(state_dict):
 
 def _copy_gpt_oss_converted_dict(state_dict):
     """Copy and convert GPT-OSS state dict to quantized format."""
-    from .gpt_oss_utils import convert_dequantized_to_quantized_format
+    from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
     
     # First apply standard cleaning like LoRA does
     cleaned_state_dict = OrderedDict()
@@ -626,7 +626,7 @@ def _copy_gpt_oss_converted_dict(state_dict):
         ] = deepcopy(state_dict[param_tensor]).cpu()
     
     # Then apply GPT-OSS parameter name conversion
-    converted_state_dict = convert_dequantized_to_quantized_format(cleaned_state_dict)
+    converted_state_dict = convert_dequantized_to_quantized_format_correct(cleaned_state_dict)
     
     return converted_state_dict
 
@@ -753,7 +753,7 @@ def save_hf_format_accelerate(
         model.module.config.to_json_file(output_config_file)
         
         # For GPT-OSS models, ensure the config has proper quantization settings
-        from .gpt_oss_utils_official import should_convert_gpt_oss_format, update_config_for_quantized_format
+        from .gpt_oss_utils_correct import should_convert_gpt_oss_format, update_config_for_quantized_format
         if should_convert_gpt_oss_format(model.module.config):
             update_config_for_quantized_format(output_config_file)
         
@@ -771,7 +771,7 @@ def save_hf_format_accelerate(
 
     if not is_lora:
         # Check if this is a GPT-OSS model that needs format conversion
-        from .gpt_oss_utils_official import should_convert_gpt_oss_format
+        from .gpt_oss_utils_correct import should_convert_gpt_oss_format
         
         if should_convert_gpt_oss_format(model.module.config):
             # For GPT-OSS models, check if we need FSDP handling like LoRA does
