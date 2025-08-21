@@ -17,6 +17,7 @@ from instructlab.training import data_process
 from instructlab.training.config import (
     DataProcessArgs,
     DistributedBackend,
+    LoraOptions,
     TorchrunArgs,
     TrainingArgs,
 )
@@ -231,24 +232,35 @@ def cached_training_data(
 @pytest.mark.parametrize(
     "dist_backend", [DistributedBackend.FSDP, DistributedBackend.DEEPSPEED]
 )
-@pytest.mark.parametrize("cpu_offload", [True, False])
+@pytest.mark.parametrize("cpu_offload", [False, True])
+@pytest.mark.parametrize("lora_rank", [0])
+@pytest.mark.parametrize("use_liger", [False, True])
 def test_training_feature_matrix(
     cached_test_model: pathlib.Path,
     cached_training_data: pathlib.Path,
     checkpoint_dir: pathlib.Path,
     prepared_data_dir: pathlib.Path,
+    use_liger: bool,
+    lora_rank: int,
     cpu_offload: bool,
     dist_backend: DistributedBackend,
 ) -> None:
+    torch_args = TorchrunArgs(**DEFAULT_TORCHRUN_ARGS)
     train_args = TrainingArgs(
         model_path=str(cached_test_model),
         data_path=str(cached_training_data),
         data_output_dir=str(prepared_data_dir),
         ckpt_output_dir=str(checkpoint_dir),
+        lora=LoraOptions(rank=lora_rank),
+        use_liger=use_liger,
         **MINIMAL_TRAINING_ARGS,
     )
 
     train_args.distributed_backend = dist_backend
+
+    if lora_rank > 0:
+        # LoRA doesn't support full state saving.
+        train_args.accelerate_full_state_at_epoch = False
 
     if dist_backend == DistributedBackend.FSDP:
         train_args.fsdp_options.cpu_offload_params = cpu_offload
@@ -257,7 +269,5 @@ def test_training_feature_matrix(
         if cpu_offload:
             pytest.xfail("DeepSpeed CPU Adam isn't currently building correctly")
         train_args.deepspeed_options.cpu_offload_optimizer = cpu_offload
-
-    torch_args = TorchrunArgs(**DEFAULT_TORCHRUN_ARGS)
 
     run_training(torch_args=torch_args, train_args=train_args)
