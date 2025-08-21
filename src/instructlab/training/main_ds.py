@@ -69,6 +69,7 @@ from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
+    freeze_gpt_oss_router_params,
     load_latest_full_state,
     save_checkpoint,
     save_hf_format_accelerate,
@@ -110,6 +111,11 @@ def train(
         logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
+    
+    # Variables for manual loss computation (following mini_trainer approach)
+    batch_num_loss_counted_tokens = 0
+    accumulated_loss = 0.0
+    accumulated_aux_loss = 0.0  # For GPT-OSS auxiliary loss
     for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
             accelerator.train_loader.batch_sampler.set_epoch(epoch)
@@ -131,25 +137,75 @@ def train(
                     inner_pb.update(1)
                 continue
             start = time.time()
+            
+            # Extract minibatch info (following mini_trainer pattern)
             num_loss_counted_tokens = float(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
+            )
+            batch_num_loss_counted_tokens = float(
+                torch.tensor([batch.pop("batch_num_loss_counted_tokens")])
             )
             micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
             total_length = float(torch.tensor([batch.pop("total_length")]))
             for k in batch:
                 batch[k] = batch[k].to(local_rank)
+            
+            # Forward pass to get logits
             output = model(
                 **batch,
                 use_cache=False,
             )
-            loss = output.loss
-            log_loss = loss.detach().item()
+            
+            # Manual loss computation with reduction="none" following mini_trainer's exact approach
+            # Check if this is a GPT-OSS model with auxiliary loss
+            is_gpt_oss = hasattr(output, 'aux_loss') and output.aux_loss is not None
+            
+            # Manually compute cross-entropy loss with reduction="none"
+            logits = output.logits
+            labels = batch["labels"] if "labels" in batch else None
+            
+            if labels is not None:
+                # Shift logits and labels for causal LM (standard approach)
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                
+                # Flatten tokens
+                shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+                shift_labels = shift_labels.view(-1)
+                
+                # Compute loss with reduction="none" to get per-token losses
+                loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+                token_losses = loss_fct(shift_logits, shift_labels)
+                
+                # Only sum losses for non-padding tokens (labels != -100)
+                valid_tokens = (shift_labels != -100)
+                main_loss_sum = token_losses[valid_tokens].sum()
+                
+                if is_gpt_oss:
+                    # For GPT-OSS: separate main loss and aux loss
+                    aux_loss = output.aux_loss.float()  # Auxiliary loss stays as scalar
+                    
+                    # Accumulate losses for batch-level tracking
+                    accumulated_loss += main_loss_sum
+                    accumulated_aux_loss += aux_loss
+                    
+                    # Store main loss for proper scaling
+                    loss = main_loss_sum
+                    
+                else:
+                    # Standard models: use the summed loss
+                    loss = main_loss_sum
+                    accumulated_loss += loss
+            else:
+                # Fallback if no labels provided
+                loss = output.loss
 
-            num_loss_counted_tokens, micro_batch_size, log_loss = map(
+            # Reduce metrics across devices for logging
+            num_loss_counted_tokens, micro_batch_size, batch_num_loss_counted_tokens = map(
                 float,
                 accelerator.reduce(
                     torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_loss],
+                        [num_loss_counted_tokens, micro_batch_size, batch_num_loss_counted_tokens],
                         dtype=torch.float32,
                         device=accelerator.device,
                     ),
@@ -158,16 +214,34 @@ def train(
             )
             samples_seen += int(micro_batch_size)
 
-            # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
+            # Scale main loss following mini_trainer approach: loss * world_size / batch_num_loss_counted_tokens
+            scaled_main_loss = loss * world_size / batch_num_loss_counted_tokens
+            
+            # For GPT-OSS: add unscaled auxiliary loss after scaling main loss
+            if is_gpt_oss:
+                scaled_loss = scaled_main_loss + aux_loss
+            else:
+                scaled_loss = scaled_main_loss
+            
+            # This is our correctly scaled loss that should be used for all logging
+            reported_loss = scaled_loss.detach().item()
+            
+            # Calculate average loss across all ranks for metrics logging
+            avg_loss_across_ranks = accelerator.reduce(
+                torch.tensor(reported_loss, device=accelerator.device), 
+                reduction="mean"
+            ).item()
+            
             base_logger.info(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {reported_loss:.6f}"
             )
-            accelerator.backward(loss)
+            accelerator.backward(scaled_loss)
 
             if global_step % accelerator.grad_accum == 0:
+                # Reset accumulators for next logical batch
+                accumulated_loss = 0.0
+                accumulated_aux_loss = 0.0
+                
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 accelerator.lr_scheduler.step()
@@ -205,7 +279,7 @@ def train(
                         "num_loss_counted_tokens": int(num_loss_counted_tokens),
                         "num_tokens_rank0": int(total_length),
                         "batch_size": int(micro_batch_size),
-                        "total_loss": float(log_loss / num_loss_counted_tokens),
+                        "avg_loss": float(avg_loss_across_ranks),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(accelerator.train_loader.dataset),
@@ -373,6 +447,10 @@ def main(args):
 
     args.base_model_args = m.base_model_args
 
+    # IMPORTANT: Freeze GPT-OSS router parameters BEFORE accelerator setup
+    # This must happen before FSDP preparation to avoid requires_grad uniformity issues
+    is_gpt_oss = freeze_gpt_oss_router_params(m.model)
+
     try:
         packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
             num_gpus=torch.distributed.get_world_size(),
@@ -407,6 +485,7 @@ def main(args):
         samples_per_gpu=args.samples_per_gpu,
         sampler=args.sampler,
         seed=args.seed,
+        grad_accum=grad_accum,
     )
     if len(train_loader) == 0:
         # this happens sometimes when we have more GPUs than data to process. In this case
@@ -426,6 +505,7 @@ def main(args):
             samples_per_gpu=args.samples_per_gpu,
             sampler=args.sampler,
             seed=args.seed,
+            grad_accum=grad_accum,
         )
 
     if args.local_rank == 0:
@@ -456,6 +536,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        fsdp_use_orig_params=is_gpt_oss,  # Enable use_orig_params for GPT-OSS models
         save_samples=args.save_samples,
     )
     # optimizer needs model that has been prepared by accelerator

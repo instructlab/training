@@ -83,6 +83,7 @@ def unmask_message_content(
     pretrain_token,
     pretrain_end_token,
     tool_resp_tokens=None,
+    tokenizer=None,
 ):
     """
     Create labels for tokens in a sequence with special handling for pretraining tokens and role-specific sequences.
@@ -152,9 +153,69 @@ def unmask_message_content(
             default=None,
         )
 
+    def is_gpt_oss_model():
+        """Check if this is a GPT-OSS model based on tokenizer."""
+        if not tokenizer:
+            return False
+        try:
+            # GPT-OSS models have these special tokens
+            test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
+            for token in test_tokens:
+                # If any of these tokens can't be encoded, it's not GPT-OSS
+                tokenizer.encode(token, add_special_tokens=False)
+            return True
+        except:
+            return False
+
+    def is_gpt_oss_assistant_channel(pos):
+        """Check if current position is within a GPT-OSS assistant channel pattern."""
+        # Look for pattern: <|start|>assistant<|channel|>CHANNEL_NAME<|message|>
+        if pos >= len(sentence_tk):
+            return False
+        
+        # Try to encode the expected pattern tokens
+        try:
+            start_token = tokenizer.encode("<|start|>", add_special_tokens=False)
+            assistant_tokens = tokenizer.encode("assistant", add_special_tokens=False)
+            channel_token = tokenizer.encode("<|channel|>", add_special_tokens=False)
+            message_token = tokenizer.encode("<|message|>", add_special_tokens=False)
+        except:
+            return False
+        
+        # Look backwards from current position to see if we're in an assistant channel
+        # We need to find the pattern: start_token + assistant_tokens + channel_token + some_text + message_token
+        for lookback in range(min(pos + 1, 50)):  # Look back up to 50 tokens
+            start_pos = pos - lookback
+            if start_pos < 0:
+                break
+            
+            # Check if we have the start of an assistant channel pattern
+            if (start_pos + len(start_token) + len(assistant_tokens) + len(channel_token) <= len(sentence_tk) and
+                sentence_tk[start_pos:start_pos + len(start_token)] == start_token and
+                sentence_tk[start_pos + len(start_token):start_pos + len(start_token) + len(assistant_tokens)] == assistant_tokens and
+                sentence_tk[start_pos + len(start_token) + len(assistant_tokens):start_pos + len(start_token) + len(assistant_tokens) + len(channel_token)] == channel_token):
+                
+                # Found assistant channel start, now look for the message token ahead
+                message_start = start_pos + len(start_token) + len(assistant_tokens) + len(channel_token)
+                for forward in range(min(len(sentence_tk) - message_start, 20)):  # Look forward up to 20 tokens for message token
+                    if (message_start + forward + len(message_token) <= len(sentence_tk) and
+                        sentence_tk[message_start + forward:message_start + forward + len(message_token)] == message_token):
+                        # Found complete assistant channel pattern
+                        message_end = message_start + forward + len(message_token)
+                        # Check if current position is between message token and next special sequence
+                        if pos >= message_end:
+                            return True
+                        break
+                break
+        
+        return False
+
     special_sequences = [user_tokens, assist_tokens, system_tokens]
     if tool_resp_tokens:
         special_sequences.append(tool_resp_tokens)
+
+    # Check if this is a GPT-OSS model for special handling
+    is_gpt_oss = is_gpt_oss_model()
 
     in_pretraining = False
     unmasking = False
@@ -171,11 +232,22 @@ def unmask_message_content(
 
         match = find_longest_match(i, special_sequences)
         if match:
-            unmasking = (match == assist_tokens) or (
-                example["unmask"] and match != system_tokens
-            )
+            # For GPT-OSS models, always unmask assistant tokens regardless of unmask flag
+            if is_gpt_oss and match == assist_tokens:
+                unmasking = True
+            else:
+                unmasking = (match == assist_tokens) or (
+                    example["unmask"] and match != system_tokens
+                )
             i += len(match)
             continue
+        
+        # Special case: Check for GPT-OSS assistant channel patterns
+        # For GPT-OSS, always unmask assistant channels regardless of unmask flag
+        if is_gpt_oss and is_gpt_oss_assistant_channel(i):
+            unmasking = True
+        elif example["unmask"] and is_gpt_oss_assistant_channel(i):
+            unmasking = True
 
         if in_pretraining or unmasking:
             labels[i] = sentence_tk[i]
@@ -395,6 +467,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
         pretrain_token=get_sp_token(tokenizer, "<|pretrain|>")[0],
         pretrain_end_token=get_sp_token(tokenizer, "<|/pretrain|>")[0],
         tool_resp_tokens=tool_resp_tk,
+        tokenizer=tokenizer,
     )
     logger.info("Unmasking the appropriate message content...")
     data_with_labels = data_with_input_ids.map(
@@ -473,12 +546,13 @@ def wrap_masked_messages(
 
         # here, we need to be on the lookout for both string and non-string
         # entries (e.g. other content types, or pure reasoning traces)
-        interesting_fields = ["content", "reasoning_content"]
+        interesting_fields = ["content", "reasoning_content", "thinking"]
         new_msg = {k: v for k, v in msg.items() if k not in interesting_fields}
 
-        # what's left to add then is content or reasoning_content
+        # what's left to add then is content, reasoning_content, or thinking
         content = msg.get("content", None)
         reasoning_content = msg.get("reasoning_content", None)
+        thinking = msg.get("thinking", None)
 
         # we handle these conditionally since these may become optional fields in the future.
         if content is not None:
@@ -504,6 +578,24 @@ def wrap_masked_messages(
             else:
                 # When not enabled, pass through unchanged
                 new_msg["reasoning_content"] = reasoning_content
+
+        # Handle GPT-OSS "thinking" field similar to reasoning_content
+        if thinking is not None:
+            if enable_reasoning_content:
+                if not isinstance(thinking, str):
+                    raise ValueError(
+                        "Error: received an entry for `thinking` which was not a string. "
+                        "Non-string datatypes for this field are currently unsupported, if this is intentional please raise an issue."
+                    )
+
+                new_msg["thinking"] = (
+                    UNMASK_REASONING_BEGIN_TOKEN
+                    + thinking
+                    + UNMASK_REASONING_END_TOKEN
+                )
+            else:
+                # When not enabled, pass through unchanged
+                new_msg["thinking"] = thinking
 
         # MyPy wants to be very specific about types, but new_msg may contain
         # valid fields in each message which are hard to account for ahead of time.
@@ -544,13 +636,12 @@ def unmask_messages(
     Returns:
         Result (ProcessedMessagesData): Dict with the resulting `input_ids`, `labels`, and `len`
     """
-    # Check if any messages have reasoning_content that we need to handle
+    # Check if any messages have reasoning_content or thinking that we need to handle
     has_reasoning = any(
-        msg.get("reasoning_content") is not None
+        msg.get("reasoning_content") is not None or msg.get("thinking") is not None
         for msg in msgs
         if msg["role"] in unmask_roles
     )
-
     # TODO(osilkin): Here we assume that we will always unmask reasoning content,
     #                in the future we can make this configurable.
     msgs_with_unmasking = wrap_masked_messages(
@@ -562,7 +653,7 @@ def unmask_messages(
     for idx, msg in enumerate(msgs_with_unmasking):
         if msg["role"] in unmask_roles:
             regions = []
-            if has_reasoning and msg.get("reasoning_content") is not None:
+            if has_reasoning and (msg.get("reasoning_content") is not None or msg.get("thinking") is not None):
                 regions.append("reasoning")
             if msg.get("content") is not None:
                 regions.append("content")
@@ -781,6 +872,23 @@ def unmask_sample(
     # TODO(osilkin): we should define an unmasking policy that
     # enables the user to more dynamically choose what should be unmasked and not.
 
+    def is_gpt_oss_model():
+        """Check if this is a GPT-OSS model based on tokenizer."""
+        if not tokenizer:
+            return False
+        try:
+            # GPT-OSS models have these special tokens
+            test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
+            for token in test_tokens:
+                # If any of these tokens can't be encoded, it's not GPT-OSS
+                tokenizer.encode(token, add_special_tokens=False)
+            return True
+        except:
+            return False
+
+    # Check if this is a GPT-OSS model for special handling
+    is_gpt_oss = is_gpt_oss_model()
+
     # if sample has `unmask` set to true, we unmask everything other than the system role,
     # else we only unmask assistant
     unmask_roles_set = {"assistant"}
@@ -788,6 +896,10 @@ def unmask_sample(
         # TODO(osilkin): this computation happens everytime but we could optimize it by getting all
         # the unique roles ahead of time
         unmask_roles_set = set(m["role"] for m in sample["messages"]) - {"system"}
+    
+    # For GPT-OSS models, always unmask assistant regardless of unmask flag
+    elif is_gpt_oss:
+        unmask_roles_set = {"assistant"}
 
     unmask_roles = list(unmask_roles_set)
     return unmask_messages(sample["messages"], tokenizer, unmask_roles)
