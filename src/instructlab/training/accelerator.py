@@ -3,7 +3,6 @@ from copy import deepcopy
 from typing import Callable, Optional
 
 # Third Party
-from accelerate import Accelerator as TransformersAccel
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
 import torch
@@ -32,6 +31,7 @@ class Accelerator:
         deepspeed_cpu_offload_optimizer_pin_memory: Optional[bool] = False,
         deepspeed_cpu_offload_optimizer_ratio: Optional[float] = None,
         fsdp_cpu_offload_params: Optional[bool] = False,
+        device: Optional[str] = None,
     ):
         self.samples_per_gpu = samples_per_gpu
         self.save_samples = save_samples
@@ -48,6 +48,7 @@ class Accelerator:
             deepspeed_cpu_offload_optimizer_ratio
         )
         self.fsdp_cpu_offload_params = fsdp_cpu_offload_params
+        self.device_str = device
 
         if self.distributed_framework == DistributedBackend.DEEPSPEED:
             # Standard
@@ -69,6 +70,12 @@ class Accelerator:
                 "fsdp_plugin": self.get_fsdp_config(),
                 "mixed_precision": "bf16",
             }
+
+        if device == "hpu":
+            from optimum.habana.accelerate import GaudiAccelerator as TransformersAccel
+        else:
+            from accelerate import Accelerator as TransformersAccel
+
         self.accelerator = TransformersAccel(
             **accel_args,
         )
@@ -159,6 +166,10 @@ class Accelerator:
             sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
             cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
         )
+
+        if self.device_str == "hpu":
+            fsdp_plugin.use_orig_params=True
+            fsdp_plugin.sync_module_states=True
 
         # `use_orig_params` must be disabled when using LoRA and FSDP together
         # Source: https://huggingface.co/docs/peft/en/accelerate/fsdp#the-important-parts
