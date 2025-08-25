@@ -197,7 +197,63 @@ class StreamablePopen(subprocess.Popen):
                     break
 
 
-def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000):
+def make_batch_aware_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000, grad_accum=1):
+    """
+    Creates a collate function that computes batch_num_loss_counted_tokens following mini_trainer approach.
+    
+    This wrapper groups minibatches into logical batches and pre-computes the total token count
+    across all gradient accumulation steps, embedding this total in each minibatch.
+    """
+    
+    # Create the base collate function
+    base_collate_fn = make_collate_fn(pad_token_id, flash_enabled, max_batch_len, grad_accum)
+    
+    # State for tracking logical batches
+    minibatch_buffer = []
+    batch_token_counts = []
+    
+    def batch_aware_collate_fn(batch):
+        # Process this minibatch with the base collate function
+        minibatch = base_collate_fn(batch)
+        
+        # Add to buffer and track token count
+        minibatch_buffer.append(minibatch)
+        batch_token_counts.append(minibatch["num_loss_counted_tokens"])
+        
+        # When we have enough minibatches for one logical batch, compute total and distribute
+        if len(minibatch_buffer) >= grad_accum:
+            # Compute total tokens across entire logical batch (following mini_trainer)
+            total_batch_tokens = sum(batch_token_counts[:grad_accum])
+            
+            # Embed this total in each minibatch in the logical batch
+            for mb in minibatch_buffer[:grad_accum]:
+                mb["batch_num_loss_counted_tokens"] = total_batch_tokens
+            
+            # Return the first minibatch and update buffer
+            result = minibatch_buffer.pop(0)
+            batch_token_counts.pop(0)
+            
+            return result
+        else:
+            # For incomplete logical batches, estimate the total (this handles the last batch)
+            # Use current accumulated tokens scaled by expected batch size
+            if len(minibatch_buffer) > 0:
+                avg_tokens_per_mb = sum(batch_token_counts) / len(batch_token_counts)
+                estimated_total = avg_tokens_per_mb * grad_accum
+                
+                for mb in minibatch_buffer:
+                    mb["batch_num_loss_counted_tokens"] = estimated_total
+            
+            # Return the first available minibatch
+            if minibatch_buffer:
+                result = minibatch_buffer.pop(0)
+                batch_token_counts.pop(0)
+                return result
+    
+    return batch_aware_collate_fn
+
+
+def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000, grad_accum=1):
     if flash_enabled:
 
         def pad_collate_fn(batch):
@@ -437,6 +493,80 @@ def save_fsdp_lora_model(
     dist.barrier()
 
 
+def save_fsdp_gpt_oss_model(
+    args: Namespace,
+    model: FSDP,
+    tokenizer: PreTrainedTokenizer,
+    accelerator: Accelerator,
+    output_dir: Path,
+):
+    """Save GPT-OSS model with parameter conversion, following FSDP LoRA pattern."""
+    from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct, update_config_for_quantized_format
+    
+    if accelerator.distributed_type != DistributedType.FSDP:
+        raise RuntimeError(
+            "`save_fsdp_gpt_oss_model` was called when FSDP was not being used."
+        )
+    if not wraps(model, FSDP):
+        raise RuntimeError(
+            "`save_fsdp_gpt_oss_model` was called but provided model is not an FSDP model."
+        )
+
+    logger.info("Converting GPT-OSS parameters to quantized format for compatibility")
+
+    # Extract state dict with FSDP configuration (same as LoRA)
+    sd_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, sd_config):
+        state = model.state_dict()
+
+    # Convert parameters on main process only (same pattern as LoRA)
+    if accelerator.is_main_process:
+        clean_state = OrderedDict()
+        expert_params_to_process = []
+        
+        for name, param in state.items():
+            if "experts." in name and ("down_proj" in name or "gate_up_proj" in name) and not name.endswith("_bias"):
+                expert_params_to_process.append((name, param))
+            else:
+                clean_state[name] = deepcopy(param).cpu()
+        
+        # Process expert parameters one by one on GPU to avoid OOM
+        from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
+        
+        for clean_name, param in expert_params_to_process:
+            # Create mini state dict with just this parameter on GPU
+            mini_state = {clean_name: param.cuda() if param.device.type == 'cpu' else param}
+            
+            # Convert this parameter
+            mini_converted = convert_dequantized_to_quantized_format_correct(mini_state)
+            
+            # Move all results back to CPU and add to final state
+            for conv_name, conv_param in mini_converted.items():
+                tensor_cpu = conv_param.cpu() if conv_param.device.type != 'cpu' else conv_param
+                clean_state[conv_name] = deepcopy(tensor_cpu)
+            
+            # Clean up GPU memory
+            del mini_state, mini_converted
+            torch.cuda.empty_cache()
+        
+        # Save state dict using accelerator.save
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Use accelerator.save directly on our state dict
+        accelerator.save(clean_state, output_dir / "model.safetensors", safe_serialization=True)
+        
+        # Save config and tokenizer
+        model.config.to_json_file(f"{output_dir}/config.json")
+        
+        # Update config with proper quantization settings
+        config_file = output_dir / "config.json"
+        update_config_for_quantized_format(config_file)
+        
+        tokenizer.save_pretrained(output_dir)
+
+    dist.barrier()
+
+
 def get_module_class_from_name(
     model: torch.nn.Module, name: str
 ) -> torch.nn.Module | None:
@@ -484,6 +614,23 @@ def _copy_no_lora_dict(state_dict):
     return cleaned_state_dict
 
 
+def _copy_gpt_oss_converted_dict(state_dict):
+    """Copy and convert GPT-OSS state dict to quantized format."""
+    from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
+    
+    # First apply standard cleaning like LoRA does
+    cleaned_state_dict = OrderedDict()
+    for param_tensor in state_dict:
+        cleaned_state_dict[
+            param_tensor.replace(".base_layer", "").replace("base_model.model.", "")
+        ] = deepcopy(state_dict[param_tensor]).cpu()
+    
+    # Then apply GPT-OSS parameter name conversion
+    converted_state_dict = convert_dequantized_to_quantized_format_correct(cleaned_state_dict)
+    
+    return converted_state_dict
+
+
 def save_dict_accelerate(
     accelerator: Accelerator,
     state_to_save,
@@ -493,6 +640,34 @@ def save_dict_accelerate(
 ):
     old_get_state = accelerator.get_state_dict
     accelerator.get_state_dict = _copy_no_lora_dict
+
+    def skip_precheck_loops():
+        return []
+
+    # The save model does a loop over modules and params in order to determine how to get state dict. Since we already have the state dict directly, we want to bypass those checks.
+    state_to_save.modules = skip_precheck_loops
+    state_to_save.parameters = skip_precheck_loops
+
+    accelerator.save_model(
+        state_to_save,
+        save_directory=save_directory,
+        max_shard_size=max_shard_size,
+        safe_serialization=safe_serialization,
+    )
+
+    accelerator.get_state_dict = old_get_state
+
+
+def save_dict_accelerate_gpt_oss(
+    accelerator: Accelerator,
+    state_to_save,
+    save_directory,
+    max_shard_size="5GB",
+    safe_serialization=True,
+):
+    """Save state dict with GPT-OSS parameter conversion (same pattern as LoRA)."""
+    old_get_state = accelerator.get_state_dict
+    accelerator.get_state_dict = _copy_gpt_oss_converted_dict
 
     def skip_precheck_loops():
         return []
@@ -576,6 +751,12 @@ def save_hf_format_accelerate(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
                 )
         model.module.config.to_json_file(output_config_file)
+        
+        # For GPT-OSS models, ensure the config has proper quantization settings
+        from .gpt_oss_utils_correct import should_convert_gpt_oss_format, update_config_for_quantized_format
+        if should_convert_gpt_oss_format(model.module.config):
+            update_config_for_quantized_format(output_config_file)
+        
         tokenizer.save_pretrained(output_dir)
 
         if is_lora:
@@ -589,12 +770,43 @@ def save_hf_format_accelerate(
             model.module.unmerge_adapter()
 
     if not is_lora:
-        accelerator.save_model(
-            model,
-            save_directory=output_dir,
-            max_shard_size="5GB",
-            safe_serialization=True,
-        )
+        # Check if this is a GPT-OSS model that needs format conversion
+        from .gpt_oss_utils_correct import should_convert_gpt_oss_format
+        
+        if should_convert_gpt_oss_format(model.module.config):
+            # For GPT-OSS models, check if we need FSDP handling like LoRA does
+            is_fsdp_gpt_oss = accelerator.distributed_type == DistributedType.FSDP
+            
+            if is_fsdp_gpt_oss:
+                # Use FSDP GPT-OSS saving (same pattern as LoRA FSDP)
+                log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility (FSDP)")
+                save_fsdp_gpt_oss_model(
+                    args=args,
+                    model=model,
+                    tokenizer=tokenizer,
+                    accelerator=accelerator,
+                    output_dir=output_dir,
+                )
+            elif accelerator.is_main_process:
+                # Non-FSDP path
+                log_rank_0("Converting GPT-OSS parameters to quantized format for compatibility")
+                model_state = model.module.state_dict()
+                
+                save_dict_accelerate_gpt_oss(
+                    accelerator,
+                    model_state,
+                    save_directory=output_dir,
+                    max_shard_size="5GB",
+                    safe_serialization=True,
+                )
+        elif not should_convert_gpt_oss_format(model.module.config):
+            # Standard model saving
+            accelerator.save_model(
+                model,
+                save_directory=output_dir,
+                max_shard_size="5GB",
+                safe_serialization=True,
+            )
 
     log_rank_0(f"\033[93mModel saved in {final_output_dir}\033[0m", to_print=True)
     log_rank_0(f"saving took {time.time() - start} seconds")
@@ -725,3 +937,72 @@ def load_latest_full_state(args, accelerator) -> None:
     # previous epoch is basis for current epoch.
     args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
+
+
+def freeze_gpt_oss_router_params(model) -> bool:
+    """
+    Freeze router parameters for GPT-OSS models before FSDP setup.
+    
+    Args:
+        model: The model to check and potentially freeze parameters
+        
+    Returns:
+        bool: True if this is a GPT-OSS model and parameters were frozen
+    """
+    # Check if this is a GPT-OSS model
+    is_gpt_oss = getattr(model.config, 'model_type', None) == 'gpt_oss'
+    
+    if not is_gpt_oss:
+        return False
+    
+    logger.info("🎯 Detected GPT-OSS model - applying router parameter freezing")
+    
+    # Freeze router parameters BEFORE accelerator setup
+    frozen_count = 0
+    for name, param in model.named_parameters():
+        if param.requires_grad and "router" in name:
+            param.requires_grad = False
+            frozen_count += 1
+            logger.info(f"❄️ Frozen router parameter: {name}")
+    
+    logger.info(f"✅ Frozen {frozen_count} router parameters for GPT-OSS model")
+    return True
+
+
+def test_model_inference_quick(model, tokenizer, stage_name):
+    """Quick inference test to check if model outputs are coherent."""
+    try:
+        logger.info(f"🧪 Running quick inference test at stage: {stage_name}")
+        
+        # Simple test prompt
+        test_prompt = "The quick brown fox"
+        inputs = tokenizer(test_prompt, return_tensors="pt")
+        
+        # Move inputs to model device
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        # Generate a few tokens
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=10,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id
+            )
+        
+        # Decode and log result
+        generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        logger.info(f"🔤 {stage_name} OUTPUT: '{generated_text}'")
+        
+        # Check if output looks reasonable (not just repeated tokens or gibberish)
+        output_tokens = generated_text.split()
+        if len(set(output_tokens)) < 3:
+            logger.warning(f"⚠️ {stage_name}: Output looks repetitive/corrupted!")
+        else:
+            logger.info(f"✅ {stage_name}: Output looks reasonable")
+            
+    except Exception as e:
+        logger.error(f"❌ {stage_name} inference test failed: {e}")
+        import traceback
+        traceback.print_exc()
