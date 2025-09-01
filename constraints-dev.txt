@@ -1,5 +1,5 @@
 absl-py==2.3.1            # via tensorboard
-accelerate==1.10.0        # via peft, trl, -r requirements-cuda.txt, -r requirements-rocm.txt
+accelerate==1.10.1        # via peft, trl, -r requirements-cuda.txt, -r requirements-rocm.txt
 aiofiles==24.1.0          # via -r requirements.txt
 aiohappyeyeballs==2.6.1   # via aiohttp
 aiohttp==3.12.15          # via fsspec
@@ -17,7 +17,7 @@ babel==2.17.0             # via jupyterlab-server
 beautifulsoup4==4.13.5    # via nbconvert
 bitsandbytes==0.47.0      # via -r requirements-cuda.txt
 bleach==6.2.0             # via nbconvert
-cachetools==6.1.0         # via tox
+cachetools==6.2.0         # via tox
 certifi==2025.8.3         # via httpcore, httpx, requests, sentry-sdk
 cffi==1.17.1              # via argon2-cffi-bindings
 cfgv==3.4.0               # via pre-commit
@@ -40,7 +40,7 @@ executing==2.2.0          # via stack-data
 fastjsonschema==2.21.2    # via nbformat
 filelock==3.19.1          # via datasets, huggingface-hub, torch, tox, transformers, virtualenv
 flash-attn==2.7.4.post1   # via -c constraints-dev.txt.in, -r requirements-cuda.txt, -r requirements-rocm.txt
-fonttools==4.59.1         # via matplotlib
+fonttools==4.59.2         # via matplotlib
 fqdn==1.5.1               # via jsonschema
 frozenlist==1.7.0         # via aiohttp, aiosignal
 fsspec==2025.3.0          # via datasets, huggingface-hub, torch
@@ -48,7 +48,7 @@ gitdb==4.0.12             # via gitpython
 gitpython==3.1.45         # via wandb
 grpcio==1.74.0            # via tensorboard
 h11==0.16.0               # via httpcore
-hf-xet==1.1.8             # via huggingface-hub
+hf-xet==1.1.9             # via huggingface-hub
 hjson==3.1.0              # via deepspeed
 httpcore==1.0.9           # via httpx
 httpx==0.28.1             # via jupyterlab
@@ -57,7 +57,7 @@ identify==2.6.13          # via pre-commit
 idna==3.10                # via anyio, httpx, jsonschema, requests, yarl
 iniconfig==2.1.0          # via pytest
 ipykernel==6.30.1         # via jupyter, jupyter-console, jupyterlab, -r requirements-dev.txt
-ipython==9.4.0            # via ipykernel, ipywidgets, jupyter-console, -r requirements-dev.txt
+ipython==9.5.0            # via ipykernel, ipywidgets, jupyter-console, -r requirements-dev.txt
 ipython-pygments-lexers==1.1.1  # via ipython
 ipywidgets==8.1.7         # via jupyter
 isoduration==20.11.0      # via jsonschema
@@ -73,7 +73,7 @@ jupyter-client==8.6.3     # via ipykernel, jupyter-console, jupyter-server, nbcl
 jupyter-console==6.6.3    # via jupyter
 jupyter-core==5.8.1       # via ipykernel, jupyter-client, jupyter-console, jupyter-server, jupyterlab, nbclient, nbconvert, nbformat
 jupyter-events==0.12.0    # via jupyter-server
-jupyter-lsp==2.2.6        # via jupyterlab
+jupyter-lsp==2.3.0        # via jupyterlab
 jupyter-server==2.17.0    # via jupyter-lsp, jupyterlab, jupyterlab-server, notebook, notebook-shim
 jupyter-server-terminals==0.5.3  # via jupyter-server
 jupyterlab==4.4.6         # via jupyter, notebook
@@ -87,11 +87,11 @@ llvmlite==0.44.0          # via numba
 markdown==3.8.2           # via tensorboard
 markdown-it-py==4.0.0     # via rich
 markupsafe==3.0.2         # via jinja2, nbconvert, werkzeug
-matplotlib==3.10.5        # via -r requirements-dev.txt
+matplotlib==3.10.6        # via -r requirements-dev.txt
 matplotlib-inline==0.1.7  # via ipykernel, ipython
 mccabe==0.7.0             # via pylint
 mdurl==0.1.2              # via markdown-it-py
-mistune==3.1.3            # via nbconvert
+mistune==3.1.4            # via nbconvert
 mpmath==1.3.0             # via sympy
 msgpack==1.1.1            # via deepspeed
 multidict==6.6.4          # via aiohttp, yarl
@@ -131,11 +131,11 @@ pathspec==0.12.1          # via mypy
 peft==0.17.1              # via -r requirements.txt
 pexpect==4.9.0            # via ipython
 pillow==11.3.0            # via matplotlib, tensorboard
-platformdirs==4.3.8       # via jupyter-core, pylint, tox, virtualenv, wandb
+platformdirs==4.4.0       # via jupyter-core, pylint, tox, virtualenv, wandb
 pluggy==1.6.0             # via pytest, tox
 pre-commit==4.3.0         # via -r requirements-dev.txt
 prometheus-client==0.22.1  # via jupyter-server
-prompt-toolkit==3.0.51    # via ipython, jupyter-console
+prompt-toolkit==3.0.52    # via ipython, jupyter-console
 propcache==0.3.2          # via aiohttp, yarl
 protobuf==6.32.0          # via tensorboard, wandb
 psutil==7.0.0             # via accelerate, deepspeed, ipykernel, peft
@@ -159,50 +159,50 @@ pytz==2025.2              # via pandas
 pyyaml==6.0.2             # via accelerate, datasets, huggingface-hub, jupyter-events, peft, pre-commit, transformers, wandb, -r requirements.txt
 pyzmq==27.0.2             # via ipykernel, jupyter-client, jupyter-console, jupyter-server
 referencing==0.36.2       # via jsonschema, jsonschema-specifications, jupyter-events
-regex==2025.7.34          # via transformers
+regex==2025.8.29          # via transformers
 requests==2.32.5          # via datasets, huggingface-hub, jupyterlab-server, transformers, wandb
 rfc3339-validator==0.1.4  # via jsonschema, jupyter-events
 rfc3986-validator==0.1.1  # via jsonschema, jupyter-events
 rfc3987-syntax==1.1.0     # via jsonschema
 rich==14.1.0              # via -r requirements.txt
-rpds-py==0.27.0           # via jsonschema, referencing
-ruff==0.12.10             # via -r requirements-dev.txt
+rpds-py==0.27.1           # via jsonschema, referencing
+ruff==0.12.11             # via -r requirements-dev.txt
 safetensors==0.6.2        # via accelerate, peft, transformers
 send2trash==1.8.3         # via jupyter-server
-sentry-sdk==2.35.0        # via wandb
+sentry-sdk==2.35.1        # via wandb
 setuptools==80.9.0        # via jupyterlab, tensorboard
 six==1.17.0               # via python-dateutil, rfc3339-validator
 smmap==5.0.2              # via gitdb
 sniffio==1.3.1            # via anyio
-soupsieve==2.7            # via beautifulsoup4
+soupsieve==2.8            # via beautifulsoup4
 stack-data==0.6.3         # via ipython
 sympy==1.13.1             # via torch
 tensorboard==2.20.0       # via -r requirements-dev.txt
 tensorboard-data-server==0.7.2  # via tensorboard
 terminado==0.18.1         # via jupyter-server, jupyter-server-terminals
 tinycss2==1.4.0           # via bleach
-tokenizers==0.21.4        # via transformers
+tokenizers==0.22.0        # via transformers
 tomlkit==0.13.3           # via pylint
 torch==2.6.0              # via accelerate, bitsandbytes, deepspeed, flash-attn, liger-kernel, peft, -c constraints-dev.txt.in, -r requirements.txt
 tornado==6.5.2            # via ipykernel, jupyter-client, jupyter-server, jupyterlab, notebook, terminado
-tox==4.28.4               # via tox-current-env, -r requirements-dev.txt
+tox==4.29.0               # via tox-current-env, -r requirements-dev.txt
 tox-current-env==0.0.16   # via -r requirements-dev.txt
 tqdm==4.67.1              # via datasets, deepspeed, huggingface-hub, peft, transformers
 traitlets==5.14.3         # via ipykernel, ipython, ipywidgets, jupyter-client, jupyter-console, jupyter-core, jupyter-events, jupyter-server, jupyterlab, matplotlib-inline, nbclient, nbconvert, nbformat
-transformers==4.55.4      # via peft, trl, -r requirements.txt
+transformers==4.56.0      # via peft, trl, -r requirements.txt
 triton==3.2.0             # via liger-kernel, torch
-trl==0.21.0               # via -r requirements.txt
+trl==0.22.1               # via -r requirements.txt
 types-python-dateutil==2.9.0.20250822  # via arrow
 types-pyyaml==6.0.12.20250822  # via -r requirements-dev.txt
 types-requests==2.32.4.20250809  # via types-tqdm
 types-tqdm==4.67.0.20250809  # via -r requirements-dev.txt
-typing-extensions==4.14.1  # via aiosignal, anyio, beautifulsoup4, huggingface-hub, ipython, mypy, pydantic, pydantic-core, referencing, torch, typing-inspection, wandb
+typing-extensions==4.15.0  # via aiosignal, anyio, beautifulsoup4, huggingface-hub, ipython, mypy, pydantic, pydantic-core, referencing, torch, typing-inspection, wandb
 typing-inspection==0.4.1  # via pydantic
 tzdata==2025.2            # via pandas
 uri-template==1.3.0       # via jsonschema
 urllib3==2.5.0            # via requests, sentry-sdk, types-requests
 virtualenv==20.34.0       # via pre-commit, tox
-wandb==0.21.1             # via -r requirements-dev.txt
+wandb==0.21.3             # via -r requirements-dev.txt
 wcwidth==0.2.13           # via prompt-toolkit
 webcolors==24.11.1        # via jsonschema
 webencodings==0.5.1       # via bleach, tinycss2
