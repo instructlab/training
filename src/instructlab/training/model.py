@@ -60,7 +60,7 @@ class Model:
         model_config = AutoConfig.from_pretrained(model_path)
         if model_config.model_type == "gpt_oss":
             # Third Party
-            from transformers import Mxfp4Config
+            from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
 
             quant_config = Mxfp4Config(dequantize=True)
 
