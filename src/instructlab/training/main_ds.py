@@ -111,9 +111,9 @@ def train(
         logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
-    
+
     # Variables for manual loss computation (following mini_trainer approach)
-    batch_num_loss_counted_tokens = 0
+    batch_num_loss_counted_tokens = 0.0
     accumulated_loss = 0.0
     accumulated_aux_loss = 0.0  # For GPT-OSS auxiliary loss
     for epoch in range(args.current_epoch, args.num_epochs):
@@ -137,7 +137,7 @@ def train(
                     inner_pb.update(1)
                 continue
             start = time.time()
-            
+
             # Extract minibatch info (following mini_trainer pattern)
             num_loss_counted_tokens = float(
                 torch.tensor([batch.pop("num_loss_counted_tokens")])
@@ -149,49 +149,49 @@ def train(
             total_length = float(torch.tensor([batch.pop("total_length")]))
             for k in batch:
                 batch[k] = batch[k].to(local_rank)
-            
+
             # Forward pass to get logits
             output = model(
                 **batch,
                 use_cache=False,
             )
-            
+
             # Manual loss computation with reduction="none" following mini_trainer's exact approach
             # Check if this is a GPT-OSS model with auxiliary loss
-            is_gpt_oss = hasattr(output, 'aux_loss') and output.aux_loss is not None
-            
+            is_gpt_oss = hasattr(output, "aux_loss") and output.aux_loss is not None
+
             # Manually compute cross-entropy loss with reduction="none"
             logits = output.logits
             labels = batch["labels"] if "labels" in batch else None
-            
+
             if labels is not None:
                 # Shift logits and labels for causal LM (standard approach)
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
-                
+
                 # Flatten tokens
                 shift_logits = shift_logits.view(-1, shift_logits.size(-1))
                 shift_labels = shift_labels.view(-1)
-                
+
                 # Compute loss with reduction="none" to get per-token losses
                 loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
                 token_losses = loss_fct(shift_logits, shift_labels)
-                
+
                 # Only sum losses for non-padding tokens (labels != -100)
-                valid_tokens = (shift_labels != -100)
+                valid_tokens = shift_labels != -100
                 main_loss_sum = token_losses[valid_tokens].sum()
-                
+
                 if is_gpt_oss:
                     # For GPT-OSS: separate main loss and aux loss
                     aux_loss = output.aux_loss.float()  # Auxiliary loss stays as scalar
-                    
+
                     # Accumulate losses for batch-level tracking
                     accumulated_loss += main_loss_sum
                     accumulated_aux_loss += aux_loss
-                    
+
                     # Store main loss for proper scaling
                     loss = main_loss_sum
-                    
+
                 else:
                     # Standard models: use the summed loss
                     loss = main_loss_sum
@@ -201,37 +201,42 @@ def train(
                 loss = output.loss
 
             # Reduce metrics across devices for logging
-            num_loss_counted_tokens, micro_batch_size, batch_num_loss_counted_tokens = map(
-                float,
-                accelerator.reduce(
-                    torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, batch_num_loss_counted_tokens],
-                        dtype=torch.float32,
-                        device=accelerator.device,
+            num_loss_counted_tokens, micro_batch_size, batch_num_loss_counted_tokens = (
+                map(
+                    float,
+                    accelerator.reduce(
+                        torch.tensor(
+                            [
+                                num_loss_counted_tokens,
+                                micro_batch_size,
+                                batch_num_loss_counted_tokens,
+                            ],
+                            dtype=torch.float32,
+                            device=accelerator.device,
+                        ),
+                        reduction="sum",
                     ),
-                    reduction="sum",
-                ),
+                )
             )
             samples_seen += int(micro_batch_size)
 
             # Scale main loss following mini_trainer approach: loss * world_size / batch_num_loss_counted_tokens
             scaled_main_loss = loss * world_size / batch_num_loss_counted_tokens
-            
+
             # For GPT-OSS: add unscaled auxiliary loss after scaling main loss
             if is_gpt_oss:
                 scaled_loss = scaled_main_loss + aux_loss
             else:
                 scaled_loss = scaled_main_loss
-            
+
             # This is our correctly scaled loss that should be used for all logging
             reported_loss = scaled_loss.detach().item()
-            
+
             # Calculate average loss across all ranks for metrics logging
             avg_loss_across_ranks = accelerator.reduce(
-                torch.tensor(reported_loss, device=accelerator.device), 
-                reduction="mean"
+                torch.tensor(reported_loss, device=accelerator.device), reduction="mean"
             ).item()
-            
+
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {reported_loss:.6f}"
             )
@@ -241,7 +246,7 @@ def train(
                 # Reset accumulators for next logical batch
                 accumulated_loss = 0.0
                 accumulated_aux_loss = 0.0
-                
+
                 global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 accelerator.lr_scheduler.step()
