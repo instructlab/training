@@ -32,6 +32,21 @@ UNMASK_REASONING_END_TOKEN = "<|UNMASK_REASONING_END|>"
 logger = logging.getLogger(__name__)
 
 
+def is_gpt_oss_model(tokenizer):
+    """Check if this is a GPT-OSS model based on tokenizer."""
+    if not tokenizer:
+        return False
+    try:
+        # GPT-OSS models have these special tokens
+        test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
+        for token in test_tokens:
+            # If any of these tokens can't be encoded, it's not GPT-OSS
+            tokenizer.encode(token, add_special_tokens=False)
+        return True
+    except Exception:
+        return False
+
+
 def check_valid_sample(
     tokenizer: PreTrainedTokenizer | PreTrainedTokenizerFast,
     whole_sentence_tk: list[int],
@@ -153,53 +168,69 @@ def unmask_message_content(
             default=None,
         )
 
-    def is_gpt_oss_model():
-        """Check if this is a GPT-OSS model based on tokenizer."""
-        if not tokenizer:
-            return False
-        try:
-            # GPT-OSS models have these special tokens
-            test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
-            for token in test_tokens:
-                # If any of these tokens can't be encoded, it's not GPT-OSS
-                tokenizer.encode(token, add_special_tokens=False)
-            return True
-        except:
-            return False
-
     def is_gpt_oss_assistant_channel(pos):
         """Check if current position is within a GPT-OSS assistant channel pattern."""
         # Look for pattern: <|start|>assistant<|channel|>CHANNEL_NAME<|message|>
         if pos >= len(sentence_tk):
             return False
-        
+
         # Try to encode the expected pattern tokens
         try:
             start_token = tokenizer.encode("<|start|>", add_special_tokens=False)
             assistant_tokens = tokenizer.encode("assistant", add_special_tokens=False)
             channel_token = tokenizer.encode("<|channel|>", add_special_tokens=False)
             message_token = tokenizer.encode("<|message|>", add_special_tokens=False)
-        except:
+        except Exception:
             return False
-        
+
         # Look backwards from current position to see if we're in an assistant channel
         # We need to find the pattern: start_token + assistant_tokens + channel_token + some_text + message_token
         for lookback in range(min(pos + 1, 50)):  # Look back up to 50 tokens
             start_pos = pos - lookback
             if start_pos < 0:
                 break
-            
+
             # Check if we have the start of an assistant channel pattern
-            if (start_pos + len(start_token) + len(assistant_tokens) + len(channel_token) <= len(sentence_tk) and
-                sentence_tk[start_pos:start_pos + len(start_token)] == start_token and
-                sentence_tk[start_pos + len(start_token):start_pos + len(start_token) + len(assistant_tokens)] == assistant_tokens and
-                sentence_tk[start_pos + len(start_token) + len(assistant_tokens):start_pos + len(start_token) + len(assistant_tokens) + len(channel_token)] == channel_token):
-                
+            if (
+                start_pos
+                + len(start_token)
+                + len(assistant_tokens)
+                + len(channel_token)
+                <= len(sentence_tk)
+                and sentence_tk[start_pos : start_pos + len(start_token)] == start_token
+                and sentence_tk[
+                    start_pos + len(start_token) : start_pos
+                    + len(start_token)
+                    + len(assistant_tokens)
+                ]
+                == assistant_tokens
+                and sentence_tk[
+                    start_pos + len(start_token) + len(assistant_tokens) : start_pos
+                    + len(start_token)
+                    + len(assistant_tokens)
+                    + len(channel_token)
+                ]
+                == channel_token
+            ):
                 # Found assistant channel start, now look for the message token ahead
-                message_start = start_pos + len(start_token) + len(assistant_tokens) + len(channel_token)
-                for forward in range(min(len(sentence_tk) - message_start, 20)):  # Look forward up to 20 tokens for message token
-                    if (message_start + forward + len(message_token) <= len(sentence_tk) and
-                        sentence_tk[message_start + forward:message_start + forward + len(message_token)] == message_token):
+                message_start = (
+                    start_pos
+                    + len(start_token)
+                    + len(assistant_tokens)
+                    + len(channel_token)
+                )
+                for forward in range(
+                    min(len(sentence_tk) - message_start, 20)
+                ):  # Look forward up to 20 tokens for message token
+                    if (
+                        message_start + forward + len(message_token) <= len(sentence_tk)
+                        and sentence_tk[
+                            message_start + forward : message_start
+                            + forward
+                            + len(message_token)
+                        ]
+                        == message_token
+                    ):
                         # Found complete assistant channel pattern
                         message_end = message_start + forward + len(message_token)
                         # Check if current position is between message token and next special sequence
@@ -207,7 +238,7 @@ def unmask_message_content(
                             return True
                         break
                 break
-        
+
         return False
 
     special_sequences = [user_tokens, assist_tokens, system_tokens]
@@ -215,7 +246,7 @@ def unmask_message_content(
         special_sequences.append(tool_resp_tokens)
 
     # Check if this is a GPT-OSS model for special handling
-    is_gpt_oss = is_gpt_oss_model()
+    is_gpt_oss = is_gpt_oss_model(tokenizer)
 
     in_pretraining = False
     unmasking = False
@@ -241,7 +272,7 @@ def unmask_message_content(
                 )
             i += len(match)
             continue
-        
+
         # Special case: Check for GPT-OSS assistant channel patterns
         # For GPT-OSS, always unmask assistant channels regardless of unmask flag
         if is_gpt_oss and is_gpt_oss_assistant_channel(i):
@@ -589,9 +620,7 @@ def wrap_masked_messages(
                     )
 
                 new_msg["thinking"] = (
-                    UNMASK_REASONING_BEGIN_TOKEN
-                    + thinking
-                    + UNMASK_REASONING_END_TOKEN
+                    UNMASK_REASONING_BEGIN_TOKEN + thinking + UNMASK_REASONING_END_TOKEN
                 )
             else:
                 # When not enabled, pass through unchanged
@@ -653,7 +682,10 @@ def unmask_messages(
     for idx, msg in enumerate(msgs_with_unmasking):
         if msg["role"] in unmask_roles:
             regions = []
-            if has_reasoning and (msg.get("reasoning_content") is not None or msg.get("thinking") is not None):
+            if has_reasoning and (
+                msg.get("reasoning_content") is not None
+                or msg.get("thinking") is not None
+            ):
                 regions.append("reasoning")
             if msg.get("content") is not None:
                 regions.append("content")
@@ -872,22 +904,8 @@ def unmask_sample(
     # TODO(osilkin): we should define an unmasking policy that
     # enables the user to more dynamically choose what should be unmasked and not.
 
-    def is_gpt_oss_model():
-        """Check if this is a GPT-OSS model based on tokenizer."""
-        if not tokenizer:
-            return False
-        try:
-            # GPT-OSS models have these special tokens
-            test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
-            for token in test_tokens:
-                # If any of these tokens can't be encoded, it's not GPT-OSS
-                tokenizer.encode(token, add_special_tokens=False)
-            return True
-        except:
-            return False
-
     # Check if this is a GPT-OSS model for special handling
-    is_gpt_oss = is_gpt_oss_model()
+    is_gpt_oss = is_gpt_oss_model(tokenizer)
 
     # if sample has `unmask` set to true, we unmask everything other than the system role,
     # else we only unmask assistant
@@ -896,7 +914,7 @@ def unmask_sample(
         # TODO(osilkin): this computation happens everytime but we could optimize it by getting all
         # the unique roles ahead of time
         unmask_roles_set = set(m["role"] for m in sample["messages"]) - {"system"}
-    
+
     # For GPT-OSS models, always unmask assistant regardless of unmask flag
     elif is_gpt_oss:
         unmask_roles_set = {"assistant"}

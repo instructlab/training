@@ -99,7 +99,10 @@ def setup_dataloader(
     grad_accum=1,
 ) -> DataLoader:
     collate_fn = make_batch_aware_collate_fn(
-        pad_token_id, flash_enabled=flash_enabled, max_batch_len=max_batch_len, grad_accum=grad_accum
+        pad_token_id,
+        flash_enabled=flash_enabled,
+        max_batch_len=max_batch_len,
+        grad_accum=grad_accum,
     )
     rank = int(os.environ["RANK"])
     world_size = int(os.environ["WORLD_SIZE"])

@@ -30,7 +30,7 @@ except ImportError:
 # Third Party
 from peft import LoraConfig
 from torch.optim import AdamW
-from transformers import PreTrainedTokenizer, AutoConfig
+from transformers import AutoConfig, PreTrainedTokenizer
 import torch
 
 # First Party
@@ -61,7 +61,7 @@ class Model:
         if model_config.model_type == "gpt_oss":
             # Third Party
             from transformers import Mxfp4Config
-            
+
             quant_config = Mxfp4Config(dequantize=True)
 
         # TODO: Add support for 8bit quantization
@@ -85,7 +85,9 @@ class Model:
         if flash_enabled and model_config.model_type != "gpt_oss":
             self.base_model_args["attn_implementation"] = "flash_attention_2"
         elif flash_enabled and model_config.model_type == "gpt_oss":
-            self.base_model_args["attn_implementation"]="kernels-community/vllm-flash-attn3"
+            self.base_model_args["attn_implementation"] = (
+                "kernels-community/vllm-flash-attn3"
+            )
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
@@ -465,17 +467,19 @@ def setup_optimizer(
                 optimizer_cls = DeepSpeedCPUAdam
             else:
                 optimizer_cls = FusedAdam
-    
+
     # Filter parameters to only include those that require gradients
     # This handles cases where some parameters (e.g., frozen router params) have requires_grad=False
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-    
+
     # Count trainable parameters for logging
     total_params = sum(1 for _ in model.parameters())
     trainable_count = sum(1 for p in model.parameters() if p.requires_grad)
     if total_params != trainable_count:
-        logger.info(f"📊 Using {trainable_count}/{total_params} trainable parameters in optimizer")
-    
+        logger.info(
+            f"📊 Using {trainable_count}/{total_params} trainable parameters in optimizer"
+        )
+
     factory = functools.partial(
         optimizer_cls, trainable_params, lr=learning_rate, betas=betas
     )
