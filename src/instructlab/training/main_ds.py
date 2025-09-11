@@ -37,6 +37,7 @@ except ImportError:
 from tqdm import tqdm
 from transformers import AutoConfig
 import torch
+import torch.distributed as dist
 import torch.distributed
 
 # First Party
@@ -61,14 +62,14 @@ from instructlab.training.model import (
     Model,
     setup_optimizer,
 )
-from instructlab.training.multipack_sampler import (
-    find_packing_max_batch_len_and_grad_accum,
-)
-from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.sampler import get_data_loader
+
+# Removed old multipack_sampler import - using mini_trainer approach
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
+    freeze_gpt_oss_router_params,
     load_latest_full_state,
     save_checkpoint,
     save_hf_format_accelerate,
@@ -94,7 +95,8 @@ def train(
     metric_logger = logging.getLogger("instructlab.training.metrics")
     base_logger = logging.getLogger("instructlab.training")
 
-    batch_size = args.effective_batch_size // accelerator.grad_accum
+    # Mini_trainer approach: batch_size will be determined dynamically by data loader
+    # For save logic, use effective_batch_size since that's the target
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
@@ -102,17 +104,21 @@ def train(
         samples_seen = args.samples_seen
 
     if accelerator.save_samples > 0:
-        accelerator.save_samples = (accelerator.save_samples // batch_size) * batch_size
         logger.info("Number of samples per save: %d", args.save_samples)
 
     if args.save_samples_ds is not None:
-        args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
+
+    # Variables for manual loss computation (following mini_trainer approach)
+    batch_num_loss_counted_tokens = 0.0
+    accumulated_loss = 0.0
+    accumulated_aux_loss = 0.0  # For GPT-OSS auxiliary loss
     for epoch in range(args.current_epoch, args.num_epochs):
         if args.sampler in ("multipack"):
-            accelerator.train_loader.batch_sampler.set_epoch(epoch)
+            # Mini_trainer approach uses regular sampler, not batch_sampler
+            accelerator.train_loader.sampler.set_epoch(epoch)
         elif args.sampler in ("distributed"):
             accelerator.train_loader.sampler.set_epoch(epoch)
         else:
@@ -131,51 +137,151 @@ def train(
                     inner_pb.update(1)
                 continue
             start = time.time()
-            num_loss_counted_tokens = float(
-                torch.tensor([batch.pop("num_loss_counted_tokens")])
-            )
-            micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
-            total_length = float(torch.tensor([batch.pop("total_length")]))
-            for k in batch:
-                batch[k] = batch[k].to(local_rank)
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
-            log_loss = loss.detach().item()
 
-            num_loss_counted_tokens, micro_batch_size, log_loss = map(
+            # Mini_trainer approach: batch is a list of minibatches
+            # Extract batch-level info (same across all minibatches)
+            batch_num_loss_counted_tokens = float(
+                torch.tensor([batch[0]["batch_num_loss_counted_tokens"]])
+            )
+
+            # Count minibatches for logging
+            num_minibatches = len(batch)
+
+            # Accumulate minibatch-specific metrics across the batch
+            batch_total_samples = 0.0
+            batch_total_length = 0.0
+
+            for _, mb in enumerate(batch):
+                # Extract minibatch-specific info (and remove from model inputs)
+                mb.pop("num_loss_counted_tokens")  # Not needed per minibatch
+                mb.pop(
+                    "batch_num_loss_counted_tokens"
+                )  # Not needed in model inputs (we use the batch-level value)
+                micro_batch_size = float(torch.tensor([mb.pop("num_samples")]))
+                total_length = float(torch.tensor([mb.pop("total_length")]))
+
+                # Accumulate minibatch metrics for batch-level reporting
+                batch_total_samples += micro_batch_size
+                batch_total_length += total_length
+
+                for k in mb:
+                    mb[k] = mb[k].to(local_rank)
+
+                # Forward pass to get logits
+                output = model(
+                    **mb,
+                    use_cache=False,
+                )
+
+                # Manual loss computation with reduction="none" following mini_trainer's exact approach
+                # Check if this is a GPT-OSS model with auxiliary loss
+                is_gpt_oss = hasattr(output, "aux_loss") and output.aux_loss is not None
+
+                # Manually compute cross-entropy loss with reduction="none"
+                logits = output.logits
+                labels = mb["labels"] if "labels" in mb else None
+
+                if labels is not None:
+                    # Shift logits and labels for causal LM (standard approach)
+                    shift_logits = logits[..., :-1, :].contiguous()
+                    shift_labels = labels[..., 1:].contiguous()
+
+                    # Flatten tokens
+                    shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+                    shift_labels = shift_labels.view(-1)
+
+                    # Compute loss with reduction="none" to get per-token losses
+                    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+                    token_losses = loss_fct(shift_logits, shift_labels)
+
+                    # Only sum losses for non-padding tokens (labels != -100)
+                    valid_tokens = shift_labels != -100
+                    main_loss_sum = token_losses[valid_tokens].sum()
+
+                    if is_gpt_oss:
+                        # For GPT-OSS: separate main loss and aux loss
+                        aux_loss = (
+                            output.aux_loss.float()
+                        )  # Auxiliary loss stays as scalar
+
+                        # Accumulate losses for batch-level tracking
+                        accumulated_loss += main_loss_sum
+                        accumulated_aux_loss += aux_loss
+
+                        # Store main loss for proper scaling
+                        loss = main_loss_sum
+
+                    else:
+                        # Standard models: use the summed loss
+                        loss = main_loss_sum
+                        accumulated_loss += loss
+                else:
+                    # Fallback if no labels provided
+                    loss = output.loss
+
+                # Scale main loss following mini_trainer approach: loss * world_size / batch_num_loss_counted_tokens
+                scaled_main_loss = loss * world_size / batch_num_loss_counted_tokens
+
+                # For GPT-OSS: add unscaled auxiliary loss after scaling main loss
+                if is_gpt_oss:
+                    scaled_loss = scaled_main_loss + aux_loss
+                else:
+                    scaled_loss = scaled_main_loss
+
+                # Backward pass for this minibatch
+                accelerator.backward(scaled_loss)
+
+            # After processing all minibatches in the batch, take optimizer step
+            # Reduce rank-specific metrics across devices for logging
+            batch_total_samples, batch_total_length = map(
                 float,
                 accelerator.reduce(
                     torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_loss],
+                        [
+                            batch_total_samples,
+                            batch_total_length,
+                        ],
                         dtype=torch.float32,
                         device=accelerator.device,
                     ),
                     reduction="sum",
                 ),
             )
-            samples_seen += int(micro_batch_size)
+            # batch_num_loss_counted_tokens is already the global total, no need to reduce
+            samples_seen += int(batch_total_samples)
 
-            # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
-            base_logger.info(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
+            # Calculate average loss across all ranks for metrics logging
+            # Use accumulated_loss which was summed across all minibatches
+            total_batch_loss = (
+                accumulated_loss * world_size / batch_num_loss_counted_tokens
             )
-            accelerator.backward(loss)
+            if is_gpt_oss:
+                total_batch_loss += accumulated_aux_loss
 
-            if global_step % accelerator.grad_accum == 0:
-                global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                accelerator.lr_scheduler.step()
-                optimizer.zero_grad()
+            avg_loss_across_ranks = accelerator.reduce(
+                torch.tensor(
+                    total_batch_loss.detach().item(), device=accelerator.device
+                ),
+                reduction="mean",
+            ).item()
+
+            base_logger.info(
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {avg_loss_across_ranks:.6f}"
+            )
+
+            # Reset accumulators for next batch
+            accumulated_loss = 0.0
+            accumulated_aux_loss = 0.0
+
+            # Take optimizer step after all minibatches
+            global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            accelerator.lr_scheduler.step()
+            optimizer.zero_grad()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
-                overall_throughput = args.samples_per_gpu * world_size / elapsed_time
+                overall_throughput = batch_total_samples / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
@@ -202,10 +308,11 @@ def train(
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "num_tokens_rank0": int(total_length),
-                        "batch_size": int(micro_batch_size),
-                        "total_loss": float(log_loss / num_loss_counted_tokens),
+                        "num_loss_counted_tokens": int(batch_num_loss_counted_tokens),
+                        "num_tokens_rank0": int(batch_total_length),
+                        "batch_size": int(batch_total_samples),
+                        "num_minibatches": num_minibatches,
+                        "avg_loss": float(avg_loss_across_ranks),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(accelerator.train_loader.dataset),
@@ -215,9 +322,7 @@ def train(
                     extra={"step": global_step},
                 )
 
-            if args.save_samples > 0 and (
-                global_step * batch_size % args.save_samples == 0
-            ):
+            if args.save_samples > 0 and (samples_seen % args.save_samples == 0):
                 base_logger.debug(f"Saving checkpoint at step {global_step}")
                 save_checkpoint(
                     args=args,
@@ -328,12 +433,6 @@ def main(args):
 
     flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
 
-    dataset = setup_dataset(
-        args.data_path,
-        mock=args.mock_data,
-        mock_len=args.mock_len,
-    )
-
     # This model class wraps the various AutoModel classes we support
     # based on model_type, and model_path -> choose auto_model
     lora_config = None
@@ -373,81 +472,53 @@ def main(args):
 
     args.base_model_args = m.base_model_args
 
-    try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not flash_enabled,
-            dataset=dataset,
-            seed=args.seed,
-        )
-        args.sampler = "multipack"
-    except RuntimeError as e:
-        logger.error(e)
+    # IMPORTANT: Freeze GPT-OSS router parameters BEFORE accelerator setup
+    # This must happen before FSDP preparation to avoid requires_grad uniformity issues
+    is_gpt_oss = freeze_gpt_oss_router_params(m.model)
 
-        # fallback to grad accum = 1
-        # NOTE: packing max batch len will not be used
-        packing_max_batch_len = None
-        grad_accum = 1
-        args.sampler = "distributed"
+    # Mini_trainer approach: simplified setup
+    # No complex calculations needed - the data loader handles everything
+    packing_max_batch_len = args.max_batch_len
+    args.sampler = "multipack"
 
-    args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
-    )
+    # Mini_trainer approach: use effective_batch_size as the data loader batch_size
+    # Let the collator handle distribution across GPUs and dynamic minibatching
+    batch_size = args.effective_batch_size
 
-    train_loader = setup_dataloader(
-        dataset,
-        tokenizer.pad_token_id,
-        num_workers=8,
-        flash_enabled=flash_enabled,
-        max_batch_len=args.max_batch_len,
-        packing_max_batch_len=packing_max_batch_len,
-        samples_per_gpu=args.samples_per_gpu,
-        sampler=args.sampler,
+    train_loader = get_data_loader(
+        data_path=args.data_path,
+        batch_size=batch_size,
+        max_tokens_per_gpu=packing_max_batch_len,
         seed=args.seed,
+        rank=dist.get_rank(),
+        world_size=dist.get_world_size(),
+        num_workers=8  # I don't like this but am setting it for consistency
     )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        logger.warning(
-            "The dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!"
-        )
-        args.sampler = "distributed"
-        train_loader = setup_dataloader(
-            dataset,
-            tokenizer.pad_token_id,
-            num_workers=8,
-            flash_enabled=flash_enabled,
-            max_batch_len=args.max_batch_len,
-            packing_max_batch_len=packing_max_batch_len,
-            samples_per_gpu=args.samples_per_gpu,
-            sampler=args.sampler,
-            seed=args.seed,
-        )
 
     if args.local_rank == 0:
         metric_logger.info(
             {
                 "num_gpus": torch.distributed.get_world_size(),
-                "avg_sample_len": dataset.get_lengths().mean(),
+                "avg_sample_len": train_loader.dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
                 "packing_max_batch_len": packing_max_batch_len,
-                "grad_accum": grad_accum,
+                # grad_accum will be determined dynamically per batch
                 "num_batches": len(train_loader),
-                "avg_samples_per_batch": len(dataset) / len(train_loader),
-                "samples_per_gpu": args.samples_per_gpu,
-                "total_samples": len(dataset),  # emit the total number of samples
+                "avg_samples_per_batch": len(train_loader.dataset) / len(train_loader),
+                "total_samples": len(train_loader.dataset),  # emit the total number of samples
             },
             extra={"hparams": True},
         )
     # accelerator does not need optimizer to init, in fact, the optimizer needs to be initialized AFTER the Accelerator
+    # Required for DeepSpeed/FSDP configuration even though mini_trainer uses dynamic approach
+    # These set up the distributed framework but actual batching is handled dynamically
+    samples_per_gpu = 1  # Base unit - actual samples determined by data loader
+    grad_accum = 1  # Base unit - actual accumulation handled by minibatch loop
+
     accelerator = Accelerator(
         model=m,
-        samples_per_gpu=args.samples_per_gpu,
+        samples_per_gpu=samples_per_gpu,
         grad_accum=grad_accum,
         train_loader=train_loader,
         distributed_framework=DistributedBackend(args.distributed_training_framework),
@@ -456,6 +527,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_pin_memory=args.cpu_offload_optimizer_pin_memory,
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
+        fsdp_use_orig_params=is_gpt_oss,  # Enable use_orig_params for GPT-OSS models
         save_samples=args.save_samples,
     )
     # optimizer needs model that has been prepared by accelerator

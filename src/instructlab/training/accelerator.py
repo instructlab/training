@@ -32,6 +32,7 @@ class Accelerator:
         deepspeed_cpu_offload_optimizer_pin_memory: Optional[bool] = False,
         deepspeed_cpu_offload_optimizer_ratio: Optional[float] = None,
         fsdp_cpu_offload_params: Optional[bool] = False,
+        fsdp_use_orig_params: bool = False,  # For GPT-OSS router freezing
     ):
         self.samples_per_gpu = samples_per_gpu
         self.save_samples = save_samples
@@ -48,6 +49,7 @@ class Accelerator:
             deepspeed_cpu_offload_optimizer_ratio
         )
         self.fsdp_cpu_offload_params = fsdp_cpu_offload_params
+        self.fsdp_use_orig_params = fsdp_use_orig_params
 
         if self.distributed_framework == DistributedBackend.DEEPSPEED:
             # Standard
@@ -162,8 +164,12 @@ class Accelerator:
 
         # `use_orig_params` must be disabled when using LoRA and FSDP together
         # Source: https://huggingface.co/docs/peft/en/accelerate/fsdp#the-important-parts
+        # But for GPT-OSS models, we need it enabled to support frozen router parameters
         if self.model.lora_config is not None:
             fsdp_plugin.use_orig_params = False
+        elif self.fsdp_use_orig_params:
+            # Enable for GPT-OSS models with frozen router parameters
+            fsdp_plugin.use_orig_params = True
 
         return fsdp_plugin
 
