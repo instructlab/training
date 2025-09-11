@@ -37,6 +37,7 @@ except ImportError:
 from tqdm import tqdm
 from transformers import AutoConfig
 import torch
+import torch.distributed as dist
 import torch.distributed
 
 # First Party
@@ -61,9 +62,9 @@ from instructlab.training.model import (
     Model,
     setup_optimizer,
 )
+from instructlab.training.sampler import get_data_loader
 
 # Removed old multipack_sampler import - using mini_trainer approach
-from instructlab.training.token_dataset import setup_dataloader, setup_dataset
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
@@ -432,12 +433,6 @@ def main(args):
 
     flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
 
-    dataset = setup_dataset(
-        args.data_path,
-        mock=args.mock_data,
-        mock_len=args.mock_len,
-    )
-
     # This model class wraps the various AutoModel classes we support
     # based on model_type, and model_path -> choose auto_model
     lora_config = None
@@ -490,43 +485,28 @@ def main(args):
     # Let the collator handle distribution across GPUs and dynamic minibatching
     batch_size = args.effective_batch_size
 
-    train_loader = setup_dataloader(
-        dataset,
-        num_workers=8,
-        packing_max_batch_len=packing_max_batch_len,
+    train_loader = get_data_loader(
+        data_path=args.data_path,
         batch_size=batch_size,
+        max_tokens_per_gpu=packing_max_batch_len,
         seed=args.seed,
-        data_path=args.data_path if not args.mock_data else None,
+        rank=dist.get_rank(),
+        world_size=dist.get_world_size(),
+        num_workers=8  # I don't like this but am setting it for consistency
     )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        logger.warning(
-            "The dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!"
-        )
-        args.sampler = "distributed"
-        train_loader = setup_dataloader(
-            dataset,
-            num_workers=8,
-            packing_max_batch_len=packing_max_batch_len,
-            batch_size=batch_size,
-            seed=args.seed,
-            data_path=args.data_path if not args.mock_data else None,
-        )
 
     if args.local_rank == 0:
         metric_logger.info(
             {
                 "num_gpus": torch.distributed.get_world_size(),
-                "avg_sample_len": dataset.get_lengths().mean(),
+                "avg_sample_len": train_loader.dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
                 "packing_max_batch_len": packing_max_batch_len,
                 # grad_accum will be determined dynamically per batch
                 "num_batches": len(train_loader),
-                "avg_samples_per_batch": len(dataset) / len(train_loader),
-                "total_samples": len(dataset),  # emit the total number of samples
+                "avg_samples_per_batch": len(train_loader.dataset) / len(train_loader),
+                "total_samples": len(train_loader.dataset),  # emit the total number of samples
             },
             extra={"hparams": True},
         )
