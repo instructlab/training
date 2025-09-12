@@ -1,14 +1,14 @@
 # Standard
 from copy import deepcopy
 from functools import partial
-from typing import Callable, Optional
+from typing import Optional
 import logging
 
 # Third Party
 from accelerate import Accelerator as TransformersAccel
 from accelerate.utils import DeepSpeedPlugin, FullyShardedDataParallelPlugin
 from peft.utils.other import fsdp_auto_wrap_policy
-from torch.distributed.fsdp import BackwardPrefetch, MixedPrecision, ShardingStrategy
+from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader

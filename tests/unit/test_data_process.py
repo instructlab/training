@@ -1,27 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from unittest.mock import Mock, patch
-import tempfile
+from unittest.mock import MagicMock, patch
 import typing as t
 import unittest
 
-try:
-    # Third Party
-    import pytest
-
-    PYTEST_AVAILABLE = True
-except ImportError:
-    PYTEST_AVAILABLE = False
-
-try:
-    # Third Party
-    from transformers import AutoTokenizer, PreTrainedTokenizer
-
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-    PreTrainedTokenizer = None
+# Third Party
+from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerBase
 
 # First Party
 from instructlab.training.data_process import (
@@ -43,10 +28,8 @@ class TestComprehensiveUnmasking(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         # Mock tokenizer for basic tests
-        if TRANSFORMERS_AVAILABLE:
-            self.mock_tokenizer = Mock(spec=PreTrainedTokenizer)
-        else:
-            self.mock_tokenizer = Mock()
+        self.mock_tokenizer = MagicMock(spec=PreTrainedTokenizerBase)
+        self.mock_tokenizer.name_or_path = "test-model"
 
         # Set up token IDs for unmask tokens
         self.unmask_begin_id = 1001
@@ -366,7 +349,8 @@ class TestComprehensiveUnmasking(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(len(result["input_ids"]), len(result["labels"]))
 
-    def test_unmask_sample_function(self):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_function(self, mock_is_gpt_oss):
         """Test the unmask_sample function with various scenarios."""
         sample_scenarios = [
             # Basic conversation
@@ -528,10 +512,8 @@ class TestReasoningContentSupport(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         # Mock tokenizer for basic tests
-        if TRANSFORMERS_AVAILABLE:
-            self.mock_tokenizer = Mock(spec=PreTrainedTokenizer)
-        else:
-            self.mock_tokenizer = Mock()
+        self.mock_tokenizer = MagicMock(spec=PreTrainedTokenizerBase)
+        self.mock_tokenizer.name_or_path = "test-model"
         self.mock_tokenizer.encode.side_effect = (
             lambda text, add_special_tokens=False: [
                 hash(text) % 1000 for _ in text.split()
@@ -796,7 +778,8 @@ class TestReasoningContentSupport(unittest.TestCase):
         self.assertEqual(wrapped[0]["content"], "What is 5*7?")
         self.assertNotIn("reasoning_content", wrapped[0])
 
-    def test_unmask_sample_with_reasoning_content(self):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_with_reasoning_content(self, mock_is_gpt_oss):
         """Test that unmask_sample correctly processes samples with reasoning_content."""
         sample = {
             "messages": [
@@ -820,7 +803,8 @@ class TestReasoningContentSupport(unittest.TestCase):
         self.assertIn("labels", result)
         self.assertIn("len", result)
 
-    def test_unmask_sample_with_unmask_flag(self):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_with_unmask_flag(self, mock_is_gpt_oss):
         """Test that unmask_sample correctly handles the unmask flag."""
         sample = {
             "messages": [
@@ -846,18 +830,13 @@ class TestReasoningContentSupport(unittest.TestCase):
         self.assertIn("len", result)
 
 
-@unittest.skipUnless(TRANSFORMERS_AVAILABLE, "transformers library not available")
 class TestReasoningContentWithRealTokenizers(unittest.TestCase):
     """Test reasoning_content functionality with real tokenizers."""
 
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest not available")
     def test_with_qwen_tokenizer(self):
         """Test reasoning_content functionality with Qwen3-32B tokenizer."""
-        try:
-            # Use a smaller Qwen model that's more readily available
-            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-32B")
-        except Exception as e:
-            self.skipTest(f"Qwen tokenizer not available: {e}")
+        # Use a smaller Qwen model that's more readily available
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-4B")
 
         # Add the unmask tokens to the tokenizer
         tokenizer.add_special_tokens(
@@ -911,15 +890,9 @@ class TestReasoningContentWithRealTokenizers(unittest.TestCase):
         self.assertNotIn(unmask_begin_id, result["input_ids"])
         self.assertNotIn(unmask_end_id, result["input_ids"])
 
-    @unittest.skipUnless(PYTEST_AVAILABLE, "pytest not available")
     def test_with_mistral_tokenizer(self):
         """Test reasoning_content functionality with Mistral tokenizer."""
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                "mistralai/Mistral-7B-Instruct-v0.1"
-            )
-        except Exception as e:
-            self.skipTest(f"Mistral tokenizer not available: {e}")
+        tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
 
         # Add the unmask tokens to the tokenizer
         tokenizer.add_special_tokens(

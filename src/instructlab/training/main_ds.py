@@ -37,7 +37,6 @@ except ImportError:
 from tqdm import tqdm
 from transformers import AutoConfig
 import torch
-import torch.distributed
 import torch.distributed as dist
 
 # First Party
@@ -67,7 +66,6 @@ from instructlab.training.sampler import get_data_loader
 
 # Removed old multipack_sampler import - using mini_trainer approach
 from instructlab.training.tokenizer_utils import setup_tokenizer
-from instructlab.training.type_definitions import CollatedItem, ModelInputs
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
@@ -142,7 +140,7 @@ def train(
             samples_seen += batch_metrics.total_samples
 
             base_logger.info(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {avg_loss_across_ranks:.6f}, grad_accum_steps = {batch_metrics.grad_accum_steps}"
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {avg_loss_across_ranks:.6f}, grad_accum_steps = {batch_metrics.grad_accum_steps}"
             )
 
             # Take optimizer step after all minibatches
@@ -172,7 +170,7 @@ def train(
                     {
                         "epoch": epoch,
                         "step": global_step,
-                        "rank": torch.distributed.get_rank(),
+                        "rank": dist.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
@@ -203,7 +201,7 @@ def train(
                     hf_format=True,
                 )
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
-                torch.distributed.barrier()
+                dist.barrier()
 
             global_step += 1
             if local_rank == 0:
@@ -223,7 +221,7 @@ def train(
                 epoch=epoch,
             )
             base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
-            torch.distributed.barrier()
+            dist.barrier()
 
     if args.save_last:
         save_hf_format_accelerate(
@@ -291,14 +289,14 @@ def main(args):
 
     timeout = _get_collective_timeout()
     if timeout is not None:
-        torch.distributed.init_process_group(timeout=timeout)
+        dist.init_process_group(timeout=timeout)
     else:
-        torch.distributed.init_process_group()
+        dist.init_process_group()
 
-    args.global_rank = torch.distributed.get_rank()
+    args.global_rank = dist.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
-    torch.distributed.all_reduce(tensor)
-    torch.distributed.barrier()
+    dist.all_reduce(tensor)
+    dist.barrier()
 
     flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
 
@@ -379,7 +377,7 @@ def main(args):
     if args.local_rank == 0:
         metric_logger.info(
             {
-                "num_gpus": torch.distributed.get_world_size(),
+                "num_gpus": dist.get_world_size(),
                 "avg_sample_len": train_loader.dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
@@ -439,8 +437,8 @@ def main(args):
         accelerator=accelerator,
     )
 
-    torch.distributed.barrier()
-    torch.distributed.destroy_process_group()
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 # public API

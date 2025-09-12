@@ -180,8 +180,7 @@ def _padded_batch_packing_core(
     for i in range(n_my_batches):
         batch_idx = my_batch_indices[i]
         size = temp_batch_sizes[batch_idx]
-        if size > max_batch_len:
-            max_batch_len = size
+        max_batch_len = max(max_batch_len, size)
 
     result_indices = np.full((n_my_batches, max_batch_len), -1, dtype=np.int64)
     result_sizes = np.zeros(n_my_batches, dtype=np.int64)

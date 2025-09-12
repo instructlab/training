@@ -32,7 +32,6 @@ from peft import LoraConfig
 from torch.optim import AdamW
 from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
 from transformers import (
-    AutoConfig,
     AutoModelForCausalLM,
     BitsAndBytesConfig,
     PreTrainedTokenizer,

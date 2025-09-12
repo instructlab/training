@@ -896,7 +896,10 @@ class TestUnmaskSampleLogic:
         tokenizer.apply_chat_template = mock_apply_chat_template
         return tokenizer
 
-    def test_unmask_sample_unmask_false_logic(self, mock_tokenizer_for_unmask_sample):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_unmask_false_logic(
+        self, mock_is_gpt_oss, mock_tokenizer_for_unmask_sample
+    ):
         """Test unmask: False logic - should only unmask assistant role."""
         sample = {
             "messages": [
@@ -929,7 +932,10 @@ class TestUnmaskSampleLogic:
                     f"Assistant token {token} should be unmasked"
                 )
 
-    def test_unmask_sample_unmask_true_logic(self, mock_tokenizer_for_unmask_sample):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_unmask_true_logic(
+        self, mock_is_gpt_oss, mock_tokenizer_for_unmask_sample
+    ):
         """Test unmask: True logic - should unmask user and assistant, but not system."""
         sample = {
             "messages": [
@@ -963,7 +969,10 @@ class TestUnmaskSampleLogic:
                     f"User/Assistant token {token} should be unmasked"
                 )
 
-    def test_unmask_sample_comparison(self, mock_tokenizer_for_unmask_sample):
+    @patch("instructlab.training.data_process.is_gpt_oss_model", return_value=False)
+    def test_unmask_sample_comparison(
+        self, mock_is_gpt_oss, mock_tokenizer_for_unmask_sample
+    ):
         """Test that unmask: True unmasks more tokens than unmask: False."""
         sample_base = {
             "messages": [

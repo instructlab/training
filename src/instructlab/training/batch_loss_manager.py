@@ -15,7 +15,9 @@ import torch
 import torch.distributed
 
 # First Party
-from instructlab.training.type_definitions import CollatedItem, ModelInputs, ModelLosses
+from instructlab.training.accelerator import Accelerator
+from instructlab.training.model import Model
+from instructlab.training.type_definitions import CollatedItem, ModelInputs
 
 logger = logging.getLogger("instructlab.training")
 
@@ -54,10 +56,10 @@ class BatchLossManager:
             world_size: Number of distributed processes
             local_rank: Local rank of the current process
         """
-        self.model = model
-        self.accelerator = accelerator
-        self.world_size = world_size
-        self.local_rank = local_rank
+        self.model: Model = model
+        self.accelerator: Accelerator = accelerator
+        self.world_size: int = world_size
+        self.local_rank: int = local_rank
         self.torch_device = torch.device("cuda", local_rank)
 
     def process_batch(self, batch: list[CollatedItem]) -> tuple[BatchMetrics, float]:
