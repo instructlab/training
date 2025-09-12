@@ -14,11 +14,13 @@ import random
 import subprocess
 import sys
 import time
+import traceback
 import warnings
 
 # Third Party
 # pylint: disable=no-name-in-module
 from accelerate import Accelerator, DistributedType
+from peft import LoraConfig, LoraModel
 from torch import distributed as dist
 from torch import nn
 from torch.distributed import get_rank, is_initialized
@@ -35,6 +37,11 @@ from instructlab.training.config import (
     DistributedBackend,
     QuantizeDataType,
     TrainingArgs,
+)
+from instructlab.training.gpt_oss_utils_correct import (
+    add_gpt_oss_quantization_config,
+    convert_dequantized_to_quantized_format_correct,
+    is_gpt_oss,
 )
 from instructlab.training.model import Model
 
@@ -195,64 +202,6 @@ class StreamablePopen(subprocess.Popen):
                     full_log_file.write(byte)
                 else:
                     break
-
-
-def make_batch_aware_collate_fn(
-    pad_token_id, flash_enabled=True, max_batch_len=60000, grad_accum=1
-):
-    """
-    Creates a collate function that computes batch_num_loss_counted_tokens following mini_trainer approach.
-
-    This wrapper groups minibatches into logical batches and pre-computes the total token count
-    across all gradient accumulation steps, embedding this total in each minibatch.
-    """
-
-    # Create the base collate function
-    base_collate_fn = make_collate_fn(pad_token_id, flash_enabled, max_batch_len)
-
-    # State for tracking logical batches
-    minibatch_buffer = []
-    batch_token_counts = []
-
-    def batch_aware_collate_fn(batch):
-        # Process this minibatch with the base collate function
-        minibatch = base_collate_fn(batch)
-
-        # Add to buffer and track token count
-        minibatch_buffer.append(minibatch)
-        batch_token_counts.append(minibatch["num_loss_counted_tokens"])
-
-        # When we have enough minibatches for one logical batch, compute total and distribute
-        if len(minibatch_buffer) >= grad_accum:
-            # Compute total tokens across entire logical batch (following mini_trainer)
-            total_batch_tokens = sum(batch_token_counts[:grad_accum])
-
-            # Embed this total in each minibatch in the logical batch
-            for mb in minibatch_buffer[:grad_accum]:
-                mb["batch_num_loss_counted_tokens"] = total_batch_tokens
-
-            # Return the first minibatch and update buffer
-            result = minibatch_buffer.pop(0)
-            batch_token_counts.pop(0)
-
-            return result
-        else:
-            # For incomplete logical batches, estimate the total (this handles the last batch)
-            # Use current accumulated tokens scaled by expected batch size
-            if len(minibatch_buffer) > 0:
-                avg_tokens_per_mb = sum(batch_token_counts) / len(batch_token_counts)
-                estimated_total = avg_tokens_per_mb * grad_accum
-
-                for mb in minibatch_buffer:
-                    mb["batch_num_loss_counted_tokens"] = estimated_total
-
-            # Return the first available minibatch
-            if minibatch_buffer:
-                result = minibatch_buffer.pop(0)
-                batch_token_counts.pop(0)
-                return result
-
-    return batch_aware_collate_fn
 
 
 def make_collate_fn(pad_token_id, flash_enabled=True, max_batch_len=60000):
@@ -449,8 +398,6 @@ def save_fsdp_lora_model(
         model (FSDP): FSDP model as prepared by `accelerate.Accelerator`
         accelerator (Accelerator): The given accelerator object.
     """
-    # Third Party
-    from peft import LoraConfig, LoraModel
 
     if accelerator.distributed_type != DistributedType.FSDP:
         raise RuntimeError(
@@ -503,10 +450,6 @@ def save_fsdp_gpt_oss_model(
 ):
     """Save GPT-OSS model with parameter conversion, following FSDP LoRA pattern."""
     # Local
-    from .gpt_oss_utils_correct import (
-        convert_dequantized_to_quantized_format_correct,
-        update_config_for_quantized_format,
-    )
 
     if accelerator.distributed_type != DistributedType.FSDP:
         raise RuntimeError(
@@ -570,11 +513,9 @@ def save_fsdp_gpt_oss_model(
         )
 
         # Save config and tokenizer
+        # Add quantization config before saving to avoid double-write
+        add_gpt_oss_quantization_config(model.config)
         model.config.to_json_file(f"{output_dir}/config.json")
-
-        # Update config with proper quantization settings
-        config_file = output_dir / "config.json"
-        update_config_for_quantized_format(config_file)
 
         tokenizer.save_pretrained(output_dir)
 
@@ -631,7 +572,6 @@ def _copy_no_lora_dict(state_dict):
 def _copy_gpt_oss_converted_dict(state_dict):
     """Copy and convert GPT-OSS state dict to quantized format."""
     # Local
-    from .gpt_oss_utils_correct import convert_dequantized_to_quantized_format_correct
 
     # First apply standard cleaning like LoRA does
     cleaned_state_dict = OrderedDict()
@@ -767,17 +707,13 @@ def save_hf_format_accelerate(
                 warnings.warn(
                     f"Adding architectures to ckpt: {model.module.config.architectures}",
                 )
-        model.module.config.to_json_file(output_config_file)
 
         # For GPT-OSS models, ensure the config has proper quantization settings
-        # Local
-        from .gpt_oss_utils_correct import (
-            should_convert_gpt_oss_format,
-            update_config_for_quantized_format,
-        )
+        # before writing to file (avoids double-write)
+        if is_gpt_oss(model.module.config):
+            add_gpt_oss_quantization_config(model.module.config)
 
-        if should_convert_gpt_oss_format(model.module.config):
-            update_config_for_quantized_format(output_config_file)
+        model.module.config.to_json_file(output_config_file)
 
         tokenizer.save_pretrained(output_dir)
 
@@ -793,10 +729,8 @@ def save_hf_format_accelerate(
 
     if not is_lora:
         # Check if this is a GPT-OSS model that needs format conversion
-        # Local
-        from .gpt_oss_utils_correct import should_convert_gpt_oss_format
 
-        if should_convert_gpt_oss_format(model.module.config):
+        if is_gpt_oss(model.module.config):
             # For GPT-OSS models, check if we need FSDP handling like LoRA does
             is_fsdp_gpt_oss = accelerator.distributed_type == DistributedType.FSDP
 
@@ -825,7 +759,7 @@ def save_hf_format_accelerate(
                     max_shard_size="5GB",
                     safe_serialization=True,
                 )
-        elif not should_convert_gpt_oss_format(model.module.config):
+        elif not is_gpt_oss(model.module.config):
             # Standard model saving
             accelerator.save_model(
                 model,
@@ -849,6 +783,7 @@ def set_random_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
+# TODO: move this to also live in the `Model` object
 def save_checkpoint(
     args,
     accelerator: Accelerator,
@@ -965,7 +900,7 @@ def load_latest_full_state(args, accelerator) -> None:
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
 
 
-def freeze_gpt_oss_router_params(model) -> bool:
+def freeze_router_params(model: Model):
     """
     Freeze router parameters for GPT-OSS models before FSDP setup.
 
@@ -975,13 +910,6 @@ def freeze_gpt_oss_router_params(model) -> bool:
     Returns:
         bool: True if this is a GPT-OSS model and parameters were frozen
     """
-    # Check if this is a GPT-OSS model
-    is_gpt_oss = getattr(model.config, "model_type", None) == "gpt_oss"
-
-    if not is_gpt_oss:
-        return False
-
-    logger.info("🎯 Detected GPT-OSS model - applying router parameter freezing")
 
     # Freeze router parameters BEFORE accelerator setup
     frozen_count = 0
@@ -1030,7 +958,5 @@ def test_model_inference_quick(model, tokenizer, stage_name):
 
     except Exception as e:
         logger.error(f"❌ {stage_name} inference test failed: {e}")
-        # Standard
-        import traceback
 
         traceback.print_exc()

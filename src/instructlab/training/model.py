@@ -30,7 +30,12 @@ except ImportError:
 # Third Party
 from peft import LoraConfig
 from torch.optim import AdamW
-from transformers import AutoConfig, PreTrainedTokenizer
+from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
+from transformers import (
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    PreTrainedTokenizer,
+)
 import torch
 
 # First Party
@@ -38,6 +43,8 @@ from instructlab.training.config import (  # Adjust this import if needed
     DistributedBackend,
     Optimizer,
 )
+from instructlab.training.gpt_oss_utils_correct import is_gpt_oss
+from instructlab.training.type_definitions import ModelInputs, ModelLosses
 
 
 class Model:
@@ -56,18 +63,16 @@ class Model:
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
         quant_config = None
-        # Get model config to check model type
-        model_config = AutoConfig.from_pretrained(model_path)
-        if model_config.model_type == "gpt_oss":
-            # Third Party
-            from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
 
+        # check model type & set on the mclasss
+        self.is_gpt_oss = is_gpt_oss(model_path)
+        if self.is_gpt_oss:
+            # Third Party
             quant_config = Mxfp4Config(dequantize=True)
 
         # TODO: Add support for 8bit quantization
         elif lora_config and lora_config.r > 0 and lora_quant_bits == 4:
             # Third Party
-            from transformers import BitsAndBytesConfig
 
             quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
@@ -78,16 +83,22 @@ class Model:
 
         self.base_model_args = {
             "pretrained_model_name_or_path": model_path,
-            "torch_dtype": torch.bfloat16,
             "quantization_config": quant_config,
         }
 
-        if flash_enabled and model_config.model_type != "gpt_oss":
+        # load GPT-OSS in bfloat16 because it's a massive model, but otherwise
+        # we do not specify the default dtype so mixed precision training works
+        # correctly
+        if self.is_gpt_oss:
+            self.base_model_args["torch_dtype"] = torch.bfloat16
+
+        # set flash attention accordingly
+        if flash_enabled:
             self.base_model_args["attn_implementation"] = "flash_attention_2"
-        elif flash_enabled and model_config.model_type == "gpt_oss":
-            self.base_model_args["attn_implementation"] = (
-                "kernels-community/vllm-flash-attn3"
-            )
+            if self.is_gpt_oss:
+                self.base_model_args["attn_implementation"] = (
+                    "kernels-community/vllm-flash-attn3"
+                )
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
@@ -357,6 +368,73 @@ class Model:
             "ERROR: Trying to use Flash Attention on unsupported hardware. Please set disable_flash_attn to True."
         )
 
+    def compute_loss(
+        self, inputs: ModelInputs, world_size: int, samples_in_batch: int
+    ) -> tuple[torch.Tensor, ModelLosses]:
+        """
+        Computes the cross-entropy los for the given model and returns a final loss which can be backproped on, as well as
+        a dataclass with the raw losses.
+
+        Args:
+            inputs (ModelInputs): dict containing the items we would need in order to make the forward computation
+            world_size (int): number of total nodes
+            samples_in_batch (int): samples in the entire mini-batch
+
+        Returns:
+            tuple[torch.Tensor, ModelLosses]:
+                - The total loss which can be used to backprop
+                - Dataclass containing the raw pre-scaled losses
+        """
+        # Forward pass to get logits
+        output = self(
+            **inputs,
+            use_cache=False,
+        )
+
+        # Manual loss computation with reduction="none" following mini_trainer's exact approach
+
+        # Manually compute cross-entropy loss with reduction="none"
+        logits = output.logits
+        labels = inputs["labels"]
+
+        # Shift logits and labels for causal LM (standard approach)
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        # Flatten tokens
+        shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+        shift_labels = shift_labels.view(-1)
+
+        # Compute loss with reduction="none" to get per-token losses
+        loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+        token_losses = loss_fct(shift_logits, shift_labels)
+
+        # Only sum losses for non-padding tokens (labels != -100)
+        valid_tokens = shift_labels != -100
+
+        # compute losses
+        aux_loss = None
+        primary_loss = token_losses[valid_tokens].sum()
+
+        # add the MoE auxiliary loss (currently we only support this for GPT-OSS)
+        if (
+            self.is_gpt_oss
+            and hasattr(output, "aux_loss")
+            and output.aux_loss is not None
+        ):
+            # For GPT-OSS: separate main loss and aux loss
+            aux_loss = output.aux_loss.float()  # Auxiliary loss stays as scalar
+
+        # Scale main loss following mini_trainer approach: loss * world_size / batch_num_loss_counted_tokens
+        scaled_main_loss = primary_loss * world_size / samples_in_batch
+
+        # For GPT-OSS: add unscaled auxiliary loss after scaling main loss
+        if self.is_gpt_oss and aux_loss is not None:
+            scaled_main_loss += aux_loss
+
+        raw_losses = ModelLosses(main_loss=primary_loss, aux_loss=aux_loss)
+        return scaled_main_loss, raw_losses
+
 
 class LigerModel(Model):
     # pylint: disable=unused-argument
@@ -422,9 +500,6 @@ class CausalLMModel(Model):
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
         )
-        # Third Party
-        from transformers import AutoModelForCausalLM
-
         self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()
         self.model.gradient_checkpointing_enable()

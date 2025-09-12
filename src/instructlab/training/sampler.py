@@ -12,6 +12,10 @@ import torch.distributed as dist
 
 # First Party
 from instructlab.training.batch_packer import batch_lengths_to_minibatches_lpt
+from instructlab.training.padded_batch_packer import (
+    batch_lengths_to_minibatches_padded,
+)
+from instructlab.training.type_definitions import CollatedItem
 
 
 class EpochSampler(Sampler):
@@ -46,7 +50,7 @@ class EpochSampler(Sampler):
         return self.len_data
 
 
-def mb_collate_fn(minibatch, batch_num_loss_counted_tokens):
+def mb_collate_fn(minibatch, batch_num_loss_counted_tokens) -> CollatedItem:
     """Collates a list of samples into a single packed batch for Flash Attention.
 
     This function takes a 'minibatch' (list of pre-fetched dataset samples)
@@ -108,29 +112,105 @@ def mb_collate_fn(minibatch, batch_num_loss_counted_tokens):
     }
 
 
-class MaxTokensPerRankCollator:
-    """A collate function for PyTorch DataLoader for distributed training.
+def padded_mb_collate_fn(
+    minibatch, batch_num_loss_counted_tokens, pad_token_id=0
+) -> CollatedItem:
+    """Collates a list of samples into a padded batch for standard attention.
 
-    This collator takes a batch of samples (obtained using indices from a sampler
-    like EpochSampler) and performs two main tasks:
-    1. Filters out samples longer than `max_tokens_per_rank`.
-    2. Uses `batch_lengths_to_minibatches_lpt` to determine how to distribute the
-       remaining samples across ranks into one or more 'minibatches', ensuring
-       no rank exceeds `max_tokens_per_rank` per minibatch.
-    3. For the current rank, it fetches the assigned samples (or dummy samples
-       for padding) for each determined minibatch.
-    4. Uses `mb_collate_fn` to collate the samples for each minibatch into the
-       packed format required by Flash Attention.
+    This function takes a minibatch (list of dataset samples) and creates padded
+    tensors suitable for standard attention mechanisms. Unlike the flash attention
+    version, this pads all sequences to the same length and creates attention masks.
 
     Args:
-        max_tokens_per_rank (int): Maximum number of tokens allowed per rank
-            in a single processed minibatch.
-        rank (int, optional): The rank of the current process. If None, attempts
-            to get it from `torch.distributed`.
-        world_size (int, optional): Total number of ranks. If None, attempts
-            to get it from `torch.distributed`.
-        dummy_sample (dict, optional): A sample used for padding when a rank
-            has no real samples assigned in a minibatch.
+        minibatch: A list of dictionaries, where each dictionary represents a
+                   sample and contains 'input_ids' and 'labels'.
+        batch_num_loss_counted_tokens: Total number of loss-counted tokens in the batch.
+
+    Returns:
+        A dictionary containing the collated batch:
+        - 'input_ids': 2D tensor of padded input IDs [batch_size, max_len]
+        - 'labels': 2D tensor of padded labels [batch_size, max_len]
+        - 'attention_mask': 2D tensor indicating real vs padding tokens
+        - 'num_loss_counted_tokens': Total number of non-ignored label tokens
+        - 'num_samples': The number of real sequences in this batch
+    """
+    if not minibatch:
+        # Return empty batch
+        return {
+            "input_ids": torch.tensor([[]], dtype=torch.long),
+            "labels": torch.tensor([[]], dtype=torch.long),
+            "attention_mask": torch.tensor([[]], dtype=torch.long),
+            "num_loss_counted_tokens": 0,
+            "num_samples": 0,
+            "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
+            "total_length": 0,
+        }
+
+    # Find max length in this batch
+    max_len = max(len(item["input_ids"]) for item in minibatch)
+
+    # Prepare lists for batched tensors
+    padded_input_ids = []
+    padded_labels = []
+    attention_masks = []
+    num_loss_counted_tokens = 0
+    num_samples = 0
+
+    for item in minibatch:
+        item_len = len(item["input_ids"])
+
+        # Pad input_ids with the provided pad_token_id
+        pad_length = max_len - item_len
+        input_ids = item["input_ids"]
+        if isinstance(input_ids, torch.Tensor):
+            input_ids = input_ids.tolist()
+        padded_input = input_ids + [pad_token_id] * pad_length
+        padded_input_ids.append(padded_input)
+
+        # Pad labels with -100 (ignore index)
+        labels = item["labels"]
+        if isinstance(labels, torch.Tensor):
+            labels = labels.tolist()
+        padded_label = labels + [-100] * pad_length
+        padded_labels.append(padded_label)
+
+        # Create attention mask (1 for real tokens, 0 for padding)
+        attention_mask = [1] * item_len + [0] * pad_length
+        attention_masks.append(attention_mask)
+
+        # Count loss tokens and samples
+        num_loss_counted_tokens += item["num_loss_counted_tokens"]
+        # Only count as a sample if it has loss-counted tokens
+        if item["num_loss_counted_tokens"] > 0:
+            num_samples += 1
+
+    return {
+        "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+        "labels": torch.tensor(padded_labels, dtype=torch.long),
+        "attention_mask": torch.tensor(attention_masks, dtype=torch.long),
+        "num_loss_counted_tokens": num_loss_counted_tokens,
+        "num_samples": num_samples,
+        "batch_num_loss_counted_tokens": batch_num_loss_counted_tokens,
+        "total_length": max_len * len(minibatch),  # Total padded tokens
+    }
+
+
+class MaxTokensPerRankCollator:
+    """A unified collate function for PyTorch DataLoader for distributed training.
+
+    This collator supports both flash attention (unpadded) and standard attention (padded) modes.
+    It takes a batch of samples and:
+    1. Filters out samples longer than `max_tokens_per_rank`.
+    2. Uses the appropriate batch packing algorithm to distribute samples across ranks.
+    3. Collates samples into the format required by the model.
+
+    Args:
+        max_tokens_per_rank (int): Maximum number of tokens allowed per rank in a minibatch.
+        rank (int, optional): The rank of the current process. If None, uses torch.distributed.
+        world_size (int, optional): Total number of ranks. If None, uses torch.distributed.
+        dummy_sample (dict, optional): A sample used for padding when a rank has no real samples.
+        flash_enabled (bool): Whether to use flash attention mode (default: True).
+        pad_token_id (int): Token ID to use for padding in non-flash mode (default: 0).
     """
 
     def __init__(
@@ -139,13 +219,18 @@ class MaxTokensPerRankCollator:
         rank: Optional[int] = None,
         world_size: Optional[int] = None,
         dummy_sample=None,
+        flash_enabled: bool = True,
+        pad_token_id: int = 0,
     ):
         self.max_tokens_per_rank = max_tokens_per_rank
+        self.flash_enabled = flash_enabled
+        self.pad_token_id = pad_token_id
 
         self.global_rank = rank if rank is not None else dist.get_rank()
         self.world_size = (
             world_size if world_size is not None else dist.get_world_size()
         )
+
         if dummy_sample is None:
             dummy_sample = {
                 "input_ids": torch.tensor([15, 14, 13, 12, 11], dtype=torch.long),
@@ -157,35 +242,49 @@ class MaxTokensPerRankCollator:
             }
         self.dummy_sample = dummy_sample
 
+        # Select the appropriate batch packer and collate function
+        if flash_enabled:
+            self.batch_packer = batch_lengths_to_minibatches_lpt
+            self.collate_fn = mb_collate_fn
+        else:
+            self.batch_packer = batch_lengths_to_minibatches_padded
+            # Create a wrapper for padded collate that includes pad_token_id
+            self.collate_fn = lambda mb, tokens: padded_mb_collate_fn(
+                mb, tokens, pad_token_id
+            )
+
     def __call__(self, batch: list[dict]):
-        """Processes a batch of samples into a list of packed minibatches for the current rank.
+        """Processes a batch of samples into minibatches for the current rank.
 
         Args:
             batch: A list of sample dictionaries from the Dataset.
 
         Returns:
-            A list where each element is a dictionary representing a collated minibatch
-            (output of `mb_collate_fn`) ready for processing by the current rank.
+            A list where each element is a collated minibatch ready for processing.
         """
+        # Filter out samples longer than max_tokens_per_rank
         batch_ = [b for b in batch if b["len"] <= self.max_tokens_per_rank]
         if len(batch_) < len(batch):
             print(
                 f"\033[38;5;196mremoved {len(batch) - len(batch_)} samples from batch because they are longer than the max tokens per gpu\033[0m"
             )
 
-        # Use filtered batch for lengths and loss counts
+        # Extract lengths and count loss tokens
         batch_lengths = [sample["len"] for sample in batch_]
         batch_num_loss_counted_tokens = sum(
             [sample["num_loss_counted_tokens"] for sample in batch_]
         )
-        all_minibatches_indices = batch_lengths_to_minibatches_lpt(
+
+        # Use the appropriate batch packer
+        all_minibatches_indices = self.batch_packer(
             batch_lengths, self.max_tokens_per_rank, self.world_size, self.global_rank
         )
 
+        # Collate minibatches
         all_minibatches = []
         for mb_indices in all_minibatches_indices:
             mb = [batch_[i] if i != -1 else self.dummy_sample for i in mb_indices]
-            all_minibatches.append(mb_collate_fn(mb, batch_num_loss_counted_tokens))
+            all_minibatches.append(self.collate_fn(mb, batch_num_loss_counted_tokens))
 
         return all_minibatches
 
@@ -243,8 +342,10 @@ def get_data_loader(
     world_size: Optional[int] = None,
     dummy_sample: Optional[dict] = None,
     num_workers: int = 0,
+    flash_enabled: bool = True,
+    pad_token_id: int = 0,
 ):
-    """Create a data loader with epoch-based sampling and LPT batch packing.
+    """Create a data loader with epoch-based sampling and batch packing.
 
     Args:
         data_path: Path to the JSONL data file
@@ -255,23 +356,30 @@ def get_data_loader(
         world_size: Total number of processes
         dummy_sample: Sample used for padding
         num_workers: Number of data loading workers
+        flash_enabled: Whether flash attention is enabled (affects collation strategy)
+        pad_token_id: Token ID to use for padding (only used when flash_enabled=False)
 
     Returns:
-        DataLoader configured with EpochSampler and MaxTokensPerRankCollator
+        DataLoader configured with appropriate collator based on flash_enabled
     """
     dataset = TokenDataset(data_path)
     sampler = EpochSampler(len(dataset), seed=seed)
+
+    # Create unified collator with appropriate mode
+    collate_fn = MaxTokensPerRankCollator(
+        max_tokens_per_gpu,
+        rank=rank,
+        world_size=world_size,
+        dummy_sample=dummy_sample,
+        flash_enabled=flash_enabled,
+        pad_token_id=pad_token_id,
+    )
 
     return DataLoader(
         dataset,
         batch_size,
         sampler=sampler,
-        collate_fn=MaxTokensPerRankCollator(
-            max_tokens_per_gpu,
-            rank=rank,
-            world_size=world_size,
-            dummy_sample=dummy_sample,
-        ),
+        collate_fn=collate_fn,
         num_workers=num_workers,
         persistent_workers=(num_workers > 0),
         drop_last=False,
