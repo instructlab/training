@@ -77,10 +77,10 @@ class BatchLossManager:
         num_minibatches = len(batch)
 
         # initialize accumulation variables
-        batch_total_samples = 0.0
-        batch_total_length = 0.0
+        batch_total_samples = 0
+        batch_total_length = 0
         accumulated_loss = 0.0
-        accumulated_aux_loss = 0.0 if self.model.is_gpt_oss else None
+        accumulated_aux_loss = 0.0
         grad_accum_steps = 0
 
         # process each minibatch
@@ -134,22 +134,25 @@ class BatchLossManager:
     def _prepare_model_inputs(self, mb: CollatedItem) -> ModelInputs:
         """Prepare and move model inputs to GPU."""
         model_inputs = ModelInputs(
-            input_ids=mb["input_ids"],
-            labels=mb["labels"],
-            position_ids=mb["position_ids"],
+            input_ids=mb["input_ids"].to(device=self.torch_device),
+            labels=mb["labels"].to(device=self.torch_device),
         )
-        if "attention_mask" in mb:
-            model_inputs["attention_mask"] = mb["attention_mask"]
 
-        # send tensors to gpu
-        for k in model_inputs.keys():
-            model_inputs[k] = model_inputs[k].to(device=self.torch_device)
+        # add optional fields onto `model_inputs` object
+        if "attention_mask" in mb:
+            model_inputs["attention_mask"] = mb["attention_mask"].to(
+                device=self.torch_device
+            )
+        if "position_ids" in mb:
+            model_inputs["position_ids"] = mb["position_ids"].to(
+                device=self.torch_device
+            )
 
         return model_inputs
 
     def _reduce_metrics(
-        self, batch_total_samples: float, batch_total_length: float
-    ) -> tuple[float, float]:
+        self, batch_total_samples: int, batch_total_length: int
+    ) -> tuple[int, int]:
         """Reduce rank-specific metrics across devices."""
         inputs_to_reduce = torch.tensor(
             [batch_total_samples, batch_total_length],

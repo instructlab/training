@@ -890,9 +890,9 @@ class TestReasoningContentWithRealTokenizers(unittest.TestCase):
         self.assertNotIn(unmask_begin_id, result["input_ids"])
         self.assertNotIn(unmask_end_id, result["input_ids"])
 
-    def test_with_mistral_tokenizer(self):
-        """Test reasoning_content functionality with Mistral tokenizer."""
-        tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.1")
+    def test_with_phi_tokenizer(self):
+        """Test reasoning_content functionality with Phi-4 tokenizer."""
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/Phi-4-mini-instruct")
 
         # Add the unmask tokens to the tokenizer
         tokenizer.add_special_tokens(

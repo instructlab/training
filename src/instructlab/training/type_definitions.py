@@ -68,7 +68,7 @@ class ModelInputs(t.TypedDict):
 
     input_ids: Required[torch.Tensor]
     labels: Required[torch.Tensor]
-    position_ids: Required[torch.Tensor]
+    position_ids: NotRequired[torch.Tensor]
     attention_mask: NotRequired[torch.Tensor]  # used when not training in padding free
 
 
