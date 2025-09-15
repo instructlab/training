@@ -11,6 +11,7 @@ import logging
 import re
 
 # Third Party
+from transformers import AutoConfig, PretrainedConfig
 import torch
 
 logger = logging.getLogger("instructlab.training")
@@ -393,33 +394,36 @@ def convert_dequantized_to_quantized_format_correct(
     return converted_state_dict
 
 
-def should_convert_gpt_oss_format(model_config) -> bool:
+def is_gpt_oss(model_path_or_config: str | PretrainedConfig) -> bool:
     """
     Determine if we should convert GPT-OSS format during saving.
     """
+    if not isinstance(model_path_or_config, (PretrainedConfig, str)):
+        raise ValueError(
+            f"cannot detect model: received invalid argument of type {type(model_path_or_config)}"
+        )
+
+    # convert to config
+    model_config = model_path_or_config
+    if isinstance(model_path_or_config, str):
+        model_config = AutoConfig.from_pretrained(model_path_or_config)
+
     return getattr(model_config, "model_type", None) == "gpt_oss"
 
 
-def update_config_for_quantized_format(config_path):
+def add_gpt_oss_quantization_config(config):
     """
-    Update config.json to include proper GPT-OSS quantization configuration.
+    Add GPT-OSS quantization configuration to a model config object.
+
+    Args:
+        config: A transformers PretrainedConfig object
+
+    Returns:
+        The config object with quantization settings added
     """
-    # Standard
-    from pathlib import Path
-    import json
-
-    config_path = Path(config_path)
-
-    if not config_path.exists():
-        logger.warning(f"Config file not found: {config_path}")
-        return
-
-    with open(config_path, "r") as f:
-        config = json.load(f)
-
-    # Add the actual GPT-OSS quantization config if not present
-    if "quantization_config" not in config:
-        config["quantization_config"] = {
+    # add the quantization config if not present
+    if not hasattr(config, "quantization_config") or config.quantization_config is None:
+        config.quantization_config = {
             "modules_to_not_convert": [
                 "model.layers.*.self_attn",
                 "model.layers.*.mlp.router",
@@ -428,15 +432,6 @@ def update_config_for_quantized_format(config_path):
             ],
             "quant_method": "mxfp4",
         }
+        logger.info("Added GPT-OSS quantization config to model config")
 
-        # Create backup
-        backup_path = config_path.with_suffix(".json.backup")
-        with open(backup_path, "w") as f:
-            json.dump(config, f, indent=2)
-
-        # Save updated config
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-
-        logger.info(f"Added GPT-OSS quantization config to {config_path}")
-        logger.info(f"Backup saved as {backup_path}")
+    return config

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 import logging
 import os
@@ -11,7 +11,12 @@ import warnings
 
 # Third Party
 from datasets import Dataset, load_dataset
-from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    PreTrainedTokenizer,
+    PreTrainedTokenizerFast,
+)
 import numpy as np
 import regex as re
 
@@ -32,19 +37,12 @@ UNMASK_REASONING_END_TOKEN = "<|UNMASK_REASONING_END|>"
 logger = logging.getLogger(__name__)
 
 
-def is_gpt_oss_model(tokenizer):
+@lru_cache()
+def is_gpt_oss_model(tokenizer: PreTrainedTokenizer) -> bool:
     """Check if this is a GPT-OSS model based on tokenizer."""
-    if not tokenizer:
-        return False
-    try:
-        # GPT-OSS models have these special tokens
-        test_tokens = ["<|start|>", "<|channel|>", "<|message|>"]
-        for token in test_tokens:
-            # If any of these tokens can't be encoded, it's not GPT-OSS
-            tokenizer.encode(token, add_special_tokens=False)
-        return True
-    except Exception:
-        return False
+    model_name_or_path = tokenizer.name_or_path
+    config = AutoConfig.from_pretrained(model_name_or_path)
+    return config.model_type == "gpt_oss"
 
 
 def check_valid_sample(
@@ -175,13 +173,10 @@ def unmask_message_content(
             return False
 
         # Try to encode the expected pattern tokens
-        try:
-            start_token = tokenizer.encode("<|start|>", add_special_tokens=False)
-            assistant_tokens = tokenizer.encode("assistant", add_special_tokens=False)
-            channel_token = tokenizer.encode("<|channel|>", add_special_tokens=False)
-            message_token = tokenizer.encode("<|message|>", add_special_tokens=False)
-        except Exception:
-            return False
+        start_token = tokenizer.encode("<|start|>", add_special_tokens=False)
+        assistant_tokens = tokenizer.encode("assistant", add_special_tokens=False)
+        channel_token = tokenizer.encode("<|channel|>", add_special_tokens=False)
+        message_token = tokenizer.encode("<|message|>", add_special_tokens=False)
 
         # Look backwards from current position to see if we're in an assistant channel
         # We need to find the pattern: start_token + assistant_tokens + channel_token + some_text + message_token
