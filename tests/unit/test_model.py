@@ -24,6 +24,13 @@ def mock_tokenizer():
 
 
 @pytest.fixture
+def mock_config():
+    config = MagicMock()
+    config.model_type = "llama"
+    return config
+
+
+@pytest.fixture
 def mock_model():
     model = MagicMock()
     model.config.vocab_size = 32000
@@ -58,9 +65,12 @@ def lora_config():
     )
 
 
-def test_model_initialization(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_model_initialization(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",
@@ -76,8 +86,9 @@ def test_model_initialization(mock_tokenizer, mock_model):
         assert model.noise_alpha is None
 
 
-def test_model_with_lora(mock_tokenizer, mock_model, lora_config):
+def test_model_with_lora(mock_tokenizer, mock_model, mock_config, lora_config):
     with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
         patch(
             "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
         ),
@@ -95,9 +106,12 @@ def test_model_with_lora(mock_tokenizer, mock_model, lora_config):
         assert model.lora_config == lora_config
 
 
-def test_reconcile_tokenizer(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_reconcile_tokenizer(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         # Test case where tokenizer has more tokens than model
         mock_tokenizer.__len__.return_value = 33000
@@ -114,9 +128,12 @@ def test_reconcile_tokenizer(mock_tokenizer, mock_model):
         mock_model.resize_token_embeddings.assert_called_once()
 
 
-def test_model_train_mode(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_model_train_mode(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",
@@ -135,9 +152,12 @@ def test_model_train_mode(mock_tokenizer, mock_model):
         mock_model.train.assert_called_with(False)
 
 
-def test_model_parameters(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_model_parameters(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",
@@ -152,9 +172,12 @@ def test_model_parameters(mock_tokenizer, mock_model):
         mock_model.parameters.assert_called_once()
 
 
-def test_model_get_projection_layers(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_model_get_projection_layers(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",
@@ -214,9 +237,12 @@ def test_model_flash_attention_check(
 # New tests for model initializations
 
 
-def test_causal_lm_model_with_flash_attention(mock_tokenizer, mock_model):
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+def test_causal_lm_model_with_flash_attention(mock_tokenizer, mock_model, mock_config):
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",
@@ -230,10 +256,13 @@ def test_causal_lm_model_with_flash_attention(mock_tokenizer, mock_model):
         assert model.base_model_args["attn_implementation"] == "flash_attention_2"
 
 
-def test_model_with_noise_alpha(mock_tokenizer, mock_model):
+def test_model_with_noise_alpha(mock_tokenizer, mock_model, mock_config):
     mock_model.__class__.__name__ = "LlamaForCausalLM"
-    with patch(
-        "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+    with (
+        patch("transformers.AutoConfig.from_pretrained", return_value=mock_config),
+        patch(
+            "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
+        ),
     ):
         model = CausalLMModel(
             model_path="test_model",

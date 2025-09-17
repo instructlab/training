@@ -8,7 +8,12 @@ TODO (osilkin):
 """
 
 # Standard
+from dataclasses import dataclass
 import typing as t
+
+# Third Party
+# Third-party
+import torch
 
 # For Python 3.8+ compatibility
 try:
@@ -41,6 +46,32 @@ class Message(t.TypedDict):
     reasoning_content: NotRequired[str]
 
 
+class CollatedItem(t.TypedDict):
+    """
+    Items being returned by the collator function.
+    """
+
+    input_ids: Required[torch.Tensor]
+    labels: Required[torch.Tensor]
+    position_ids: NotRequired[torch.Tensor]  # Only required for flash attention
+    attention_mask: NotRequired[torch.Tensor]  # Required for non-flash attention
+    num_samples: Required[int]
+    batch_num_loss_counted_tokens: Required[int]
+    total_length: Required[int]
+    num_loss_counted_tokens: Required[int]
+
+
+class ModelInputs(t.TypedDict):
+    """
+    These are the inputs that models will be passed
+    """
+
+    input_ids: Required[torch.Tensor]
+    labels: Required[torch.Tensor]
+    position_ids: NotRequired[torch.Tensor]
+    attention_mask: NotRequired[torch.Tensor]  # used when not training in padding free
+
+
 class ProcessedMessagesData(t.TypedDict):
     """
     This class represents the data generated when a single sample is
@@ -50,3 +81,9 @@ class ProcessedMessagesData(t.TypedDict):
     input_ids: t.List[int]
     labels: t.List[int]
     len: int
+
+
+@dataclass
+class ModelLosses:
+    main_loss: torch.Tensor
+    aux_loss: torch.Tensor | None

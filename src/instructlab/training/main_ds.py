@@ -37,11 +37,12 @@ except ImportError:
 from tqdm import tqdm
 from transformers import AutoConfig
 import torch
-import torch.distributed
+import torch.distributed as dist
 
 # First Party
 from instructlab.training import config
 from instructlab.training.accelerator import Accelerator
+from instructlab.training.batch_loss_manager import BatchLossManager
 from instructlab.training.config import (
     DistributedBackend,
     ModelTypes,
@@ -61,14 +62,14 @@ from instructlab.training.model import (
     Model,
     setup_optimizer,
 )
-from instructlab.training.multipack_sampler import (
-    find_packing_max_batch_len_and_grad_accum,
-)
-from instructlab.training.token_dataset import setup_dataloader, setup_dataset
+from instructlab.training.sampler import get_data_loader
+
+# Removed old multipack_sampler import - using mini_trainer approach
 from instructlab.training.tokenizer_utils import setup_tokenizer
 from instructlab.training.utils import (
     StreamablePopen,
     check_valid_train_args,
+    freeze_router_params,
     load_latest_full_state,
     save_checkpoint,
     save_hf_format_accelerate,
@@ -82,7 +83,6 @@ logger = logging.getLogger(__name__)
 def train(
     args,
     model: Model,
-    optimizer: torch.optim.Optimizer,
     accelerator: Accelerator,
 ):
     model.train()
@@ -94,7 +94,8 @@ def train(
     metric_logger = logging.getLogger("instructlab.training.metrics")
     base_logger = logging.getLogger("instructlab.training")
 
-    batch_size = args.effective_batch_size // accelerator.grad_accum
+    # Mini_trainer approach: batch_size will be determined dynamically by data loader
+    # For save logic, use effective_batch_size since that's the target
     samples_seen = 0
 
     if hasattr(args, "samples_seen"):
@@ -102,22 +103,20 @@ def train(
         samples_seen = args.samples_seen
 
     if accelerator.save_samples > 0:
-        accelerator.save_samples = (accelerator.save_samples // batch_size) * batch_size
         logger.info("Number of samples per save: %d", args.save_samples)
 
     if args.save_samples_ds is not None:
-        args.save_samples_ds = (args.save_samples_ds // batch_size) * batch_size
         logger.info("Number of samples per DS save: %d", args.save_samples_ds)
 
     global_grad_norm = None
-    for epoch in range(args.current_epoch, args.num_epochs):
-        if args.sampler in ("multipack"):
-            accelerator.train_loader.batch_sampler.set_epoch(epoch)
-        elif args.sampler in ("distributed"):
-            accelerator.train_loader.sampler.set_epoch(epoch)
-        else:
-            raise NotADirectoryError
 
+    # Initialize the batch loss manager
+    batch_loss_manager = BatchLossManager(model, accelerator, world_size, local_rank)
+
+    # Blast through batches
+    for epoch in range(args.current_epoch, args.num_epochs):
+        # set the epoch for correct sampling
+        accelerator.train_loader.sampler.set_epoch(epoch)
         num_epoch_steps = len(accelerator.train_loader)
         if local_rank == 0:
             inner_pb = tqdm(range(num_epoch_steps), desc=f"Epoch {epoch}")
@@ -131,51 +130,25 @@ def train(
                     inner_pb.update(1)
                 continue
             start = time.time()
-            num_loss_counted_tokens = float(
-                torch.tensor([batch.pop("num_loss_counted_tokens")])
-            )
-            micro_batch_size = float(torch.tensor([batch.pop("num_samples")]))
-            total_length = float(torch.tensor([batch.pop("total_length")]))
-            for k in batch:
-                batch[k] = batch[k].to(local_rank)
-            output = model(
-                **batch,
-                use_cache=False,
-            )
-            loss = output.loss
-            log_loss = loss.detach().item()
 
-            num_loss_counted_tokens, micro_batch_size, log_loss = map(
-                float,
-                accelerator.reduce(
-                    torch.tensor(
-                        [num_loss_counted_tokens, micro_batch_size, log_loss],
-                        dtype=torch.float32,
-                        device=accelerator.device,
-                    ),
-                    reduction="sum",
-                ),
+            # Process the batch using the BatchLossManager
+            batch_metrics, avg_loss_across_ranks = batch_loss_manager.process_batch(
+                batch
             )
-            samples_seen += int(micro_batch_size)
 
-            # num_loss_counted_tokens = aggregated_values[0]
-            loss = (
-                loss / num_loss_counted_tokens * world_size
-            )  # dividing by the total number of non-padding tokens and multiplying by the number of GPUs so when accelerate averages by world_size, it will be the correct loss.
+            # Update samples seen
+            samples_seen += batch_metrics.total_samples
+
             base_logger.info(
-                f"Epoch: {epoch}, Step: {global_step}, Rank: {torch.distributed.get_rank()}, loss = {loss}"
+                f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {avg_loss_across_ranks:.6f}, grad_accum_steps = {batch_metrics.grad_accum_steps}"
             )
-            accelerator.backward(loss)
 
-            if global_step % accelerator.grad_accum == 0:
-                global_grad_norm = accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                accelerator.lr_scheduler.step()
-                optimizer.zero_grad()
+            # Take optimizer step after all minibatches
+            accelerator.take_optimizer_step()
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
-                overall_throughput = args.samples_per_gpu * world_size / elapsed_time
+                overall_throughput = batch_metrics.total_samples / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
                 cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
                 cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
@@ -197,15 +170,16 @@ def train(
                     {
                         "epoch": epoch,
                         "step": global_step,
-                        "rank": torch.distributed.get_rank(),
+                        "rank": dist.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
                         "cuda_mem_allocated": cuda_mem_allocated,
                         "cuda_malloc_retries": cuda_malloc_retries,
-                        "num_loss_counted_tokens": int(num_loss_counted_tokens),
-                        "num_tokens_rank0": int(total_length),
-                        "batch_size": int(micro_batch_size),
-                        "total_loss": float(log_loss / num_loss_counted_tokens),
+                        "num_loss_counted_tokens": batch_metrics.num_loss_counted_tokens,
+                        "num_tokens_rank0": batch_metrics.total_length,
+                        "batch_size": batch_metrics.total_samples,
+                        "num_minibatches": batch_metrics.num_minibatches,
+                        "avg_loss": float(avg_loss_across_ranks),
                         "samples_seen": samples_seen,
                         "gradnorm": global_grad_norm,
                         "total_samples": len(accelerator.train_loader.dataset),
@@ -215,9 +189,7 @@ def train(
                     extra={"step": global_step},
                 )
 
-            if args.save_samples > 0 and (
-                global_step * batch_size % args.save_samples == 0
-            ):
+            if args.save_samples > 0 and (samples_seen % args.save_samples == 0):
                 base_logger.debug(f"Saving checkpoint at step {global_step}")
                 save_checkpoint(
                     args=args,
@@ -229,7 +201,7 @@ def train(
                     hf_format=True,
                 )
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
-                torch.distributed.barrier()
+                dist.barrier()
 
             global_step += 1
             if local_rank == 0:
@@ -249,7 +221,7 @@ def train(
                 epoch=epoch,
             )
             base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
-            torch.distributed.barrier()
+            dist.barrier()
 
     if args.save_last:
         save_hf_format_accelerate(
@@ -317,22 +289,16 @@ def main(args):
 
     timeout = _get_collective_timeout()
     if timeout is not None:
-        torch.distributed.init_process_group(timeout=timeout)
+        dist.init_process_group(timeout=timeout)
     else:
-        torch.distributed.init_process_group()
+        dist.init_process_group()
 
-    args.global_rank = torch.distributed.get_rank()
+    args.global_rank = dist.get_rank()
     tensor = torch.ByteTensor([False]).cuda()
-    torch.distributed.all_reduce(tensor)
-    torch.distributed.barrier()
+    dist.all_reduce(tensor)
+    dist.barrier()
 
     flash_enabled = Model.check_flash_attn_enabled(args.disable_flash_attn)
-
-    dataset = setup_dataset(
-        args.data_path,
-        mock=args.mock_data,
-        mock_len=args.mock_len,
-    )
 
     # This model class wraps the various AutoModel classes we support
     # based on model_type, and model_path -> choose auto_model
@@ -360,7 +326,7 @@ def main(args):
 
     # Get the model class with default fallback
     model_class = model_class_map.get(model_type, CausalLMModel)
-    m = model_class(
+    m: Model = model_class(
         model_path=args.model_name_or_path,
         output_dir=args.output_dir,
         lora_config=lora_config,
@@ -373,81 +339,67 @@ def main(args):
 
     args.base_model_args = m.base_model_args
 
-    try:
-        packing_max_batch_len, grad_accum = find_packing_max_batch_len_and_grad_accum(
-            num_gpus=torch.distributed.get_world_size(),
-            avg_sample_len=dataset.get_lengths().mean(),
-            effective_batch_size=args.effective_batch_size,
-            max_batch_len_per_gpu=args.max_batch_len,
-            is_padding=not flash_enabled,
-            dataset=dataset,
-            seed=args.seed,
-        )
-        args.sampler = "multipack"
-    except RuntimeError as e:
-        logger.error(e)
+    # IMPORTANT: Freeze GPT-OSS router parameters BEFORE accelerator setup
+    # This must happen before FSDP preparation to avoid requires_grad uniformity issues
+    #
+    # NOTE: in theory this can work for any MoE model with router parameters, but we handle
+    #       GPT-OSS specifically
+    # We don't want to use use_orig_params for GPT-OSS models
+    fsdp_should_use_orig_params = False
+    if m.is_gpt_oss:
+        logger.info("🎯 Detected GPT-OSS model - freezing router parameters")
+        freeze_router_params(m)
+        # For GPT-OSS, we need to use the original parameters so we can properly
+        # freeze the router parameters.
+        fsdp_should_use_orig_params = True
 
-        # fallback to grad accum = 1
-        # NOTE: packing max batch len will not be used
-        packing_max_batch_len = None
-        grad_accum = 1
-        args.sampler = "distributed"
+    # Mini_trainer approach: simplified setup
+    # No complex calculations needed - the data loader handles everything
+    packing_max_batch_len = args.max_batch_len
 
-    args.samples_per_gpu = (
-        args.effective_batch_size // grad_accum // torch.distributed.get_world_size()
-    )
+    # Mini_trainer approach: use effective_batch_size as the data loader batch_size
+    # Let the collator handle distribution across GPUs and dynamic minibatching
+    batch_size = args.effective_batch_size
 
-    train_loader = setup_dataloader(
-        dataset,
-        tokenizer.pad_token_id,
-        num_workers=8,
-        flash_enabled=flash_enabled,
-        max_batch_len=args.max_batch_len,
-        packing_max_batch_len=packing_max_batch_len,
-        samples_per_gpu=args.samples_per_gpu,
-        sampler=args.sampler,
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    train_loader = get_data_loader(
+        data_path=args.data_path,
+        batch_size=batch_size,
+        max_tokens_per_gpu=packing_max_batch_len,
         seed=args.seed,
+        rank=dist.get_rank(),
+        world_size=dist.get_world_size(),
+        num_workers=8,  # I don't like this but am setting it for consistency
+        flash_enabled=flash_enabled,
+        pad_token_id=pad_token_id,
     )
-    if len(train_loader) == 0:
-        # this happens sometimes when we have more GPUs than data to process. In this case
-        # we should either alert the user to switch samplers, or do it automatically and
-        # warn them about it happening
-        logger.warning(
-            "The dataset is too small for multipack to distribute all of the samples across GPUs. Falling back to the distributed sampler!"
-        )
-        args.sampler = "distributed"
-        train_loader = setup_dataloader(
-            dataset,
-            tokenizer.pad_token_id,
-            num_workers=8,
-            flash_enabled=flash_enabled,
-            max_batch_len=args.max_batch_len,
-            packing_max_batch_len=packing_max_batch_len,
-            samples_per_gpu=args.samples_per_gpu,
-            sampler=args.sampler,
-            seed=args.seed,
-        )
 
     if args.local_rank == 0:
         metric_logger.info(
             {
-                "num_gpus": torch.distributed.get_world_size(),
-                "avg_sample_len": dataset.get_lengths().mean(),
+                "num_gpus": dist.get_world_size(),
+                "avg_sample_len": train_loader.dataset.get_lengths().mean(),
                 "effective_batch_size": args.effective_batch_size,
                 "max_batch_len_per_gpu": args.max_batch_len,
                 "packing_max_batch_len": packing_max_batch_len,
-                "grad_accum": grad_accum,
+                # grad_accum will be determined dynamically per batch
                 "num_batches": len(train_loader),
-                "avg_samples_per_batch": len(dataset) / len(train_loader),
-                "samples_per_gpu": args.samples_per_gpu,
-                "total_samples": len(dataset),  # emit the total number of samples
+                "avg_samples_per_batch": len(train_loader.dataset) / len(train_loader),
+                "total_samples": len(
+                    train_loader.dataset
+                ),  # emit the total number of samples
             },
             extra={"hparams": True},
         )
     # accelerator does not need optimizer to init, in fact, the optimizer needs to be initialized AFTER the Accelerator
+    # Required for DeepSpeed/FSDP configuration even though mini_trainer uses dynamic approach
+    # These set up the distributed framework but actual batching is handled dynamically
+    samples_per_gpu = 1  # Base unit - actual samples determined by data loader
+    grad_accum = 1  # Base unit - actual accumulation handled by minibatch loop
+
     accelerator = Accelerator(
         model=m,
-        samples_per_gpu=args.samples_per_gpu,
+        samples_per_gpu=samples_per_gpu,
         grad_accum=grad_accum,
         train_loader=train_loader,
         distributed_framework=DistributedBackend(args.distributed_training_framework),
@@ -457,6 +409,7 @@ def main(args):
         deepspeed_cpu_offload_optimizer_ratio=args.cpu_offload_optimizer_ratio,
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
         save_samples=args.save_samples,
+        fsdp_use_orig_params=fsdp_should_use_orig_params,
     )
     # optimizer needs model that has been prepared by accelerator
     # and then accelerator needs to be prepared AGAIN once optimizer is initialized
@@ -481,12 +434,11 @@ def main(args):
     train(
         args,
         model=m,
-        optimizer=optimizer,
         accelerator=accelerator,
     )
 
-    torch.distributed.barrier()
-    torch.distributed.destroy_process_group()
+    dist.barrier()
+    dist.destroy_process_group()
 
 
 # public API

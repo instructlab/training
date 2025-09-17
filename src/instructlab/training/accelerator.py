@@ -1,9 +1,16 @@
 # Standard
 from copy import deepcopy
-from typing import Callable, Optional
+from functools import partial
+from typing import Optional
+import logging
 
 # Third Party
 from accelerate import Accelerator as TransformersAccel
+from accelerate.utils import DeepSpeedPlugin, FullyShardedDataParallelPlugin
+from peft.utils.other import fsdp_auto_wrap_policy
+from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
+from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
 import torch
@@ -13,9 +20,12 @@ from instructlab.training.config import (  # Adjust this import if needed
     DeepSpeedOptions,
     DistributedBackend,
 )
+from instructlab.training.utils import get_module_class_from_name
 
 # Local
 from .model import Model
+
+logger = logging.getLogger(__name__)
 
 
 class Accelerator:
@@ -32,6 +42,7 @@ class Accelerator:
         deepspeed_cpu_offload_optimizer_pin_memory: Optional[bool] = False,
         deepspeed_cpu_offload_optimizer_ratio: Optional[float] = None,
         fsdp_cpu_offload_params: Optional[bool] = False,
+        fsdp_use_orig_params: Optional[bool] = False,
     ):
         self.samples_per_gpu = samples_per_gpu
         self.save_samples = save_samples
@@ -48,7 +59,8 @@ class Accelerator:
             deepspeed_cpu_offload_optimizer_ratio
         )
         self.fsdp_cpu_offload_params = fsdp_cpu_offload_params
-
+        self.fsdp_use_orig_params = fsdp_use_orig_params
+        self.lr_scheduler = None
         if self.distributed_framework == DistributedBackend.DEEPSPEED:
             # Standard
             accel_args = {
@@ -84,7 +96,6 @@ class Accelerator:
         num_epochs: int,
         num_warmup_steps: int,
     ):
-        self.lr_scheduler: Callable
         self.setup_lr_scheduler(
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
@@ -120,19 +131,6 @@ class Accelerator:
         return getattr(self.accelerator, name)
 
     def get_fsdp_config(self):
-        # Standard
-        from functools import partial
-
-        # Third Party
-        from accelerate.utils import FullyShardedDataParallelPlugin
-        from peft.utils.other import fsdp_auto_wrap_policy
-        from torch.distributed.fsdp import BackwardPrefetch, ShardingStrategy
-        from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload
-        from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-
-        # First Party
-        from instructlab.training.utils import get_module_class_from_name
-
         is_lora = self.model.lora_config is not None
         block_name = self.model._no_split_modules[0]
 
@@ -158,12 +156,9 @@ class Accelerator:
             backward_prefetch=prefetch_policy,
             sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
             cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
+            use_orig_params=self.fsdp_use_orig_params,
+            # TODO(osilkin): expose switch for fp32 reduction
         )
-
-        # `use_orig_params` must be disabled when using LoRA and FSDP together
-        # Source: https://huggingface.co/docs/peft/en/accelerate/fsdp#the-important-parts
-        if self.model.lora_config is not None:
-            fsdp_plugin.use_orig_params = False
 
         return fsdp_plugin
 
@@ -171,7 +166,6 @@ class Accelerator:
         self, world_size, samples_per_gpu, grad_accum, opts: DeepSpeedOptions
     ):
         # Third Party
-        from accelerate.utils import DeepSpeedPlugin
 
         ds_config = {
             "train_batch_size": samples_per_gpu * world_size * grad_accum,
@@ -248,3 +242,12 @@ class Accelerator:
             fsdp_cpu_offload_params=fsdp_cpu_offload_params,
             save_samples=save_samples,
         )
+
+    def take_optimizer_step(self):
+        """
+        Take an optimizer step and update the learning rate scheduler.
+        """
+        self.clip_grad_norm_(self.model.parameters(), 1.0)
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        self.optimizer.zero_grad()

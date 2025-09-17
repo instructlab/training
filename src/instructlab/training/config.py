@@ -184,11 +184,19 @@ class TrainingArgs(BaseModel):
 
     max_seq_len: int
     max_batch_len: int
-    num_epochs: int
+    num_epochs: int = Field(
+        default=1, description="Number of epochs to run through before stopping."
+    )
     effective_batch_size: int
-    save_samples: int
+    save_samples: int = Field(
+        default=0,
+        description="Number of samples the model should see before saving a checkpoint. Consider this to be the checkpoint save frequency. If --save_samples<=0, this feature is disabled.",
+    )
     learning_rate: float
-    warmup_steps: int
+    warmup_steps: int = Field(
+        default=0,
+        description="Number of warmup steps to run before starting the main training loop.",
+    )
     random_seed: int = 42
 
     # (jkunstle) left here for compatibility, but Dolomite is removed.
