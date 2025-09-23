@@ -46,7 +46,7 @@ class BatchLossManager:
     - Computing average losses for logging
     """
 
-    def __init__(self, model, accelerator, world_size: int, local_rank: int):
+    def __init__(self, model, accelerator, world_size: int, local_rank: int, device: str):
         """
         Initialize the BatchLossManager.
 
@@ -60,7 +60,10 @@ class BatchLossManager:
         self.accelerator: Accelerator = accelerator
         self.world_size: int = world_size
         self.local_rank: int = local_rank
-        self.torch_device = torch.device("cuda", local_rank)
+        if device == "hpu":
+            self.torch_device = torch.device("hpu", local_rank)
+        else:
+            self.torch_device = torch.device("cuda", local_rank)
 
     def process_batch(self, batch: list[CollatedItem]) -> tuple[BatchMetrics, float]:
         """

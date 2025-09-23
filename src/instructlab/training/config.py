@@ -254,3 +254,5 @@ class TrainingArgs(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO"
     )
+
+    device: Optional[str] = None

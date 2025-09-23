@@ -43,6 +43,7 @@ class Accelerator:
         deepspeed_cpu_offload_optimizer_ratio: Optional[float] = None,
         fsdp_cpu_offload_params: Optional[bool] = False,
         fsdp_use_orig_params: Optional[bool] = False,
+        device: Optional[str] = None,
     ):
         self.samples_per_gpu = samples_per_gpu
         self.save_samples = save_samples
@@ -61,6 +62,7 @@ class Accelerator:
         self.fsdp_cpu_offload_params = fsdp_cpu_offload_params
         self.fsdp_use_orig_params = fsdp_use_orig_params
         self.lr_scheduler = None
+        self.device_str = device #should be before first use, that happens in self.get_fsdp_config()
         if self.distributed_framework == DistributedBackend.DEEPSPEED:
             # Standard
             accel_args = {
@@ -81,6 +83,10 @@ class Accelerator:
                 "fsdp_plugin": self.get_fsdp_config(),
                 "mixed_precision": "bf16",
             }
+        if device == "hpu":
+            from optimum.habana.accelerate import GaudiAccelerator as TransformersAccel
+        else:
+            from accelerate import Accelerator as TransformersAccel
         self.accelerator = TransformersAccel(
             **accel_args,
         )
@@ -159,7 +165,9 @@ class Accelerator:
             use_orig_params=self.fsdp_use_orig_params,
             # TODO(osilkin): expose switch for fp32 reduction
         )
-
+        if self.device_str == "hpu":
+            fsdp_plugin.use_orig_params=True
+            fsdp_plugin.sync_module_states=True
         return fsdp_plugin
 
     def get_ds_plugin(
