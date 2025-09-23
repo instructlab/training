@@ -111,7 +111,7 @@ def train(
     global_grad_norm = None
 
     # Initialize the batch loss manager
-    batch_loss_manager = BatchLossManager(model, accelerator, world_size, local_rank)
+    batch_loss_manager = BatchLossManager(model, accelerator, world_size, local_rank, args.device)
 
     # Blast through batches
     for epoch in range(args.current_epoch, args.num_epochs):
@@ -150,8 +150,12 @@ def train(
                 elapsed_time = time.time() - start
                 overall_throughput = batch_metrics.total_samples / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+                if args.device == "hpu":
+                    mem_allocated = torch.hpu.memory_allocated() / (1024**3)
+                    malloc_retries = 0
+                else:
+                    mem_allocated = torch.cuda.memory_allocated() / (1024**3)
+                    malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
                 global_grad_norm = (
                     model.get_global_grad_norm()
                     if hasattr(model, "get_global_grad_norm")
@@ -173,8 +177,8 @@ def train(
                         "rank": dist.get_rank(),
                         "overall_throughput": overall_throughput,
                         "lr": current_lr,
-                        "cuda_mem_allocated": cuda_mem_allocated,
-                        "cuda_malloc_retries": cuda_malloc_retries,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_mem_allocated": mem_allocated,
+                        ("hpu" if args.device == "hpu" else "cuda") + "_malloc_retries": malloc_retries,
                         "num_loss_counted_tokens": batch_metrics.num_loss_counted_tokens,
                         "num_tokens_rank0": batch_metrics.total_length,
                         "batch_size": batch_metrics.total_samples,
@@ -206,7 +210,8 @@ def train(
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
+            if args.device != "hpu":
+                torch.cuda.empty_cache()
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
             save_checkpoint(
@@ -284,17 +289,22 @@ def main(args):
     args.model_type = model_conf.model_type
 
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    if args.device == "hpu":
+        torch.hpu.set_device(int(os.environ["LOCAL_RANK"]))
+    else:
+        torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
-    if timeout is not None:
-        dist.init_process_group(timeout=timeout)
-    else:
-        dist.init_process_group()
+    backend = "hccl" if args.device == "hpu" else None
+    torch.distributed.init_process_group(backend=backend, timeout=timeout)
+
 
     args.global_rank = dist.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
+    if args.device == "hpu":
+        tensor = torch.ByteTensor([False]).to('hpu')
+    else:
+        tensor = torch.ByteTensor([False]).cuda()
     dist.all_reduce(tensor)
     dist.barrier()
 
@@ -335,6 +345,7 @@ def main(args):
         flash_enabled=flash_enabled,
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
+        device=args.device,
     )
 
     args.base_model_args = m.base_model_args
@@ -410,6 +421,7 @@ def main(args):
         fsdp_cpu_offload_params=args.cpu_offload_params_fsdp,
         save_samples=args.save_samples,
         fsdp_use_orig_params=fsdp_should_use_orig_params,
+        device=args.device,
     )
     # optimizer needs model that has been prepared by accelerator
     # and then accelerator needs to be prepared AGAIN once optimizer is initialized
@@ -587,6 +599,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
+
+    command.append(
+        f"--device={train_args.device}"
+    )
 
     logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
@@ -789,8 +805,22 @@ if __name__ == "__main__":
         action="store_true",
         help="Use Liger kernels for training.",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="PyTorch device to use.",
+    )
+
     args = parser.parse_args()
-    set_random_seed(args.seed)
+
+    if args.device == "hpu":
+        import habana_frameworks.torch.core as htcore
+        import habana_frameworks.torch.distributed.hccl
+        from optimum.habana.transformers.modeling_utils import adapt_transformers_to_gaudi
+        adapt_transformers_to_gaudi()
+    
+    set_random_seed(args.seed, args.device)
     main(args)
 
 """
