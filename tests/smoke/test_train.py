@@ -39,10 +39,10 @@ MINIMAL_TRAINING_ARGS = {
 }
 
 DEFAULT_TORCHRUN_ARGS = {
-    "nproc_per_node": 4,  # TODO: this is runner-specific. Should parametrize from environment.
+    "nproc_per_node": "4",  # TODO: this is runner-specific. Should parametrize from environment.
     "nnodes": 1,
     "node_rank": 0,
-    "rdzv_id": 123,
+    "rdzv_id": "123",
     "rdzv_endpoint": "127.0.0.1:12345",
 }
 
