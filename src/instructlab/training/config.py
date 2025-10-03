@@ -78,8 +78,13 @@ class TorchrunArgs(BaseModel):
     nproc_per_node: str
     nnodes: int
     node_rank: int
-    rdzv_id: int
+    rdzv_id: str
     rdzv_endpoint: str
+
+    # this will tell the model construct to ignore
+    # extra arguments that aren't part of this model
+    class Config:
+        extra = "ignore"
 
 
 # public API
