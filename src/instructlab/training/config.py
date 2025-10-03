@@ -75,7 +75,7 @@ class TorchrunArgs(BaseModel):
     https://pytorch.org/docs/stable/elastic/run.html#definitions
     """
 
-    nproc_per_node: int
+    nproc_per_node: str
     nnodes: int
     node_rank: int
     rdzv_id: int
