@@ -480,13 +480,18 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
+    # build distributed training command
     command = [
-        "torchrun",
-        f"--nnodes={torch_args.nnodes}",
-        f"--node_rank={torch_args.node_rank}",
-        f"--nproc_per_node={torch_args.nproc_per_node}",
-        f"--rdzv_id={torch_args.rdzv_id}",
-        f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
+        "torchrun"
+    ]
+
+    # ignore empty or unset values from the command
+    for key, value in torch_args.model_dump(exclude_none=True).items():
+        if isinstance(value, str) and value == "":
+            continue
+        command.append(f"--{key}={value}")
+
+    command.extend([
         __file__,
         f"--model_name_or_path={train_args.model_path}",
         f"--data_path={train_args.data_output_dir}/data.jsonl",
@@ -499,7 +504,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--log_level={train_args.log_level}",
         f"--max_batch_len={train_args.max_batch_len}",
         f"--seed={train_args.random_seed}",
-    ]
+    ])
 
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")

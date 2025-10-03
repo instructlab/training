@@ -6,7 +6,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
@@ -75,11 +75,16 @@ class TorchrunArgs(BaseModel):
     https://pytorch.org/docs/stable/elastic/run.html#definitions
     """
 
-    nproc_per_node: int
+    nproc_per_node: Union[str, int]
     nnodes: int
     node_rank: int
-    rdzv_id: int
+    rdzv_id: Union[str, int]
     rdzv_endpoint: str
+
+    # this will tell the model construct to ignore
+    # extra arguments that aren't part of this model
+    class Config:
+        extra = "ignore"
 
 
 # public API
