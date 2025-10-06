@@ -3,7 +3,6 @@
 """
 Collection of config objects used in the InstructLab training library.
 """
-
 # Standard
 from enum import Enum
 from typing import List, Literal, Optional, Union
@@ -75,10 +74,10 @@ class TorchrunArgs(BaseModel):
     https://pytorch.org/docs/stable/elastic/run.html#definitions
     """
 
-    nproc_per_node: Union[str, int]
+    nproc_per_node: str | int
     nnodes: int
     node_rank: int
-    rdzv_id: Union[str, int]
+    rdzv_id: str | int
     rdzv_endpoint: str
 
     # this will tell the model construct to ignore
