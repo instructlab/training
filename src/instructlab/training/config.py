@@ -6,7 +6,7 @@ Collection of config objects used in the InstructLab training library.
 # Standard
 import os
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
