@@ -5,7 +5,7 @@ Collection of config objects used in the InstructLab training library.
 """
 # Standard
 from enum import Enum
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field
