@@ -7,3 +7,7 @@ accelerate>=0.34.2
 
 # earliest fully-compatible version with updated architecture support
 liger-kernel>=0.5.10
+
+# add mamba requirements
+mamba-ssm[causal-conv1d]>=2.2.5
+
