@@ -1,3 +1,7 @@
 flash-attn>=2.6.2
 # required for FSDP updates
 accelerate>=0.34.2
+
+# In order to run Mamba architectures
+mamba-ssm[causal-conv1d]>=2.2.5
+
