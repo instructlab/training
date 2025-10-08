@@ -4,11 +4,12 @@
 Collection of config objects used in the InstructLab training library.
 """
 # Standard
+import os
 from enum import Enum
-from typing import List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 # Third Party
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # public API
@@ -72,13 +73,288 @@ class TorchrunArgs(BaseModel):
     Representation of the arguments being used by torchrun.
     The full list of arguments can be found here:
     https://pytorch.org/docs/stable/elastic/run.html#definitions
+
+    This model implements the precedence order: arg > env > defaults
+    For each argument, it checks both legacy and new environment variables.
     """
 
-    nproc_per_node: str | int
-    nnodes: int
-    node_rank: int
-    rdzv_id: str | int
-    rdzv_endpoint: str
+    # Core distributed training arguments
+    nproc_per_node: Optional[int] = Field(
+        default=None,
+        description="Number of processes per node"
+    )
+    nnodes: Optional[int] = Field(
+        default=None,
+        description="Number of nodes"
+    )
+    node_rank: Optional[int] = Field(
+        default=None,
+        description="Rank of the node"
+    )
+
+    # Master address and port (legacy distributed training)
+    master_addr: Optional[str] = Field(
+        default=None,
+        description="Master node address"
+    )
+    master_port: Optional[int] = Field(
+        default=None,
+        description="Master node port"
+    )
+
+    # Rendezvous configuration
+    rdzv_backend: Optional[str] = Field(
+        default=None,
+        description="Rendezvous backend"
+    )
+    rdzv_endpoint: Optional[str] = Field(
+        default=None,
+        description="Rendezvous endpoint"
+    )
+    rdzv_id: Optional[str] = Field(
+        default=None,
+        description="Rendezvous ID"
+    )
+
+    # Process management
+    max_restarts: Optional[int] = Field(
+        default=None,
+        description="Maximum number of restarts"
+    )
+    monitor_interval: Optional[int] = Field(
+        default=None,
+        description="Monitor interval in seconds"
+    )
+    start_method: Optional[str] = Field(
+        default=None,
+        description="Process start method"
+    )
+
+    # Role and module execution
+    role: Optional[str] = Field(
+        default=None,
+        description="Role of the node"
+    )
+    module: Optional[bool] = Field(
+        default=None,
+        description="Run as module"
+    )
+    no_python: Optional[bool] = Field(
+        default=None,
+        description="Don't use Python"
+    )
+    run_path: Optional[bool] = Field(
+        default=None,
+        description="Run path"
+    )
+
+    # Logging and output
+    log_dir: Optional[str] = Field(
+        default=None,
+        description="Log directory"
+    )
+    redirect_stdout: Optional[bool] = Field(
+        default=None,
+        description="Redirect stdout"
+    )
+    redirect_stderr: Optional[bool] = Field(
+        default=None,
+        description="Redirect stderr"
+    )
+    tee: Optional[bool] = Field(
+        default=None,
+        description="Tee output"
+    )
+
+    @classmethod
+    def _get_env_var_mappings(cls) -> Dict[str, List[List[str]]]:
+        """Get environment variable mappings for each argument."""
+        return {
+            'nproc_per_node': [
+                ['PET_NPROC_PER_NODE', 'NPROC_PER_NODE']
+            ],
+            'nnodes': [
+                ['PET_NNODES', 'NNODES']
+            ],
+            'node_rank': [
+                ['PET_NODE_RANK', 'NODE_RANK'],
+                ['RANK']  # Legacy: RANK can be used to infer node_rank
+            ],
+            'master_addr': [
+                ['PET_MASTER_ADDR', 'MASTER_ADDR'],
+                ['MASTER_ADDRESS']  # Legacy variant
+            ],
+            'master_port': [
+                ['PET_MASTER_PORT', 'MASTER_PORT'],
+                ['MASTER_PORT_NUM']  # Legacy variant
+            ],
+            'rdzv_backend': [
+                ['PET_RDZV_BACKEND', 'RDZV_BACKEND'],
+                ['BACKEND']  # Legacy variant
+            ],
+            'rdzv_endpoint': [
+                ['PET_RDZV_ENDPOINT', 'RDZV_ENDPOINT'],
+                ['MASTER_ADDR', 'MASTER_PORT']  # Legacy: can construct from master_addr:master_port
+            ],
+            'rdzv_id': [
+                ['PET_RDZV_ID', 'RDZV_ID'],
+                ['JOB_ID', 'GROUP_NAME']  # Legacy variants
+            ],
+            'max_restarts': [
+                ['PET_MAX_RESTARTS', 'MAX_RESTARTS'],
+                ['MAX_RESTART']  # Legacy variant
+            ],
+            'monitor_interval': [
+                ['PET_MONITOR_INTERVAL', 'MONITOR_INTERVAL'],
+                ['MONITOR_INTERVAL_SEC']  # Legacy variant
+            ],
+            'start_method': [
+                ['PET_START_METHOD', 'START_METHOD'],
+                ['MP_START_METHOD']  # Legacy variant
+            ],
+            'role': [
+                ['PET_ROLE', 'ROLE'],
+                ['NODE_ROLE']  # Legacy variant
+            ],
+            'module': [
+                ['PET_MODULE', 'MODULE'],
+                ['RUN_AS_MODULE']  # Legacy variant
+            ],
+            'no_python': [
+                ['PET_NO_PYTHON', 'NO_PYTHON'],
+                ['SKIP_PYTHON']  # Legacy variant
+            ],
+            'run_path': [
+                ['PET_RUN_PATH', 'RUN_PATH'],
+                ['USE_RUN_PATH']  # Legacy variant
+            ],
+            'log_dir': [
+                ['PET_LOG_DIR', 'LOG_DIR'],
+                ['LOG_DIRECTORY']  # Legacy variant
+            ],
+            'redirect_stdout': [
+                ['PET_REDIRECT_STDOUT', 'REDIRECT_STDOUT'],
+                ['STDOUT_REDIRECT']  # Legacy variant
+            ],
+            'redirect_stderr': [
+                ['PET_REDIRECT_STDERR', 'REDIRECT_STDERR'],
+                ['STDERR_REDIRECT']  # Legacy variant
+            ],
+            'tee': [
+                ['PET_TEE', 'TEE'],
+                ['TEE_OUTPUT']  # Legacy variant
+            ]
+        }
+
+    @classmethod
+    def from_env_and_args(cls, **kwargs) -> 'TorchrunArgs':
+        """
+        Create TorchrunArgs instance with proper precedence: arg > env > defaults
+
+        Args:
+            **kwargs: Command line arguments that take precedence over environment variables
+
+        Returns:
+            TorchrunArgs instance with values resolved in correct precedence order
+        """
+        resolved_values = {}
+
+        for field_name, env_var_groups in cls._get_env_var_mappings().items():
+            # Start with command line argument if provided
+            if field_name in kwargs and kwargs[field_name] is not None:
+                resolved_values[field_name] = kwargs[field_name]
+                continue
+
+            # Check environment variables in order (new vars first, then legacy)
+            value = None
+            for env_var_group in env_var_groups:
+                for env_var in env_var_group:
+                    env_value = os.getenv(env_var)
+                    if env_value is not None:
+                        value = env_value
+                        break
+                if value is not None:
+                    break
+
+            # Handle special cases for environment variable processing
+            if value is not None:
+                resolved_values[field_name] = cls._process_env_value(field_name, value, env_var_groups)
+            else:
+                # Handle WORLD_SIZE inference for nproc_per_node and nnodes
+                if field_name in ['nproc_per_node', 'nnodes']:
+                    world_size = os.getenv('WORLD_SIZE')
+                    if world_size:
+                        try:
+                            world_size_int = int(world_size)
+                            if field_name == 'nproc_per_node':
+                                # If we have nnodes, calculate nproc_per_node
+                                nnodes = os.getenv('NNODES') or os.getenv('PET_NNODES')
+                                if nnodes:
+                                    resolved_values[field_name] = world_size_int // int(nnodes)
+                            elif field_name == 'nnodes':
+                                # If we have nproc_per_node, calculate nnodes
+                                nproc = os.getenv('NPROC_PER_NODE') or os.getenv('PET_NPROC_PER_NODE')
+                                if nproc:
+                                    resolved_values[field_name] = world_size_int // int(nproc)
+                        except (ValueError, ZeroDivisionError):
+                            pass
+
+        return cls(**resolved_values)
+
+    @classmethod
+    def _process_env_value(cls, field_name: str, value: str, env_var_groups: List[List[str]]) -> Any:
+        """
+        Process environment variable value with appropriate type conversion and special handling
+
+        Args:
+            field_name: Name of the field
+            value: Raw environment variable value
+            env_var_groups: List of environment variable groups for this field
+
+        Returns:
+            Processed value with correct type
+        """
+        # Handle boolean fields
+        if field_name in ['module', 'no_python', 'run_path', 'redirect_stdout', 'redirect_stderr', 'tee']:
+            return value.lower() in ('true', '1', 'yes', 'on')
+
+        # Handle integer fields
+        if field_name in ['nproc_per_node', 'nnodes', 'node_rank', 'master_port', 'max_restarts', 'monitor_interval']:
+            try:
+                return int(value)
+            except ValueError:
+                return None
+
+        # Handle special case for rdzv_endpoint construction from master_addr:master_port
+        if field_name == 'rdzv_endpoint' and ':' not in value:
+            master_addr = os.getenv('MASTER_ADDR') or os.getenv('MASTER_ADDRESS')
+            master_port = os.getenv('MASTER_PORT') or os.getenv('MASTER_PORT_NUM')
+            if master_addr and master_port:
+                return f"{master_addr}:{master_port}"
+            elif master_addr:
+                return f"{master_addr}:29500"  # Default port
+
+        # Handle special case for WORLD_SIZE inference
+        if field_name in ['nproc_per_node', 'nnodes'] and 'WORLD_SIZE' in str(env_var_groups):
+            world_size = os.getenv('WORLD_SIZE')
+            if world_size:
+                try:
+                    world_size_int = int(world_size)
+                    if field_name == 'nproc_per_node':
+                        # If we have nnodes, calculate nproc_per_node
+                        nnodes = os.getenv('NNODES') or os.getenv('TORCHRUN_NNODES')
+                        if nnodes:
+                            return world_size_int // int(nnodes)
+                    elif field_name == 'nnodes':
+                        # If we have nproc_per_node, calculate nnodes
+                        nproc = os.getenv('NPROC_PER_NODE') or os.getenv('TORCHRUN_NPROC_PER_NODE')
+                        if nproc:
+                            return world_size_int // int(nproc)
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+        # Return string value as-is for other fields
+        return value
 
     # this will tell the model construct to ignore
     # extra arguments that aren't part of this model
