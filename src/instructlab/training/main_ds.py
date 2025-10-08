@@ -489,7 +489,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     for key, value in torch_args.model_dump(exclude_none=True).items():
         if isinstance(value, str) and value == "":
             continue
-        command.append(f"--{key}={value}")
+        command.append(f"--{key.replace('_', '-')}={value}")
 
     command.extend([
         __file__,
