@@ -14,6 +14,8 @@ import torch.distributed as dist
 from instructlab.training.batch_packer import batch_lengths_to_minibatches_lpt
 from instructlab.training.padded_batch_packer import (
     batch_lengths_to_minibatches_padded,
+    batch_lengths_to_minibatches_hpu,
+    compute_bucket_size,
 )
 from instructlab.training.type_definitions import CollatedItem
 
@@ -24,10 +26,11 @@ class EpochSampler(Sampler):
     Replaces the naive distributed sampler with reproducible epoch-based shuffling.
     """
 
-    def __init__(self, len_data: int, seed: int = 67, epoch: int = 0):
+    def __init__(self, len_data: int, seed: int = 67, epoch: int = 0, lengths : list[int] = None):
         self.len_data = len_data
         self.seed = seed
         self._epoch = epoch
+        self.lengths = lengths
 
     @property
     def epoch(self) -> int:
@@ -37,9 +40,33 @@ class EpochSampler(Sampler):
         self._epoch = epoch
 
     def generate_samples(self):
-        g = torch.Generator()
-        g.manual_seed(self.seed + self._epoch)
-        samples = torch.randperm(self.len_data, generator=g).tolist()
+        if False : # TODO use device != 'hpu'
+            g = torch.Generator()
+            g.manual_seed(self.seed + self._epoch)
+            samples = torch.randperm(self.len_data, generator=g).tolist()
+        else:
+            sorted_indices = sorted(range(len(self.lengths)), key=lambda i: self.lengths[i], reverse=True)
+
+            # break list of indices into several chunks
+            num_chunks = 4 # TODO add command line parameter
+            chunk_size = len(sorted_indices) // num_chunks
+            chunks = []
+            for i in range(num_chunks):
+                if i == num_chunks - 1:
+                    chunks.append(sorted_indices[i * chunk_size:])
+                else:
+                    chunks.append(sorted_indices[i * chunk_size:(i + 1) * chunk_size])
+
+            import random
+            random.seed(self.seed + self._epoch)
+            random.shuffle(chunks)
+            for chunk in chunks:
+                random.shuffle(chunk)
+
+            # flatten the list
+            from itertools import chain
+            samples = list(chain.from_iterable(chunks))
+
         return samples
 
     def __iter__(self):
@@ -148,6 +175,7 @@ def padded_mb_collate_fn(
 
     # Find max length in this batch
     max_len = max(len(item["input_ids"]) for item in minibatch)
+    max_len = compute_bucket_size(max_len)  #TODO add if device == 'hpu'
 
     # Prepare lists for batched tensors
     padded_input_ids = []
@@ -247,7 +275,8 @@ class MaxTokensPerRankCollator:
             self.batch_packer = batch_lengths_to_minibatches_lpt
             self.collate_fn = mb_collate_fn
         else:
-            self.batch_packer = batch_lengths_to_minibatches_padded
+            #self.batch_packer = batch_lengths_to_minibatches_padded
+            self.batch_packer = batch_lengths_to_minibatches_hpu       #TODO add if device == 'hpu'
             # Create a wrapper for padded collate that includes pad_token_id
             self.collate_fn = (
                 lambda minibatch, batch_num_loss_counted_tokens: padded_mb_collate_fn(
@@ -365,7 +394,7 @@ def get_data_loader(
         DataLoader configured with appropriate collator based on flash_enabled
     """
     dataset = TokenDataset(data_path)
-    sampler = EpochSampler(len(dataset), seed=seed)
+    sampler = EpochSampler(len(dataset), seed=seed, lengths = dataset.get_lengths())
 
     # Create unified collator with appropriate mode
     collate_fn = MaxTokensPerRankCollator(
