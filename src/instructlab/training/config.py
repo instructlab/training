@@ -3,13 +3,12 @@
 """
 Collection of config objects used in the InstructLab training library.
 """
-
 # Standard
 from enum import Enum
 from typing import List, Literal, Optional
 
 # Third Party
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # public API
@@ -73,13 +72,22 @@ class TorchrunArgs(BaseModel):
     Representation of the arguments being used by torchrun.
     The full list of arguments can be found here:
     https://pytorch.org/docs/stable/elastic/run.html#definitions
+
+    This model implements the precedence order: arg > env > defaults
+    For each argument, it checks both legacy and new environment variables.
     """
 
-    nproc_per_node: int
+    # Core distributed training arguments
+    nproc_per_node: Literal["gpu"] | int
     nnodes: int
     node_rank: int
-    rdzv_id: int
+    rdzv_id: str | int
     rdzv_endpoint: str
+
+    # this will tell the model construct to ignore
+    # extra arguments that aren't part of this model
+    class Config:
+        extra = "ignore"
 
 
 # public API
