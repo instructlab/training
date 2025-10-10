@@ -4,9 +4,8 @@
 Collection of config objects used in the InstructLab training library.
 """
 # Standard
-import os
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import List, Literal, Optional
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -79,7 +78,7 @@ class TorchrunArgs(BaseModel):
     """
 
     # Core distributed training arguments
-    nproc_per_node: str | int
+    nproc_per_node: Literal["gpu"] | int
     nnodes: int
     node_rank: int
     rdzv_id: str | int
