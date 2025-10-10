@@ -7,7 +7,7 @@ transformers>=4.55.0
 
 datasets>=2.15.0
 numba
-numpy>=1.26.4,<2.3
+numpy>=1.26.4
 rich
 trl>=0.9.4
 peft
