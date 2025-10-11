@@ -83,7 +83,7 @@ jupyterlab-widgets==3.0.15  # via ipywidgets
 kiwisolver==1.4.9         # via matplotlib
 lark==1.2.2               # via rfc3987-syntax
 liger-kernel==0.6.2       # via -r requirements-cuda.txt
-llvmlite==0.44.0          # via numba
+llvmlite==0.45.0          # via numba
 markdown==3.8.2           # via tensorboard
 markdown-it-py==4.0.0     # via rich
 markupsafe==3.0.2         # via jinja2, nbconvert, werkzeug
