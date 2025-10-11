@@ -6,8 +6,8 @@ torch>=2.6.0
 transformers>=4.55.0
 
 datasets>=2.15.0
-numba
-numpy>=1.26.4,<2.3
+numba>= 0.62.0
+numpy>=1.26.4
 rich
 trl>=0.9.4
 peft
