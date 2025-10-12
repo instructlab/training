@@ -8,7 +8,7 @@ from enum import Enum
 from typing import List, Literal, Optional
 
 # Third Party
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # public API
@@ -69,12 +69,11 @@ class DataProcessArgs(BaseModel):
 # public API
 class TorchrunArgs(BaseModel):
     """
-    Representation of the arguments being used by torchrun.
-    The full list of arguments can be found here:
-    https://pytorch.org/docs/stable/elastic/run.html#definitions
+    Arguments for torchrun (https://pytorch.org/docs/stable/elastic/run.html#definitions)
 
-    This model implements the precedence order: arg > env > defaults
-    For each argument, it checks both legacy and new environment variables.
+    Precedence order: arg > env > defaults
+    Ensures that either `rdzv_endpoint` OR both `master_addr` and `master_port`
+    are provided, but not both.
     """
 
     # Core distributed training arguments
@@ -82,12 +81,24 @@ class TorchrunArgs(BaseModel):
     nnodes: int
     node_rank: int
     rdzv_id: str | int
-    rdzv_endpoint: str
 
-    # this will tell the model construct to ignore
-    # extra arguments that aren't part of this model
-    class Config:
-        extra = "ignore"
+    # Rendezvous / master configuration
+    rdzv_endpoint: Optional[str] = None
+    master_addr: Optional[str] = None
+    master_port: Optional[int] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="after")
+    def validate_endpoint_config(self):
+        has_rdzv = self.rdzv_endpoint is not None
+        has_master = self.master_addr is not None or self.master_port is not None
+
+        if has_rdzv == has_master:
+            raise ValueError(
+                "Provide either `rdzv_endpoint` OR both `master_addr` and `master_port`, not both."
+            )
+        return self
 
 
 # public API
