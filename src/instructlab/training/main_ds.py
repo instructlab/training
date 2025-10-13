@@ -481,9 +481,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
     # build distributed training command
-    command = [
-        "torchrun"
-    ]
+    command = ["torchrun"]
 
     # ignore empty or unset values from the command
     for key, value in torch_args.model_dump(exclude_none=True).items():
@@ -491,20 +489,22 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             continue
         command.append(f"--{key.replace('_', '-')}={value}")
 
-    command.extend([
-        __file__,
-        f"--model_name_or_path={train_args.model_path}",
-        f"--data_path={train_args.data_output_dir}/data.jsonl",
-        f"--output_dir={train_args.ckpt_output_dir}",
-        f"--num_epochs={train_args.num_epochs}",
-        f"--effective_batch_size={train_args.effective_batch_size}",
-        f"--learning_rate={train_args.learning_rate}",
-        f"--num_warmup_steps={train_args.warmup_steps}",
-        f"--save_samples={train_args.save_samples}",
-        f"--log_level={train_args.log_level}",
-        f"--max_batch_len={train_args.max_batch_len}",
-        f"--seed={train_args.random_seed}",
-    ])
+    command.extend(
+        [
+            __file__,
+            f"--model_name_or_path={train_args.model_path}",
+            f"--data_path={train_args.data_output_dir}/data.jsonl",
+            f"--output_dir={train_args.ckpt_output_dir}",
+            f"--num_epochs={train_args.num_epochs}",
+            f"--effective_batch_size={train_args.effective_batch_size}",
+            f"--learning_rate={train_args.learning_rate}",
+            f"--num_warmup_steps={train_args.warmup_steps}",
+            f"--save_samples={train_args.save_samples}",
+            f"--log_level={train_args.log_level}",
+            f"--max_batch_len={train_args.max_batch_len}",
+            f"--seed={train_args.random_seed}",
+        ]
+    )
 
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")

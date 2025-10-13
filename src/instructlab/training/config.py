@@ -3,6 +3,7 @@
 """
 Collection of config objects used in the InstructLab training library.
 """
+
 # Standard
 from enum import Enum
 from typing import List, Literal, Optional
