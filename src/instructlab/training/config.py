@@ -91,8 +91,8 @@ class TorchrunArgs(BaseModel):
 
     @model_validator(mode="after")
     def validate_endpoint_config(self):
-        has_rdzv = self.rdzv_endpoint is not None
-        has_master = self.master_addr is not None or self.master_port is not None
+        has_rdzv = bool(self.rdzv_endpoint)
+        has_master = bool(self.master_addr) or bool(self.master_port)
 
         if has_rdzv == has_master:
             raise ValueError(
