@@ -488,21 +488,23 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         f"--node-rank={torch_args.node_rank}",
         f"--rdzv-id={torch_args.rdzv_id}",
     ]
-     
+
     # validation should have already caught the mutually exclusive case earlier, but here we check
     # anyway just to be extra sure since Python is not type-safe and validation can bypassed (e.g. during testing)
     if torch_args.master_addr and torch_args.rdzv_endpoint:
-        raise ValueError("`torch_args.master_addr` and `torch_args.rdzv_endpoint` cannot be passed at the same time; please pass only one")
-     
+        raise ValueError(
+            "`torch_args.master_addr` and `torch_args.rdzv_endpoint` cannot be passed at the same time; please pass only one"
+        )
+
     if torch_args.master_addr:
-        command += [
-            f"--master-addr={torch_args.master_addr}",
-            "--backend=static"
-        ]
-        command += [f"--master-port={torch_args.master_port}"] if torch_args.master_port else []
+        command += [f"--master-addr={torch_args.master_addr}", "--backend=static"]
+        command += (
+            [f"--master-port={torch_args.master_port}"]
+            if torch_args.master_port
+            else []
+        )
     elif torch_args.rdzv_endpoint:
         command += [f"--rdzv-endpoint={torch_args.rdzv_endpoint}"]
-
 
     command.extend(
         [
