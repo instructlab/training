@@ -497,7 +497,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     if torch_args.master_addr:
-        command += [f"--master-addr={torch_args.master_addr}", "--backend=static"]
+        command += [
+            f"--master-addr={torch_args.master_addr}",
+            "--rdzv-backend=static",
+        ]
         command += (
             [f"--master-port={torch_args.master_port}"]
             if torch_args.master_port
