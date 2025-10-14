@@ -480,26 +480,53 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
+    # build distributed training command
     command = [
         "torchrun",
+        f"--nproc-per-node={torch_args.nproc_per_node}",
         f"--nnodes={torch_args.nnodes}",
-        f"--node_rank={torch_args.node_rank}",
-        f"--nproc_per_node={torch_args.nproc_per_node}",
-        f"--rdzv_id={torch_args.rdzv_id}",
-        f"--rdzv_endpoint={torch_args.rdzv_endpoint}",
-        __file__,
-        f"--model_name_or_path={train_args.model_path}",
-        f"--data_path={train_args.data_output_dir}/data.jsonl",
-        f"--output_dir={train_args.ckpt_output_dir}",
-        f"--num_epochs={train_args.num_epochs}",
-        f"--effective_batch_size={train_args.effective_batch_size}",
-        f"--learning_rate={train_args.learning_rate}",
-        f"--num_warmup_steps={train_args.warmup_steps}",
-        f"--save_samples={train_args.save_samples}",
-        f"--log_level={train_args.log_level}",
-        f"--max_batch_len={train_args.max_batch_len}",
-        f"--seed={train_args.random_seed}",
+        f"--node-rank={torch_args.node_rank}",
+        f"--rdzv-id={torch_args.rdzv_id}",
     ]
+
+    # validation should have already caught the mutually exclusive case earlier, but here we check
+    # anyway just to be extra sure since Python is not type-safe and validation can bypassed (e.g. during testing)
+    if torch_args.master_addr and torch_args.rdzv_endpoint:
+        raise ValueError(
+            "`torch_args.master_addr` and `torch_args.rdzv_endpoint` cannot be passed at the same time; please pass only one"
+        )
+
+    if torch_args.master_addr:
+        command += [
+            f"--master-addr={torch_args.master_addr}",
+            "--rdzv-backend=static",
+        ]
+        command += (
+            [f"--master-port={torch_args.master_port}"]
+            if torch_args.master_port
+            else []
+        )
+    elif torch_args.rdzv_endpoint:
+        command += [f"--rdzv-endpoint={torch_args.rdzv_endpoint}"]
+    else:
+        command += ["--standalone"]
+
+    command.extend(
+        [
+            __file__,
+            f"--model_name_or_path={train_args.model_path}",
+            f"--data_path={train_args.data_output_dir}/data.jsonl",
+            f"--output_dir={train_args.ckpt_output_dir}",
+            f"--num_epochs={train_args.num_epochs}",
+            f"--effective_batch_size={train_args.effective_batch_size}",
+            f"--learning_rate={train_args.learning_rate}",
+            f"--num_warmup_steps={train_args.warmup_steps}",
+            f"--save_samples={train_args.save_samples}",
+            f"--log_level={train_args.log_level}",
+            f"--max_batch_len={train_args.max_batch_len}",
+            f"--seed={train_args.random_seed}",
+        ]
+    )
 
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")

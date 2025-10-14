@@ -9,7 +9,7 @@ from enum import Enum
 from typing import List, Literal, Optional
 
 # Third Party
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # public API
@@ -70,16 +70,33 @@ class DataProcessArgs(BaseModel):
 # public API
 class TorchrunArgs(BaseModel):
     """
-    Representation of the arguments being used by torchrun.
-    The full list of arguments can be found here:
-    https://pytorch.org/docs/stable/elastic/run.html#definitions
+    Arguments for torchrun (https://pytorch.org/docs/stable/elastic/run.html#definitions)
+
+    Precedence order: arg > env > defaults
+    Ensures that either `rdzv_endpoint` OR both `master_addr` and `master_port`
+    are provided, but not both.
     """
 
-    nproc_per_node: int
+    # Core distributed training arguments
+    nproc_per_node: Literal["gpu"] | int
     nnodes: int
     node_rank: int
-    rdzv_id: int
-    rdzv_endpoint: str
+    rdzv_id: str | int
+
+    # Rendezvous / master configuration
+    rdzv_endpoint: Optional[str] = None
+    master_addr: Optional[str] = None
+    master_port: Optional[int] = None
+
+    model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="after")
+    def validate_endpoint_config(self):
+        if self.rdzv_endpoint and self.master_addr:
+            raise ValueError(
+                "Provide either `rdzv_endpoint` OR both `master_addr` and `master_port`, not both."
+            )
+        return self
 
 
 # public API
