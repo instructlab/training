@@ -92,10 +92,7 @@ class TorchrunArgs(BaseModel):
 
     @model_validator(mode="after")
     def validate_endpoint_config(self):
-        has_rdzv = bool(self.rdzv_endpoint)
-        has_master = bool(self.master_addr) or bool(self.master_port)
-
-        if has_rdzv == has_master:
+        if self.rdzv_endpoint and self.master_addr:
             raise ValueError(
                 "Provide either `rdzv_endpoint` OR both `master_addr` and `master_port`, not both."
             )
