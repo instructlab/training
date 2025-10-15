@@ -348,7 +348,9 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     NUM_PROC = args.num_cpu_procs
 
     _, SPECIAL_TOKENS = retrieve_chat_template(args.chat_tmpl_path)
-    tokenizer = setup_tokenizer(args.model_path, args.chat_tmpl_path)
+    tokenizer = setup_tokenizer(
+        args.model_path, args.chat_tmpl_path, trust_remote_code=args.trust_remote_code
+    )
 
     (
         system_tk,
@@ -1081,6 +1083,7 @@ def process_messages_into_input_ids(
     max_seq_len: int,
     model_path: str,
     num_cpu_procs: int,
+    trust_remote_code: bool = False,
 ) -> None:
     """
     Process data for training using the updated unmasking logic.
@@ -1100,6 +1103,7 @@ def process_messages_into_input_ids(
         max_seq_len: Maximum sequence length for filtering samples
         model_path: Path to the pre-trained model
         num_cpu_procs: Number of CPU processes for parallel processing
+        trust_remote_code: Whether to trust remote code when loading the tokenizer
 
     Returns:
         None
@@ -1110,7 +1114,7 @@ def process_messages_into_input_ids(
     ensure_can_write_to_directory(data_output_path)
 
     data = load_and_validate_dataset(data_path, num_cpu_procs)
-    tokenizer = configure_tokenizer(model_path)
+    tokenizer = configure_tokenizer(model_path, trust_remote_code=trust_remote_code)
     data_with_input_ids_and_labels = process_samples(data, tokenizer, num_cpu_procs)
 
     # provide an analysis of dataset statistics -- for legacy compatibility
@@ -1181,9 +1185,13 @@ def load_and_validate_dataset(data_path: str, num_procs: int) -> Dataset:
     )
 
 
-def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
+def configure_tokenizer(
+    model_path: str, trust_remote_code: bool = False
+) -> PreTrainedTokenizer:
     """Configure the tokenizer with necessary special tokens."""
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=trust_remote_code
+    )
 
     if not tokenizer.chat_template:
         raise ValueError(
@@ -1365,6 +1373,7 @@ def process_data(
     model_path: str,
     num_cpu_procs: int,
     chat_tmpl_path: str | None = None,
+    trust_remote_code: bool = False,
 ):
     """
     Process data for training using the updated unmasking logic.
@@ -1378,6 +1387,7 @@ def process_data(
         num_cpu_procs (int): Number of CPU processes for parallel processing.
         chat_tmpl_path (str):
             Path to the chat template and special tokens. When this argument is used, the legacy data processing method will be used. Otherwise, the new data processing method will be used.
+        trust_remote_code (bool): Whether to trust remote code when loading the tokenizer.
     """
     if chat_tmpl_path:
         warnings.warn(
@@ -1392,6 +1402,7 @@ def process_data(
             model_path=model_path,
             chat_tmpl_path=chat_tmpl_path,
             num_cpu_procs=num_cpu_procs,
+            trust_remote_code=trust_remote_code,
         )
         process_messages_into_input_ids_with_chat_template(args)
     else:
@@ -1401,6 +1412,7 @@ def process_data(
             max_seq_len=max_seq_len,
             model_path=model_path,
             num_cpu_procs=num_cpu_procs,
+            trust_remote_code=trust_remote_code,
         )
 
 
@@ -1421,6 +1433,7 @@ def main(args: DataProcessArgs):
         max_seq_len=args.max_seq_len,
         model_path=args.model_path,
         num_cpu_procs=args.num_cpu_procs,
+        trust_remote_code=args.trust_remote_code,
     )
 
 
@@ -1461,6 +1474,11 @@ if __name__ == "__main__":
         default=16,
         help="Number of cpu processes for data processing",
     )
+    parser.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        help="Whether to trust remote code when loading the tokenizer",
+    )
     args = parser.parse_args()
     setup_root_logger(args.logging_level)
     if args.chat_tmpl_path:
@@ -1471,6 +1489,7 @@ if __name__ == "__main__":
             model_path=args.model_name_or_path,
             chat_tmpl_path=args.chat_tmpl_path,
             num_cpu_procs=args.num_cpu_procs,
+            trust_remote_code=args.trust_remote_code,
         )
         process_messages_into_input_ids_with_chat_template(data_process_args)
     else:
@@ -1480,6 +1499,7 @@ if __name__ == "__main__":
             max_seq_len=args.max_seq_len,
             model_path=args.model_name_or_path,
             num_cpu_procs=args.num_cpu_procs,
+            trust_remote_code=args.trust_remote_code,
         )
 
 

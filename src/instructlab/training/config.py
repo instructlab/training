@@ -62,6 +62,10 @@ class DataProcessArgs(BaseModel):
         default=16,
         description="this is the number of CPU procs we use for data processing parallelization",
     )
+    trust_remote_code: bool = Field(
+        default=False,
+        description="whether to trust remote code when loading the tokenizer",
+    )
 
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
