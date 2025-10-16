@@ -334,9 +334,9 @@ def _check_batch_cost(
             if cost < max_cost:
                 break
 
-            # bin overflow, remove sample from current bin and try next bin
+            # bin overflow, move last sample to next bin if possible
             if len(bins[current_bin]) == 1:
-                return None 
+                break 
             
             if current_bin >= num_ranks - 1:
                 return None
@@ -361,26 +361,25 @@ def _distribute_samples_across_ranks(
 
     # find optimal distribution based on batch cost
     prev_bin_sizes = None
-    epsilon = 1e-6
+    epsilon = 1. # cost has same OOM as batch token count
     while upper_bound - lower_bound > epsilon:
         mid = (lower_bound + upper_bound) / 2
         cur_bin_sizes = _check_batch_cost(sorted_lengths, num_ranks, mid)
 
         if cur_bin_sizes is None:
             lower_bound = mid + epsilon
-            continue
         else:
             upper_bound = mid
-            if prev_bin_sizes == cur_bin_sizes:
-                break
             prev_bin_sizes = cur_bin_sizes
 
     # sanity check
     if prev_bin_sizes is not None:
-        if (any(size <= 0 for size in prev_bin_sizes) or 
-            len(prev_bin_sizes) != num_ranks or 
-            sum(prev_bin_sizes) != len(sorted_lengths)):
-            raise ValueError("Something went wrong")
+        if (len(prev_bin_sizes) != num_ranks or sum(prev_bin_sizes) != len(sorted_lengths)):
+            raise ValueError("Something went wrong, we lost samples during distribution across ranks")
+
+        if any(size == 0 for size in prev_bin_sizes):
+            if any(size > 1 for size in prev_bin_sizes):
+                raise ValueError("Something went wrong, we put more than one sample per rank for small batch")
         
     return prev_bin_sizes
 
@@ -393,10 +392,11 @@ def _check_batch_size_in_tokens(
 
     first_sample_idx = 0
     for bs in minibatch_sizes:
-        minibatch = sorted_lengths[first_sample_idx:first_sample_idx + bs]
-        if _batch_size_in_tokens(minibatch) >= max_tokens:
-            return False
-        first_sample_idx += bs
+        if bs > 0:
+            minibatch = sorted_lengths[first_sample_idx:first_sample_idx + bs]
+            if _batch_size_in_tokens(minibatch) >= max_tokens:
+                return False
+            first_sample_idx += bs
     return True
     
 
@@ -408,8 +408,11 @@ def _compute_sample_indeces_for_current_rank(
 
     sorted_indices = np.argsort(lengths)[::-1]
     minibatch_indices = []
+    first_sample_idx = 0
     for minibatch in minibatches:
-        minibatch_indices.append(sorted_indices[sum(minibatch[:rank]):sum(minibatch[:rank+1])].tolist())
+        first_sample_idx += sum(minibatch[:rank])
+        minibatch_indices.append(sorted_indices[first_sample_idx:first_sample_idx + minibatch[rank]].tolist())
+        first_sample_idx += sum(minibatch[rank:])
     return minibatch_indices
 
 
@@ -476,6 +479,18 @@ def _batch_packing_core_hpu(
 
     # compute indices for current rank
     minibatch_indices = _compute_sample_indeces_for_current_rank(lengths, minibatches, rank)
+
+    # sanity check
+    from itertools import chain
+    all_indices = list(chain.from_iterable(minibatch_indices))
+    if len(all_indices) != len(set(all_indices)):
+        raise ValueError("Something went wrong, duplicated indices in the list")
+
+    # add one dummy sample to each empty minibatch
+    for minibatch in minibatch_indices:
+        if len(minibatch) == 0:
+            minibatch.append(-1)
+
     return minibatch_indices
 
 
