@@ -383,6 +383,8 @@ def main(args):
         num_workers=8,  # I don't like this but am setting it for consistency
         flash_enabled=flash_enabled,
         pad_token_id=pad_token_id,
+        num_chunks=args.num_chunks,
+        use_hpu_packer=(args.device=="hpu"),
     )
 
     if args.local_rank == 0:
@@ -600,9 +602,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
 
-    command.append(
-        f"--device={train_args.device}"
-    )
+    command.append(f"--device={train_args.device}")
+    if train_args.torch_compile:
+        command.append("--torch-compile")
+    command.append(f"--num-chunks={train_args.num_chunks}")
+
 
     logger.info("Running training command as subprocess: %s", " ".join(command))
     process = None
@@ -810,6 +814,17 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="PyTorch device to use.",
+    )
+    parser.add_argument(
+        '--torch-compile',
+        action='store_true', default=False,
+        help='Enable torch.compile, hpu only.'
+    )    
+    parser.add_argument(
+        '--num-chunks',
+        type=int,
+        default=1,
+        help='Number of chunks to split dataset into for sequential training.'
     )
 
     args = parser.parse_args()

@@ -57,12 +57,14 @@ class Model:
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
         device: Optional[str] = None,
+        torch_compile: bool = False,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
         self.device = device
+        self.torch_compile = torch_compile
         quant_config = None
 
         # check model type & set on the mclasss
@@ -105,7 +107,7 @@ class Model:
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
 
-        if self.device == "hpu" and os.getenv("HPU_ENABLE_TORCH_COMPILE", False):
+        if self.device == "hpu" and self.torch_compile:
             cache_size_limit = 10*1000
             torch._dynamo.config.cache_size_limit = cache_size_limit
             torch._dynamo.config.accumulated_cache_size_limit = 2*cache_size_limit

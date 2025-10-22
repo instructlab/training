@@ -256,3 +256,6 @@ class TrainingArgs(BaseModel):
     )
 
     device: Optional[str] = None
+    torch_compile: bool = False
+    num_chunks: int = 1
+    

@@ -61,7 +61,7 @@ class BatchLossManager:
         self.world_size: int = world_size
         self.local_rank: int = local_rank
         if device == "hpu":
-            self.torch_device = torch.device("hpu", local_rank)
+            self.torch_device = torch.device("hpu")
         else:
             self.torch_device = torch.device("cuda", local_rank)
 
