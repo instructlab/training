@@ -531,6 +531,7 @@ class CausalLMModel(Model):
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
         device: Optional[str] = None,
+        torch_compile: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -541,6 +542,7 @@ class CausalLMModel(Model):
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
             device=device,
+            torch_compile=torch_compile,
         )
         self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()

@@ -111,7 +111,7 @@ def train(
     global_grad_norm = None
 
     # Initialize the batch loss manager
-    batch_loss_manager = BatchLossManager(model, accelerator, world_size, local_rank, args.device)
+    batch_loss_manager = BatchLossManager(model, accelerator, world_size, local_rank, args.device, args.device=="hpu" and args.torch_compile)
 
     # Blast through batches
     for epoch in range(args.current_epoch, args.num_epochs):
@@ -346,6 +346,7 @@ def main(args):
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
         device=args.device,
+        torch_compile=args.torch_compile,
     )
 
     args.base_model_args = m.base_model_args
