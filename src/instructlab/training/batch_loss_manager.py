@@ -174,7 +174,7 @@ class BatchLossManager:
         total_batch_loss = (
             accumulated_loss * self.world_size / batch_num_loss_counted_tokens
         )
-        if self.model.is_gpt_oss and accumulated_aux_loss is not None:
+        if accumulated_aux_loss is not None:
             total_batch_loss += accumulated_aux_loss
 
         # reduce across ranks
