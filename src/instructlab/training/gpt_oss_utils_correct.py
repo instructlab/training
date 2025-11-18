@@ -411,7 +411,9 @@ def is_gpt_oss(model_path_or_config: str | PretrainedConfig) -> bool:
     return getattr(model_config, "model_type", None) == "gpt_oss"
 
 
-def is_known_model(model_path_or_config: str | PretrainedConfig, known_model_type: str | list[str]) -> bool:
+def is_known_model(
+    model_path_or_config: str | PretrainedConfig, known_model_type: str | list[str]
+) -> bool:
     """
     Determine if the model is a known model.
     """
@@ -425,7 +427,9 @@ def is_known_model(model_path_or_config: str | PretrainedConfig, known_model_typ
     if isinstance(model_path_or_config, str):
         model_config = AutoConfig.from_pretrained(model_path_or_config)
 
-    known_model_types = [known_model_type] if isinstance(known_model_type, str) else known_model_type
+    known_model_types = (
+        [known_model_type] if isinstance(known_model_type, str) else known_model_type
+    )
     return getattr(model_config, "model_type", None) in known_model_types
 
 
