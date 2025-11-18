@@ -346,12 +346,13 @@ def main(args):
     #       GPT-OSS specifically
     # We don't want to use use_orig_params for GPT-OSS models
     fsdp_should_use_orig_params = False
-    if m.is_gpt_oss:
-        logger.info("🎯 Detected GPT-OSS model - freezing router parameters")
-        freeze_router_params(m)
-        # For GPT-OSS, we need to use the original parameters so we can properly
-        # freeze the router parameters.
-        fsdp_should_use_orig_params = True
+    if m.is_gpt_oss or m.is_granitemoehybrid:  # NOTE is this guard needed?
+        frozen_router_params = freeze_router_params(m)
+        if frozen_router_params:
+            logger.info("🎯 Detected an MoE model - frozen router parameters")
+            # For an MoE model, we need to use the original parameters so we can properly
+            # freeze the router parameters.
+            fsdp_should_use_orig_params = True
 
     # Mini_trainer approach: simplified setup
     # No complex calculations needed - the data loader handles everything

@@ -43,7 +43,7 @@ from instructlab.training.config import (  # Adjust this import if needed
     DistributedBackend,
     Optimizer,
 )
-from instructlab.training.gpt_oss_utils_correct import is_gpt_oss
+from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
 
 
@@ -65,6 +65,7 @@ class Model:
         quant_config = None
 
         # check model type & set on the mclasss
+        self.is_granitemoehybrid = is_known_model(model_path, "granitemoehybrid")
         self.is_gpt_oss = is_gpt_oss(model_path)
         if self.is_gpt_oss:
             # Third Party
@@ -418,7 +419,7 @@ class Model:
 
         # add the MoE auxiliary loss (currently we only support this for GPT-OSS)
         if (
-            self.is_gpt_oss
+            (self.is_gpt_oss or self.is_granitemoehybrid)  # NOTE is this guard needed?
             and hasattr(output, "aux_loss")
             and output.aux_loss is not None
         ):
@@ -429,7 +430,7 @@ class Model:
         scaled_main_loss = primary_loss * world_size / samples_in_batch
 
         # For GPT-OSS: add unscaled auxiliary loss after scaling main loss
-        if self.is_gpt_oss and aux_loss is not None:
+        if aux_loss is not None:
             scaled_main_loss += aux_loss
 
         raw_losses = ModelLosses(main_loss=primary_loss, aux_loss=aux_loss)
