@@ -346,7 +346,7 @@ def main(args):
     #       GPT-OSS specifically
     # We don't want to use use_orig_params for GPT-OSS models
     fsdp_should_use_orig_params = False
-    if m.is_gpt_oss or m.is_granitemoehybrid:  # NOTE is this guard needed?
+    if m.is_gpt_oss or m.is_granitemoehybrid:
         frozen_router_params = freeze_router_params(m)
         if frozen_router_params:
             logger.info("🎯 Detected an MoE model - frozen router parameters")

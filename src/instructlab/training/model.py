@@ -419,7 +419,7 @@ class Model:
 
         # add the MoE auxiliary loss (currently we only support this for GPT-OSS)
         if (
-            (self.is_gpt_oss or self.is_granitemoehybrid)  # NOTE is this guard needed?
+            (self.is_gpt_oss or self.is_granitemoehybrid)
             and hasattr(output, "aux_loss")
             and output.aux_loss is not None
         ):
