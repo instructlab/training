@@ -14,6 +14,8 @@ import torch.distributed as dist
 from instructlab.training.batch_packer import batch_lengths_to_minibatches_lpt
 from instructlab.training.padded_batch_packer import (
     batch_lengths_to_minibatches_padded,
+    batch_lengths_to_minibatches_hpu,
+    compute_bucket_size,
 )
 from instructlab.training.type_definitions import CollatedItem
 
@@ -24,10 +26,12 @@ class EpochSampler(Sampler):
     Replaces the naive distributed sampler with reproducible epoch-based shuffling.
     """
 
-    def __init__(self, len_data: int, seed: int = 67, epoch: int = 0):
+    def __init__(self, len_data: int, seed: int = 67, epoch: int = 0, lengths: list[int] = None, num_chunks: int = 1):
         self.len_data = len_data
         self.seed = seed
         self._epoch = epoch
+        self.lengths = lengths
+        self.num_chunks = num_chunks
 
     @property
     def epoch(self) -> int:
@@ -37,9 +41,32 @@ class EpochSampler(Sampler):
         self._epoch = epoch
 
     def generate_samples(self):
-        g = torch.Generator()
-        g.manual_seed(self.seed + self._epoch)
-        samples = torch.randperm(self.len_data, generator=g).tolist()
+        if self.num_chunks == 1 :
+            g = torch.Generator()
+            g.manual_seed(self.seed + self._epoch)
+            samples = torch.randperm(self.len_data, generator=g).tolist()
+        else:
+            sorted_indices = sorted(range(len(self.lengths)), key=lambda i: self.lengths[i], reverse=True)
+
+            # break list of indices into several chunks
+            chunk_size = len(sorted_indices) // self.num_chunks
+            chunks = []
+            for i in range(self.num_chunks):
+                if i == self.num_chunks - 1:
+                    chunks.append(sorted_indices[i * chunk_size:])
+                else:
+                    chunks.append(sorted_indices[i * chunk_size:(i + 1) * chunk_size])
+
+            import random
+            random.seed(self.seed + self._epoch)
+            random.shuffle(chunks)
+            for chunk in chunks:
+                random.shuffle(chunk)
+
+            # flatten the list
+            from itertools import chain
+            samples = list(chain.from_iterable(chunks))
+
         return samples
 
     def __iter__(self):
@@ -113,7 +140,7 @@ def mb_collate_fn(minibatch, batch_num_loss_counted_tokens) -> CollatedItem:
 
 
 def padded_mb_collate_fn(
-    minibatch, batch_num_loss_counted_tokens, pad_token_id=0
+    minibatch, batch_num_loss_counted_tokens, pad_token_id=0, use_hpu_packer: bool = False,
 ) -> CollatedItem:
     """Collates a list of samples into a padded batch for standard attention.
 
@@ -148,6 +175,8 @@ def padded_mb_collate_fn(
 
     # Find max length in this batch
     max_len = max(len(item["input_ids"]) for item in minibatch)
+    if use_hpu_packer:
+        max_len = compute_bucket_size(max_len)
 
     # Prepare lists for batched tensors
     padded_input_ids = []
@@ -221,6 +250,7 @@ class MaxTokensPerRankCollator:
         dummy_sample=None,
         flash_enabled: bool = True,
         pad_token_id: int = 0,
+        use_hpu_packer: bool = False,
     ):
         self.max_tokens_per_rank = max_tokens_per_rank
         self.flash_enabled = flash_enabled
@@ -247,11 +277,14 @@ class MaxTokensPerRankCollator:
             self.batch_packer = batch_lengths_to_minibatches_lpt
             self.collate_fn = mb_collate_fn
         else:
-            self.batch_packer = batch_lengths_to_minibatches_padded
+            if not use_hpu_packer:
+                self.batch_packer = batch_lengths_to_minibatches_padded
+            else:
+                self.batch_packer = batch_lengths_to_minibatches_hpu
             # Create a wrapper for padded collate that includes pad_token_id
             self.collate_fn = (
                 lambda minibatch, batch_num_loss_counted_tokens: padded_mb_collate_fn(
-                    minibatch, batch_num_loss_counted_tokens, pad_token_id
+                    minibatch, batch_num_loss_counted_tokens, pad_token_id, use_hpu_packer
                 )
             )
 
@@ -346,6 +379,8 @@ def get_data_loader(
     num_workers: int = 0,
     flash_enabled: bool = True,
     pad_token_id: int = 0,
+    num_chunks: int = 1,
+    use_hpu_packer: bool = False,
 ):
     """Create a data loader with epoch-based sampling and batch packing.
 
@@ -360,12 +395,14 @@ def get_data_loader(
         num_workers: Number of data loading workers
         flash_enabled: Whether flash attention is enabled (affects collation strategy)
         pad_token_id: Token ID to use for padding (only used when flash_enabled=False)
+        num_chunks: Number of chunks to split dataset into for sequential training 
+        use_hpu_packer: Use HPU specific packer       
 
     Returns:
         DataLoader configured with appropriate collator based on flash_enabled
     """
     dataset = TokenDataset(data_path)
-    sampler = EpochSampler(len(dataset), seed=seed)
+    sampler = EpochSampler(len(dataset), seed=seed, lengths = dataset.get_lengths(), num_chunks = num_chunks)
 
     # Create unified collator with appropriate mode
     collate_fn = MaxTokensPerRankCollator(
@@ -375,6 +412,7 @@ def get_data_loader(
         dummy_sample=dummy_sample,
         flash_enabled=flash_enabled,
         pad_token_id=pad_token_id,
+        use_hpu_packer = use_hpu_packer,
     )
 
     return DataLoader(
