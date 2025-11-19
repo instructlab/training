@@ -1257,7 +1257,7 @@ def analyze_dataset_statistics(
 
     if num_dropped_samples == len(data):
         raise RuntimeError(
-            f"Dataset does not contain any samples containing less than {args.max_seq_len=} tokens.\n"
+            f"Dataset does not contain any samples containing less than {max_seq_len=} tokens.\n"
             f"Please consider increasing your `max_seq_len` value, or adding more samples."
         )
 
