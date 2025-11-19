@@ -398,17 +398,7 @@ def is_gpt_oss(model_path_or_config: str | PretrainedConfig) -> bool:
     """
     Determine if we should convert GPT-OSS format during saving.
     """
-    if not isinstance(model_path_or_config, (PretrainedConfig, str)):
-        raise ValueError(
-            f"cannot detect model: received invalid argument of type {type(model_path_or_config)}"
-        )
-
-    # convert to config
-    model_config = model_path_or_config
-    if isinstance(model_path_or_config, str):
-        model_config = AutoConfig.from_pretrained(model_path_or_config)
-
-    return getattr(model_config, "model_type", None) == "gpt_oss"
+    return is_known_model(model_path_or_config, "gpt_oss")
 
 
 def is_known_model(
