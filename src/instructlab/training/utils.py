@@ -902,13 +902,13 @@ def load_latest_full_state(args, accelerator) -> None:
 
 def freeze_router_params(model: Model):
     """
-    Freeze router parameters for GPT-OSS models before FSDP setup.
+    Freeze router parameters for MoE models before FSDP setup.
 
     Args:
         model: The model to check and potentially freeze parameters
 
     Returns:
-        bool: True if this is a GPT-OSS model and parameters were frozen
+        bool: True if this is an MoE model and parameters were frozen
     """
 
     # Freeze router parameters BEFORE accelerator setup
@@ -919,8 +919,11 @@ def freeze_router_params(model: Model):
             frozen_count += 1
             logger.info(f"❄️ Frozen router parameter: {name}")
 
-    logger.info(f"✅ Frozen {frozen_count} router parameters for GPT-OSS model")
-    return True
+    if frozen_count > 0:
+        logger.info(f"✅ Frozen {frozen_count} router parameters for an MoE model")
+        return True
+    else:
+        return False
 
 
 def test_model_inference_quick(model, tokenizer, stage_name):
