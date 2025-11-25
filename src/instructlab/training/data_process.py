@@ -1133,6 +1133,91 @@ def process_messages_into_input_ids(
     save_dataset(final_dataset, data_output_path, num_cpu_procs)
 
 
+def process_documents_for_pretraining(
+    data_path: str,
+    data_output_path: str,
+    model_path: str,
+    num_cpu_procs: int,
+) -> None:
+    """
+    Process raw documents for pretraining by tokenizing without chunking.
+
+    Outputs one JSONL record per document with only input_ids (no labels).
+    Blocking/chunking happens later during training.
+
+    Pattern: Each document → [BOS][tokens][EOS]
+
+    Args:
+        data_path: Path to input JSONL with {"documents": "text"} format
+        data_output_path: Directory for processed data output
+        model_path: Path to model/tokenizer
+        num_cpu_procs: Number of parallel processes
+    """
+    ensure_can_write_to_directory(data_output_path)
+
+    # Load and validate dataset
+    try:
+        data = load_dataset("json", data_files=data_path, split="train")
+    except Exception as e:
+        raise ValueError(
+            "Malformed or missing data, please ensure your dataset is correctly formatted"
+        ) from e
+
+    if data.num_rows == 0:
+        raise ValueError("The provided dataset is empty")
+
+
+    if 'document' not in data.column_names:
+        raise ValueError(
+            f"Pretraining data must have 'document' field. Found: {data.column_names}"
+        )
+
+    logger.info("Loading tokenizer from %s", model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    if tokenizer.eos_token_id is None:
+        raise ValueError("Tokenizer must have an EOS token defined for pretraining")
+
+    logger.info("Tokenizing %d documents for pretraining...", data.num_rows)
+
+    # Tokenize each document: encode() adds BOS, then append EOS
+    def tokenize_document(sample):
+        input_ids = tokenizer.encode(sample['document'], add_special_tokens=True)
+        input_ids.append(tokenizer.eos_token_id)
+        return {
+            "input_ids": input_ids,
+            "len": len(input_ids),
+        }
+
+    tokenized_data = data.map(
+        tokenize_document,
+        num_proc=num_cpu_procs,
+        desc="Tokenizing documents",
+        remove_columns=data.column_names,
+    )
+
+    # Calculate statistics
+    total_tokens = sum(tokenized_data['len'])
+    avg_tokens = total_tokens / len(tokenized_data)
+    logger.info(f"Processed {len(tokenized_data):,} documents")
+    logger.info(f"Total tokens: {total_tokens:,}")
+    logger.info(f"Average tokens per document: {avg_tokens:.1f}")
+
+    # Save to JSONL (one record per document)
+    os.makedirs(data_output_path, exist_ok=True)
+    output_file = Path(data_output_path) / "data.jsonl"
+
+    tokenized_data.to_json(
+        output_file,
+        num_proc=num_cpu_procs,
+        lines=True,
+        orient="records"
+    )
+
+    logger.info(f"Saved tokenized documents to {output_file}")
+    logger.info("Note: Blocking into fixed-size chunks will happen during training")
+
+
 def ensure_can_write_to_directory(output_dir: str) -> None:
     """
     Ensure that we can write to the output directory.

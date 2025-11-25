@@ -63,8 +63,21 @@ class DataProcessArgs(BaseModel):
         description="this is the number of CPU procs we use for data processing parallelization",
     )
 
+    # Pretraining mode flag
+    is_pretraining: bool = Field(
+        default=False,
+        description="Enable pretraining mode: tokenizes raw documents without chat templates or chunking",
+    )
+
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
+
+    @model_validator(mode="after")
+    def validate_pretraining_params(self):
+        """Validate pretraining parameter combinations"""
+        if self.is_pretraining and self.chat_tmpl_path is not None:
+            raise ValueError("chat_tmpl_path not compatible with is_pretraining=True")
+        return self
 
 
 # public API
