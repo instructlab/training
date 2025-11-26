@@ -413,7 +413,9 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     data_with_input_ids = data.map(
         lambda x: {
             # newer versions of transformers have `return_dict=True` by default
-            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True, return_dict=False),
+            "input_ids": tokenizer.apply_chat_template(
+                x["messages"], tokenize=True, return_dict=False
+            ),
             "unmask": bool(x["unmask"]) if "unmask" in x else False,
         },
         num_proc=NUM_PROC,

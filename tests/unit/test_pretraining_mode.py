@@ -1,16 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+from pathlib import Path
+from unittest.mock import patch
 import json
 import os
 import tempfile
 import unittest
-from pathlib import Path
-from unittest.mock import patch
 
 # Third Party
-import torch
 from datasets import Dataset as HFDataset
+import torch
 
 # First Party
 from instructlab.training.config import PretrainingConfig
@@ -32,7 +32,9 @@ class TestPretrainingBlockDataset(unittest.TestCase):
 
         first = block_ds[0]
         self.assertTrue(
-            torch.equal(first["input_ids"], torch.tensor([1, 2, 3, 4], dtype=torch.long))
+            torch.equal(
+                first["input_ids"], torch.tensor([1, 2, 3, 4], dtype=torch.long)
+            )
         )
         self.assertTrue(
             torch.equal(first["labels"], torch.tensor([1, 2, 3, 4], dtype=torch.long))
@@ -42,7 +44,9 @@ class TestPretrainingBlockDataset(unittest.TestCase):
 
         second = block_ds[1]
         self.assertTrue(
-            torch.equal(second["input_ids"], torch.tensor([5, 6, 7, 0], dtype=torch.long))
+            torch.equal(
+                second["input_ids"], torch.tensor([5, 6, 7, 0], dtype=torch.long)
+            )
         )
         self.assertTrue(
             torch.equal(

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
-import logging
 from typing import Optional
+import logging
 
 # Third Party
-from datasets import Dataset as HFDataset, load_dataset
+from datasets import Dataset as HFDataset
+from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset, Sampler
 import numpy as np
 import torch
@@ -13,11 +14,11 @@ import torch.distributed as dist
 
 # First Party
 from instructlab.training.batch_packer import batch_lengths_to_minibatches_lpt
+from instructlab.training.config import PretrainingConfig
 from instructlab.training.padded_batch_packer import (
     batch_lengths_to_minibatches_padded,
 )
 from instructlab.training.type_definitions import CollatedItem
-from instructlab.training.config import PretrainingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +343,9 @@ class PretrainingBlockDataset(Dataset):
 
     def __getitem__(self, index: int):
         if index < 0 or index >= self.num_blocks:
-            raise IndexError(f"Index {index} out of range for {self.num_blocks} blocks.")
+            raise IndexError(
+                f"Index {index} out of range for {self.num_blocks} blocks."
+            )
 
         start = index * self.block_size
         end = start + self.block_size
