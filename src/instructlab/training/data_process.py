@@ -412,7 +412,8 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     logger.info("Tokenizing the dataset with %s tokenizer...", args.model_path)
     data_with_input_ids = data.map(
         lambda x: {
-            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True),
+            # newer versions of transformers have `return_dict=True` by default
+            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True, return_dict=False),
             "unmask": bool(x["unmask"]) if "unmask" in x else False,
         },
         num_proc=NUM_PROC,
@@ -687,7 +688,8 @@ def unmask_messages(
             if regions:
                 message_regions_map[idx] = regions
 
-    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
+    # newer versions of transformers have `return_dict=True` by default
+    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking, return_dict=False)
 
     # Get token IDs for all unmask tokens
     unmask_begin_token_id = tokenizer.encode(
