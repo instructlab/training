@@ -72,13 +72,6 @@ class DataProcessArgs(BaseModel):
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
 
-    @model_validator(mode="after")
-    def validate_pretraining_params(self):
-        """Validate pretraining parameter combinations"""
-        if self.is_pretraining and self.chat_tmpl_path is not None:
-            raise ValueError("chat_tmpl_path not compatible with is_pretraining=True")
-        return self
-
 
 # public API
 class TorchrunArgs(BaseModel):

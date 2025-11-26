@@ -1138,6 +1138,7 @@ def process_documents_for_pretraining(
     data_output_path: str,
     model_path: str,
     num_cpu_procs: int,
+    document_column_name: str = "document",
 ) -> None:
     """
     Process raw documents for pretraining by tokenizing without chunking.
@@ -1152,6 +1153,7 @@ def process_documents_for_pretraining(
         data_output_path: Directory for processed data output
         model_path: Path to model/tokenizer
         num_cpu_procs: Number of parallel processes
+        document_column_name: Name of the column containing the documents
     """
     ensure_can_write_to_directory(data_output_path)
 
@@ -1166,10 +1168,9 @@ def process_documents_for_pretraining(
     if data.num_rows == 0:
         raise ValueError("The provided dataset is empty")
 
-
-    if 'document' not in data.column_names:
+    if document_column_name not in data.column_names:
         raise ValueError(
-            f"Pretraining data must have 'document' field. Found: {data.column_names}"
+            f"Pretraining data must have '{document_column_name}' field. Found: {data.column_names}"
         )
 
     logger.info("Loading tokenizer from %s", model_path)
@@ -1182,8 +1183,14 @@ def process_documents_for_pretraining(
 
     # Tokenize each document: encode() adds BOS, then append EOS
     def tokenize_document(sample):
-        input_ids = tokenizer.encode(sample['document'], add_special_tokens=True)
-        input_ids.append(tokenizer.eos_token_id)
+        input_ids = tokenizer.encode(
+            sample[document_column_name], add_special_tokens=True
+        )
+
+        # ensures eos token is present without double-adding it.
+        if input_ids[-1] != tokenizer.eos_token_id:
+            input_ids.append(tokenizer.eos_token_id)
+
         return {
             "input_ids": input_ids,
             "len": len(input_ids),
@@ -1197,7 +1204,7 @@ def process_documents_for_pretraining(
     )
 
     # Calculate statistics
-    total_tokens = sum(tokenized_data['len'])
+    total_tokens = sum(tokenized_data["len"])
     avg_tokens = total_tokens / len(tokenized_data)
     logger.info(f"Processed {len(tokenized_data):,} documents")
     logger.info(f"Total tokens: {total_tokens:,}")
@@ -1208,10 +1215,7 @@ def process_documents_for_pretraining(
     output_file = Path(data_output_path) / "data.jsonl"
 
     tokenized_data.to_json(
-        output_file,
-        num_proc=num_cpu_procs,
-        lines=True,
-        orient="records"
+        output_file, num_proc=num_cpu_procs, lines=True, orient="records"
     )
 
     logger.info(f"Saved tokenized documents to {output_file}")
