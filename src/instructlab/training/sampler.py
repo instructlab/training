@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Standard
+import logging
 from typing import Optional
 
 # Third Party
-from datasets import load_dataset
+from datasets import Dataset as HFDataset, load_dataset
 from torch.utils.data import DataLoader, Dataset, Sampler
 import numpy as np
 import torch
@@ -16,6 +17,9 @@ from instructlab.training.padded_batch_packer import (
     batch_lengths_to_minibatches_padded,
 )
 from instructlab.training.type_definitions import CollatedItem
+from instructlab.training.config import PretrainingConfig
+
+logger = logging.getLogger(__name__)
 
 
 class EpochSampler(Sampler):
@@ -291,6 +295,97 @@ class MaxTokensPerRankCollator:
         return all_minibatches
 
 
+class PretrainingBlockDataset(Dataset):
+    """Dataset that concatenates documents and exposes fixed-size blocks."""
+
+    def __init__(self, dataset: HFDataset, block_size: int, pad_token_id: int):
+        if block_size <= 0:
+            raise ValueError(f"block_size must be positive, got {block_size}")
+        if "input_ids" not in dataset.column_names:
+            raise ValueError("Pretraining data must provide an 'input_ids' column.")
+        if pad_token_id < 0:
+            raise ValueError("pad_token_id must be a non-negative integer.")
+
+        self.block_size = block_size
+        self.pad_token_id = pad_token_id
+
+        all_input_ids: list[int] = []
+        for sample in dataset:
+            ids = sample["input_ids"]
+            if isinstance(ids, torch.Tensor):
+                ids = ids.tolist()
+            all_input_ids.extend(ids)
+
+        total_tokens = len(all_input_ids)
+        if total_tokens == 0:
+            raise ValueError("Pretraining dataset is empty after concatenation.")
+
+        num_blocks, remainder = divmod(total_tokens, block_size)
+        if remainder:
+            num_blocks += 1
+
+        self.all_input_ids = all_input_ids
+        self.num_blocks = num_blocks
+        self.last_block_len = remainder if remainder else block_size
+        self.total_tokens = total_tokens
+
+        logger.info(
+            "Pretraining dataset: %s tokens → %s block(s) (block_size=%s, remainder=%s)",
+            f"{total_tokens:,}",
+            f"{self.num_blocks:,}",
+            block_size,
+            remainder,
+        )
+
+    def __len__(self) -> int:
+        return self.num_blocks
+
+    def __getitem__(self, index: int):
+        if index < 0 or index >= self.num_blocks:
+            raise IndexError(f"Index {index} out of range for {self.num_blocks} blocks.")
+
+        start = index * self.block_size
+        end = start + self.block_size
+        is_last_block = index == self.num_blocks - 1
+        is_partial = is_last_block and self.last_block_len != self.block_size
+
+        if is_partial:
+            actual_tokens = self.all_input_ids[start:]
+            actual_len = len(actual_tokens)
+            pad_len = self.block_size - actual_len
+
+            input_ids = actual_tokens + [self.pad_token_id] * pad_len
+            labels = actual_tokens + [-100] * pad_len
+            loss_tokens = max(actual_len - 1, 0)
+        else:
+            input_ids = self.all_input_ids[start:end]
+            labels = list(input_ids)
+            loss_tokens = self.block_size - 1
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+            "len": self.block_size,
+            "num_loss_counted_tokens": loss_tokens,
+        }
+
+    @classmethod
+    def from_jsonl_file(
+        cls,
+        data_path: str,
+        block_size: int,
+        pad_token_id: int,
+    ) -> "PretrainingBlockDataset":
+        dataset = load_dataset("json", data_files=data_path, split="train")
+        return cls(dataset, block_size, pad_token_id)
+
+    def get_lengths(self) -> np.ndarray:
+        lengths = np.full(self.num_blocks, self.block_size, dtype=np.int64)
+        if self.num_blocks and self.last_block_len != self.block_size:
+            lengths[-1] = self.last_block_len
+        return lengths
+
+
 class TokenDataset(Dataset):
     """Dataset for loading tokenized data from JSONL files.
 
@@ -346,6 +441,7 @@ def get_data_loader(
     num_workers: int = 0,
     flash_enabled: bool = True,
     pad_token_id: int = 0,
+    pretraining_config: Optional[PretrainingConfig] = None,
 ):
     """Create a data loader with epoch-based sampling and batch packing.
 
@@ -360,11 +456,23 @@ def get_data_loader(
         num_workers: Number of data loading workers
         flash_enabled: Whether flash attention is enabled (affects collation strategy)
         pad_token_id: Token ID to use for padding (only used when flash_enabled=False)
+        pretraining_config: When provided, enables block-based pretraining dataset loading
 
     Returns:
         DataLoader configured with appropriate collator based on flash_enabled
     """
-    dataset = TokenDataset(data_path)
+    if pretraining_config is not None:
+        dataset = PretrainingBlockDataset.from_jsonl_file(
+            data_path, pretraining_config.block_size, pad_token_id
+        )
+        logger.info(
+            "Using pretraining dataset with block_size=%s and %s block(s)",
+            pretraining_config.block_size,
+            f"{len(dataset):,}",
+        )
+    else:
+        dataset = TokenDataset(data_path)
+
     sampler = EpochSampler(len(dataset), seed=seed)
 
     # Create unified collator with appropriate mode
