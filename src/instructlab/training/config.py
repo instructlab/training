@@ -85,6 +85,10 @@ class PretrainingConfig(BaseModel):
     block_size: int = Field(
         description="Size of each block in tokens for pretraining datasets."
     )
+    document_column_name: str = Field(
+        default="document",
+        description="Name of the column containing raw documents for pretraining.",
+    )
 
 
 # public API

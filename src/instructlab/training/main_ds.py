@@ -46,9 +46,9 @@ from instructlab.training.batch_loss_manager import BatchLossManager
 from instructlab.training.config import (
     DistributedBackend,
     ModelTypes,
+    PretrainingConfig,
     TorchrunArgs,
     TrainingArgs,
-    PretrainingConfig,
 )
 
 # pylint: disable=no-name-in-module
@@ -473,6 +473,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
                 data_output_path=train_args.data_output_dir,
                 model_path=train_args.model_path,
                 num_cpu_procs=train_args.data_process_num_cpu_procs,
+                document_column_name=train_args.pretraining_config.document_column_name,
             )
         else:
             # TODO(osilkin):
@@ -540,8 +541,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     )
 
     if train_args.pretraining_config is not None:
+        command.append(f"--block-size={train_args.pretraining_config.block_size}")
         command.append(
-            f"--block-size={train_args.pretraining_config.block_size}"
+            f"--document-column-name={train_args.pretraining_config.document_column_name}"
         )
 
     if train_args.chat_tmpl_path is not None:
@@ -792,6 +794,12 @@ if __name__ == "__main__":
         help="When provided, enables pretraining mode with the given token block size.",
     )
     parser.add_argument(
+        "--document-column-name",
+        type=str,
+        default=None,
+        help="Column name containing raw documents for continual pretraining data.",
+    )
+    parser.add_argument(
         "--cpu_offload_optimizer",
         action="store_true",
         default=False,
@@ -839,8 +847,16 @@ if __name__ == "__main__":
         help="Use Liger kernels for training.",
     )
     args = parser.parse_args()
+    if args.document_column_name is not None and args.block_size is None:
+        parser.error("--document-column-name requires --block-size to be specified.")
+
     if args.block_size is not None:
-        args.pretraining_config = PretrainingConfig(block_size=args.block_size)
+        pretraining_kwargs = {}
+        if args.document_column_name is not None:
+            pretraining_kwargs["document_column_name"] = args.document_column_name
+        args.pretraining_config = PretrainingConfig(
+            block_size=args.block_size, **pretraining_kwargs
+        )
     else:
         args.pretraining_config = None
     set_random_seed(args.seed)
