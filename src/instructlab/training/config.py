@@ -68,6 +68,10 @@ class DataProcessArgs(BaseModel):
         default=False,
         description="Enable pretraining mode: tokenizes raw documents without chat templates or chunking",
     )
+    pretraining_column_name: str = Field(
+        default="document",
+        description="the name of the column containing the text to pretrain on",
+    )
 
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
