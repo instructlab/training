@@ -398,6 +398,15 @@ def is_gpt_oss(model_path_or_config: str | PretrainedConfig) -> bool:
     """
     Determine if we should convert GPT-OSS format during saving.
     """
+    return is_known_model(model_path_or_config, "gpt_oss")
+
+
+def is_known_model(
+    model_path_or_config: str | PretrainedConfig, known_model_type: str | list[str]
+) -> bool:
+    """
+    Determine if the model is a known model.
+    """
     if not isinstance(model_path_or_config, (PretrainedConfig, str)):
         raise ValueError(
             f"cannot detect model: received invalid argument of type {type(model_path_or_config)}"
@@ -408,7 +417,10 @@ def is_gpt_oss(model_path_or_config: str | PretrainedConfig) -> bool:
     if isinstance(model_path_or_config, str):
         model_config = AutoConfig.from_pretrained(model_path_or_config)
 
-    return getattr(model_config, "model_type", None) == "gpt_oss"
+    known_model_types = (
+        [known_model_type] if isinstance(known_model_type, str) else known_model_type
+    )
+    return getattr(model_config, "model_type", None) in known_model_types
 
 
 def add_gpt_oss_quantization_config(config):
