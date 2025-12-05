@@ -318,6 +318,7 @@ def convert_loss_to_reduce_sum(model):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            **(_deprecated_arguments if model.device=="hpu" else {}),
         )
 
         return_dict = isinstance(output, dict)
@@ -775,13 +776,16 @@ def save_hf_format_accelerate(
     accelerator.get_state_dict = get_state_dict_unpatched
 
 
-def set_random_seed(seed):
+def set_random_seed(seed, device: str):
     if seed is not None:
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
+        if device == "hpu":
+            torch.hpu.manual_seed_all(seed)
+        else:
+            torch.cuda.manual_seed_all(seed)
+        
 
 # TODO: move this to also live in the `Model` object
 def save_checkpoint(

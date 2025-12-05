@@ -30,7 +30,6 @@ except ImportError:
 # Third Party
 from peft import LoraConfig
 from torch.optim import AdamW
-from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
 from transformers import (
     AutoModelForCausalLM,
     BitsAndBytesConfig,
@@ -57,11 +56,15 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
+        torch_compile: bool = False,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
         self.tokenizer = tokenizer
         self.distributed_framework = distributed_framework
+        self.device = device
+        self.torch_compile = torch_compile
         quant_config = None
 
         # check model type & set on the mclasss
@@ -69,6 +72,7 @@ class Model:
         self.is_gpt_oss = is_gpt_oss(model_path)
         if self.is_gpt_oss:
             # Third Party
+            from transformers import Mxfp4Config  # pylint: disable=no-name-in-module
             quant_config = Mxfp4Config(dequantize=True)
 
         # TODO: Add support for 8bit quantization
@@ -103,6 +107,19 @@ class Model:
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
+
+        if self.device == "hpu" and self.torch_compile:
+            cache_size_limit = 10*1000
+            torch._dynamo.config.cache_size_limit = cache_size_limit
+            torch._dynamo.config.accumulated_cache_size_limit = 2*cache_size_limit
+            self.model = torch.compile(self.model, backend="hpu_backend", dynamic=False)
+            for layer in self.model.model.layers:
+                layer.compile(backend="hpu_backend", dynamic=False) 
+            if os.environ.get("RANK", '0') == '0':
+                logger.info(
+                    f"torch.compile has been enabled"
+                )
+
         self.reconcile_tokenizer()
         if self.lora_config:
             self.model = self.prepare_peft_model()
@@ -271,7 +288,11 @@ class Model:
             bool: True if the model is a causal language model, False otherwise.
         """
         # Third Party
-        return "ForCausalLM" in self.model.__class__.__name__
+        if self.device != "hpu":
+            class_name = self.model.__class__.__name__
+        else:
+            class_name = self.model._orig_mod.__class__.__name__ if self.model.__class__.__name__ == 'OptimizedModule' else self.model.__class__.__name__
+        return "ForCausalLM" in class_name
 
     def reconcile_tokenizer(self):
         if len(self.tokenizer) > self.model.config.vocab_size:
@@ -326,6 +347,17 @@ class Model:
             and self.model.config.eos_token_id is None
         ):
             self.model.config.eos_token_id = self.tokenizer.eos_token_id
+
+        if self.device == "hpu":
+            model = self.model._orig_mod if self.model.__class__.__name__ == 'OptimizedModule' else self.model
+            class_name = model.__class__.__name__
+
+            replace_no_split_modules = {
+                'GaudiLlamaForCausalLM': ['GaudiLlamaDecoderLayer',]
+            }
+            
+            if class_name in replace_no_split_modules: 
+                model._no_split_modules = replace_no_split_modules[class_name]
 
         if not self._is_causal_lm_model():
             raise ValueError(
@@ -387,9 +419,17 @@ class Model:
                 - Dataclass containing the raw pre-scaled losses
         """
         # Forward pass to get logits
+        hpu_args = {}
+        if self.device == "hpu":
+            hpu_args = {
+                "use_flash_attention":True,
+                "lazy_mode":False,
+            }
+
         output = self(
             **inputs,
             use_cache=False,
+            **hpu_args,
         )
 
         # Manual loss computation with reduction="none" following mini_trainer's exact approach
@@ -491,6 +531,8 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        device: Optional[str] = None,
+        torch_compile: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -500,6 +542,8 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            device=device,
+            torch_compile=torch_compile,
         )
         self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()

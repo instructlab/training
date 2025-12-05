@@ -57,7 +57,7 @@ def _find_optimal_batch_size(
     for size in range(2, max_sequences + 1):
         # Check if this batch size fits within token limit
         padded_tokens = _compute_padded_tokens(lengths, start_idx, start_idx + size)
-        if padded_tokens > max_tokens:
+        if padded_tokens > max_tokens:  
             break
 
         # Compute padding ratio
@@ -286,3 +286,222 @@ def compute_padding_stats(batch_lengths: list[int], batches: list[list[int]]) ->
         "padding_ratio": padding_ratio,
         "num_batches": len([b for b in batches if b and b[0] != -1]),
     }
+
+
+import math
+def compute_bucket_size(length: int) -> int:
+    """
+    Bucketing algorithm based on the most significant bit of the sample length.
+    Finds the most significant bit position 'S', then divides the range 
+    [2^S, 2^(S+1)] into 16 equal buckets of size 2^(S-4).
+    Limits overhead to at most 1/16 while reducing number of graph recompilations.
+    """
+    msb_pos = length.bit_length()
+    alignment = (1 << (msb_pos - 4)) if msb_pos >= 4 else 1
+    return math.ceil(length / alignment) * alignment
+
+
+def _batch_cost(lengths: list[int]) -> float:
+    if not (isinstance(lengths, list) and len(lengths) > 0):
+        raise TypeError(f"wrong input type")
+    return lengths[0] * len(lengths)
+
+
+def _batch_size_in_tokens(lengths: list[int]) -> float:
+    if not (isinstance(lengths, list) and len(lengths) > 0):
+        raise TypeError(f"wrong input type")
+    return lengths[0] * len(lengths)
+
+
+def _check_batch_cost(
+        sorted_lengths:list[int],
+        num_ranks:int64,
+        max_cost:float,
+    ) -> list[int]:
+    if not (isinstance(sorted_lengths, list) and len(sorted_lengths) > 0):
+        raise TypeError(f"wrong input type")
+    
+    bins = [[] for _ in range(num_ranks)]
+    current_bin = 0
+    
+    for sample_length in sorted_lengths:
+        while True:
+            # try to add to current bin
+            bins[current_bin].append(sample_length)
+            cost = _batch_cost(bins[current_bin])
+            
+            # go to next sample if current fits
+            if cost < max_cost:
+                break
+
+            # bin overflow, move last sample to next bin if possible
+            if len(bins[current_bin]) == 1:
+                break 
+            
+            if current_bin >= num_ranks - 1:
+                return None
+            
+            bins[current_bin].pop()
+            current_bin += 1
+
+    bin_sizes = [len(bin) for bin in bins]
+    return bin_sizes
+
+
+def _distribute_samples_across_ranks(
+        sorted_lengths: list[int],
+        max_tokens: int64,
+        num_ranks: int64,
+        rank: int64,
+    ) -> list[int]:
+
+    # compute cost range, from 0 to max possible cost when we put all samples in one bin
+    lower_bound = 0
+    upper_bound = _batch_cost(sorted_lengths)
+
+    # find optimal distribution based on batch cost
+    prev_bin_sizes = None
+    epsilon = 1. # cost has same OOM as batch token count
+    while upper_bound - lower_bound > epsilon:
+        mid = (lower_bound + upper_bound) / 2
+        cur_bin_sizes = _check_batch_cost(sorted_lengths, num_ranks, mid)
+
+        if cur_bin_sizes is None:
+            lower_bound = mid + epsilon
+        else:
+            upper_bound = mid
+            prev_bin_sizes = cur_bin_sizes
+
+    # sanity check
+    if prev_bin_sizes is not None:
+        if (len(prev_bin_sizes) != num_ranks or sum(prev_bin_sizes) != len(sorted_lengths)):
+            raise ValueError("Something went wrong, we lost samples during distribution across ranks")
+
+        if any(size == 0 for size in prev_bin_sizes):
+            if any(size > 1 for size in prev_bin_sizes):
+                raise ValueError("Something went wrong, we put more than one sample per rank for small batch")
+        
+    return prev_bin_sizes
+
+
+def _check_batch_size_in_tokens(
+        sorted_lengths:list[int],
+        max_tokens: int64,
+        minibatch_sizes:list[int],
+    ) -> bool:
+
+    first_sample_idx = 0
+    for bs in minibatch_sizes:
+        if bs > 0:
+            minibatch = sorted_lengths[first_sample_idx:first_sample_idx + bs]
+            if _batch_size_in_tokens(minibatch) >= max_tokens:
+                return False
+            first_sample_idx += bs
+    return True
+    
+
+def _compute_sample_indeces_for_current_rank(
+        lengths: list[int],
+        minibatches: list[list[int]],
+        rank: int64,
+    ) -> list[list[int]]:
+
+    sorted_indices = np.argsort(lengths)[::-1]
+    minibatch_indices = []
+    first_sample_idx = 0
+    for minibatch in minibatches:
+        first_sample_idx += sum(minibatch[:rank])
+        minibatch_indices.append(sorted_indices[first_sample_idx:first_sample_idx + minibatch[rank]].tolist())
+        first_sample_idx += sum(minibatch[rank:])
+    return minibatch_indices
+
+
+def _compute_num_samples_in_grad_accum_step(
+        num_samples: int, 
+        grad_accum : int
+    ) -> list[int]:
+
+    if grad_accum <= 0:
+        return []
+    if grad_accum == 1:
+        return [num_samples]
+    
+    step_size = num_samples // grad_accum
+    remainder = num_samples % grad_accum
+    result = [step_size] * grad_accum
+    result[-1] += remainder
+    return result
+
+
+def _batch_packing_core_hpu(
+    lengths: list[int],
+    max_tokens: int64,
+    num_ranks: int64,
+    rank: int64,
+) -> list[list[int]]:
+
+    # try different gradient accumulation values
+    for grad_accum in [1, 2, 4]:
+
+        # break input batch to several gradient accumulation steps
+        grad_accum_step_sizes = _compute_num_samples_in_grad_accum_step(len(lengths), grad_accum)
+
+        first_sample_idx = 0
+        minibatches = []
+        for step_size in grad_accum_step_sizes:
+            step_lengths = lengths[first_sample_idx:first_sample_idx + step_size]
+            first_sample_idx += step_size
+            sorted_lengths = sorted(step_lengths, reverse=True)
+
+            # find optimal sample distribution for single step based on computation cost
+            minibatch_sizes = _distribute_samples_across_ranks(sorted_lengths, max_tokens, num_ranks, rank)
+            if minibatch_sizes is None:
+                raise ValueError("Something went wrong")
+
+            # check if found distribution fits in token limit
+            if not _check_batch_size_in_tokens(sorted_lengths, max_tokens, minibatch_sizes):
+                # does not fit, increase number of gradient accumulation steps
+                break
+            minibatches.append(minibatch_sizes)
+
+        #check if we found suitable sample distribution
+        if len(minibatches) == grad_accum:
+            break
+
+    # sanity check
+    if not (
+        len(minibatches) == grad_accum and
+        all(len(minibatch) == num_ranks for minibatch in minibatches) and
+        sum(sum(minibatch) for minibatch in minibatches) == len(lengths)
+        ):
+        raise ValueError("Could not distribute samples across ranks")
+
+
+    # compute indices for current rank
+    minibatch_indices = _compute_sample_indeces_for_current_rank(lengths, minibatches, rank)
+
+    # sanity check
+    from itertools import chain
+    all_indices = list(chain.from_iterable(minibatch_indices))
+    if len(all_indices) != len(set(all_indices)):
+        raise ValueError("Something went wrong, duplicated indices in the list")
+
+    # add one dummy sample to each empty minibatch
+    for minibatch in minibatch_indices:
+        if len(minibatch) == 0:
+            minibatch.append(-1)
+
+    return minibatch_indices
+
+
+def batch_lengths_to_minibatches_hpu(
+    batch_lengths: list[int],
+    max_tokens_per_rank: int,
+    num_ranks: int,
+    rank: int,
+) -> list[list[int]]:
+
+    if not batch_lengths:
+        return []
+    result = _batch_packing_core_hpu( batch_lengths, max_tokens_per_rank, num_ranks, rank)
+    return result

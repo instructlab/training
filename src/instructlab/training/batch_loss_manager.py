@@ -46,7 +46,7 @@ class BatchLossManager:
     - Computing average losses for logging
     """
 
-    def __init__(self, model, accelerator, world_size: int, local_rank: int):
+    def __init__(self, model, accelerator, world_size: int, local_rank: int, device: str, save_grads: bool):
         """
         Initialize the BatchLossManager.
 
@@ -60,7 +60,12 @@ class BatchLossManager:
         self.accelerator: Accelerator = accelerator
         self.world_size: int = world_size
         self.local_rank: int = local_rank
-        self.torch_device = torch.device("cuda", local_rank)
+        if device == "hpu":
+            self.torch_device = torch.device("hpu")
+        else:
+            self.torch_device = torch.device("cuda", local_rank)
+        self.save_grads = save_grads
+        self.grad_buffer = {}
 
     def process_batch(self, batch: list[CollatedItem]) -> tuple[BatchMetrics, float]:
         """
@@ -84,6 +89,7 @@ class BatchLossManager:
         grad_accum_steps = 0
 
         # process each minibatch
+        self.grad_buffer = {}
         for mb in batch:
             # extract minibatch-specific info
             micro_batch_size = mb["num_samples"]
@@ -102,11 +108,20 @@ class BatchLossManager:
             )
             self.accelerator.backward(scaled_loss)
 
+            # save gradients
+            if self.save_grads and len(batch) > 1:
+                self._copy_grads_to_buffer()
+                self._zero_model_grads()
+
             # accumulate losses
             grad_accum_steps += 1
             accumulated_loss += raw_losses.main_loss
             if raw_losses.aux_loss is not None:
                 accumulated_aux_loss += raw_losses.aux_loss
+
+        # restore gradients
+        if self.grad_buffer:
+            self._restore_grads_from_buffer()
 
         # reduce metrics across ranks
         batch_total_samples, batch_total_length = self._reduce_metrics(
@@ -186,3 +201,22 @@ class BatchLossManager:
         ).item()
 
         return avg_loss_across_ranks
+    
+    def _copy_grads_to_buffer(self):
+        for p in self.model.parameters():
+            if p.grad is None:
+                continue
+            if p not in self.grad_buffer:
+                self.grad_buffer[p] = p.grad.detach().clone()
+            else:
+                self.grad_buffer[p] += p.grad.detach()
+
+    def _restore_grads_from_buffer(self):
+        for p in self.model.parameters():
+            if p in self.grad_buffer:
+                p.grad = self.grad_buffer[p]
+
+    def _zero_model_grads(self):
+        for p in self.model.parameters():
+            if p.grad is not None:
+                p.grad = None
