@@ -25,6 +25,7 @@ The library now supports reasoning traces through the `reasoning_content` field 
 - [Using the library](#using-the-library)
 - [Data format](#data-format)
   - [Reasoning content support](#reasoning-content-support-1)
+- [Continual pretraining mode](#continual-pretraining-mode)
 - [Documentation](#documentation)
 - [Learning about the training arguments](#learning-about-training-arguments)
   - [`TrainingArgs`](#trainingargs)
@@ -122,6 +123,46 @@ The library now supports an optional `reasoning_content` field in addition to th
 }
 ```
 
+## Continual pretraining mode
+
+In addition to instruction tuning, the library can run document-style continual pretraining on raw text corpora.
+Enable this by supplying a block size when invoking `main_ds.py`:
+
+```bash
+torchrun main_ds.py \
+  --model_name_or_path mistralai/Mistral-7B-v0.1 \
+  --data_path /data/documents.jsonl \
+  --ckpt_output_dir ./checkpoints \
+  --effective_batch_size 128 \
+  --max_batch_len 60000 \
+  --block-size 8192 \
+  --document-column-name text  # optional, defaults to "document"
+```
+
+- `--block-size` (required) toggles continual pretraining and controls how many tokens are packed into each block.
+- `--document-column-name` (optional) specifies which JSONL field contains the raw document text.
+
+The same options are available programmatically via `TrainingArgs.pretraining_config`:
+
+```python
+from instructlab.training import TrainingArgs, PretrainingConfig
+
+train_args = TrainingArgs(
+    model_name_or_path="mistralai/Mistral-7B-v0.1",
+    data_path="documents.jsonl",
+    ckpt_output_dir="./checkpoints",
+    max_seq_len=4096,
+    max_batch_len=40000,
+    effective_batch_size=128,
+    pretraining_config=PretrainingConfig(
+        block_size=2048,
+        document_column_name="text",  # optional
+    ),
+)
+```
+
+When a pretraining config is provided, `process_documents_for_pretraining()` is invoked under the hood to tokenize raw documents before training.
+
 **Standard message structure:**
 
 ```json
@@ -139,7 +180,7 @@ The library now supports an optional `reasoning_content` field in addition to th
 }
 ```
 
-#### Important Notes
+### Important Notes
 
 1. **Automatic reasoning content processing**: If `reasoning_content` exists in a message, it will always be processed and unmasked as long as the message role is targeted for unmasking. This ensures that reasoning traces are properly included in the training data.
 
