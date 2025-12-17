@@ -6,7 +6,7 @@ Collection of config objects used in the InstructLab training library.
 
 # Standard
 from enum import Enum
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 # Third Party
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -210,6 +210,18 @@ class TrainingArgs(BaseModel):
         description="Number of samples the model should see before saving a checkpoint. Consider this to be the checkpoint save frequency. If --save_samples<=0, this feature is disabled.",
     )
     learning_rate: float
+    adamw_weight_decay: float = Field(
+        default=0.0,
+        description="Weight decay coefficient for AdamW optimizer.",
+    )
+    adamw_betas: Tuple[float, float] = Field(
+        default=(0.9, 0.95),
+        description="Beta coefficients (beta1, beta2) for AdamW optimizer.",
+    )
+    adamw_eps: float = Field(
+        default=1e-8,
+        description="Epsilon for numerical stability in AdamW optimizer.",
+    )
     warmup_steps: int = Field(
         default=0,
         description="Number of warmup steps to run before starting the main training loop.",

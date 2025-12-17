@@ -512,6 +512,8 @@ def setup_optimizer(
     name: Optimizer | None,
     learning_rate: int,
     betas: Tuple[float, float] = (0.9, 0.95),
+    weight_decay: float = 0.0,
+    eps: float = 1e-8,
 ) -> torch.optim.Optimizer:
     """Setup and return an optimizer based on the given parameters.
 
@@ -521,6 +523,8 @@ def setup_optimizer(
         name: Optional optimizer name to use
         learning_rate: Learning rate for the optimizer
         betas: Beta parameters for Adam optimizers
+        weight_decay: Weight decay coefficient for AdamW
+        eps: Epsilon for numerical stability
 
     Returns:
         A PyTorch optimizer instance
@@ -557,8 +561,11 @@ def setup_optimizer(
         )
 
     factory = functools.partial(
-        optimizer_cls, trainable_params, lr=learning_rate, betas=betas
+        optimizer_cls,
+        trainable_params,
+        lr=learning_rate,
+        betas=betas,
+        eps=eps,
+        weight_decay=weight_decay,
     )
-    if optimizer_cls is AdamW:
-        return factory(weight_decay=0.0)
     return factory()
