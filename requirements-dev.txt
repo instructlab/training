@@ -10,8 +10,8 @@ pylint>=2.16.2
 pylint-pydantic
 pytest
 ruff
-tox>=4.4.2
-tox-current-env
+tox>=4
+tox-uv
 
 mypy>=1.10.0
 types-tqdm
