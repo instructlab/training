@@ -185,8 +185,8 @@ tokenizers==0.22.0        # via transformers
 tomlkit==0.13.3           # via pylint
 torch==2.6.0              # via accelerate, bitsandbytes, deepspeed, flash-attn, liger-kernel, peft, -c constraints-dev.txt.in, -r requirements.txt
 tornado==6.5.2            # via ipykernel, jupyter-client, jupyter-server, jupyterlab, notebook, terminado
-tox==4.29.0               # via tox-current-env, -r requirements-dev.txt
-tox-current-env==0.0.16   # via -r requirements-dev.txt
+tox==4.29.0               # via tox-uv, -r requirements-dev.txt
+tox-uv==1.25.0            # via -r requirements-dev.txt
 tqdm==4.67.1              # via datasets, deepspeed, huggingface-hub, peft, transformers
 traitlets==5.14.3         # via ipykernel, ipython, ipywidgets, jupyter-client, jupyter-console, jupyter-core, jupyter-events, jupyter-server, jupyterlab, matplotlib-inline, nbclient, nbconvert, nbformat
 transformers==4.56.0      # via peft, trl, -r requirements.txt
