@@ -6,6 +6,7 @@ import datetime
 import logging
 import os
 import subprocess
+import sys
 import time
 import warnings
 
@@ -645,11 +646,17 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         if "process" not in locals() or process is None:
             return
 
-        failure = process.poll() != 0
+        # wait for the process to exit so we can properly read the exit code
+        process.wait(timeout=60)
+        process_code = process.poll()
+        failure = process_code != 0
+
         if not failure:
             logger.info("Operation completed successfully! 🎉")
         else:
-            logger.error("Training subprocess has not exited yet. Sending SIGTERM.")
+            logger.error(
+                f"Training subprocess has not exited yet. Sending SIGTERM. Process code: {process_code}"
+            )
 
         process.terminate()
         try:
