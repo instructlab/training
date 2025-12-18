@@ -419,6 +419,9 @@ def main(args):
         cpu_offload=args.cpu_offload_optimizer,
         name=None,  # choose based on backend
         learning_rate=args.learning_rate,
+        betas=(args.adamw_beta1, args.adamw_beta2),
+        weight_decay=args.adamw_weight_decay,
+        eps=args.adamw_eps,
     )
     accelerator.prepare_with_optimizer(
         optimizer=optimizer,
@@ -526,6 +529,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             f"--log_level={train_args.log_level}",
             f"--max_batch_len={train_args.max_batch_len}",
             f"--seed={train_args.random_seed}",
+            f"--adamw_weight_decay={train_args.adamw_weight_decay}",
+            f"--adamw_beta1={train_args.adamw_betas[0]}",
+            f"--adamw_beta2={train_args.adamw_betas[1]}",
+            f"--adamw_eps={train_args.adamw_eps}",
         ]
     )
 
@@ -816,6 +823,30 @@ if __name__ == "__main__":
         "--use_liger",
         action="store_true",
         help="Use Liger kernels for training.",
+    )
+    parser.add_argument(
+        "--adamw_weight_decay",
+        type=float,
+        default=0.0,
+        help="Weight decay coefficient for AdamW optimizer.",
+    )
+    parser.add_argument(
+        "--adamw_beta1",
+        type=float,
+        default=0.9,
+        help="Beta1 coefficient for AdamW optimizer.",
+    )
+    parser.add_argument(
+        "--adamw_beta2",
+        type=float,
+        default=0.95,
+        help="Beta2 coefficient for AdamW optimizer.",
+    )
+    parser.add_argument(
+        "--adamw_eps",
+        type=float,
+        default=1e-8,
+        help="Epsilon for numerical stability in AdamW optimizer.",
     )
     args = parser.parse_args()
     set_random_seed(args.seed)
