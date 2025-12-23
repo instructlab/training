@@ -63,6 +63,9 @@ class Accelerator:
         self.lr_scheduler = None
         if self.distributed_framework == DistributedBackend.DEEPSPEED:
             # Standard
+            cpu_offload_optimizer_ratio = (
+                self.deepspeed_cpu_offload_optimizer_ratio or 0.0
+            )
             accel_args = {
                 "deepspeed_plugin": self.get_ds_plugin(
                     world_size=torch.distributed.get_world_size(),
@@ -70,7 +73,7 @@ class Accelerator:
                     grad_accum=grad_accum,
                     opts=DeepSpeedOptions(
                         cpu_offload_optimizer=deepspeed_cpu_offload_optimizer,
-                        cpu_offload_optimizer_ratio=self.deepspeed_cpu_offload_optimizer_ratio,
+                        cpu_offload_optimizer_ratio=cpu_offload_optimizer_ratio,
                         cpu_offload_optimizer_pin_memory=self.deepspeed_cpu_offload_optimizer_pin_memory,
                         save_samples=save_samples,
                     ),
