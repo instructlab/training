@@ -11,6 +11,7 @@ import pytest
 import torch
 
 # First Party
+from instructlab.training.config import PretrainingConfig
 from instructlab.training.sampler import PretrainingBlockDataset, get_data_loader
 
 
@@ -269,8 +270,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=128,
+            pretraining_config=PretrainingConfig(block_size=128),
         )
 
         # Verify load_dataset was called
@@ -303,7 +303,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=False,
+            pretraining_config=None,
         )
 
         # Verify dataset is TokenDataset (not PretrainingBlockDataset)
@@ -336,8 +336,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=block_size,
+            pretraining_config=PretrainingConfig(block_size=block_size),
         )
 
         # Verify dataset has correct block_size
@@ -366,8 +365,9 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=7,  # Will create partial block
+            pretraining_config=PretrainingConfig(
+                block_size=7
+            ),  # Will create partial block
             pad_token_id=pad_token_id,
         )
 
@@ -399,8 +399,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=25,
+            pretraining_config=PretrainingConfig(block_size=25),
         )
 
         # Verify it's a DataLoader
@@ -434,8 +433,7 @@ class TestGetDataLoaderPretraining:
             seed=seed,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=block_size,
+            pretraining_config=PretrainingConfig(block_size=block_size),
         )
 
         # Verify sampler is EpochSampler
@@ -470,8 +468,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=25,
+            pretraining_config=PretrainingConfig(block_size=25),
             flash_enabled=flash_enabled,
             pad_token_id=pad_token_id,
         )
@@ -508,8 +505,7 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=True,
-            block_size=25,
+            pretraining_config=PretrainingConfig(block_size=25),
             num_workers=num_workers,
         )
 

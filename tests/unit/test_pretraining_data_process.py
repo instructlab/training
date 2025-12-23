@@ -89,6 +89,7 @@ class TestProcessDocumentsForPretraining:
             result = func({"documents": "Test document"})
             mapped_ds = MagicMock()
             mapped_ds.__getitem__ = lambda self, key: [result[key]]
+            mapped_ds.__len__ = lambda self: 1
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
@@ -101,6 +102,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="test-model",
             num_cpu_procs=1,
+            document_column_name="documents",
         )
 
         # Verify tokenizer was loaded
@@ -143,6 +145,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="test-model",
             num_cpu_procs=1,
+            document_column_name="documents",
         )
 
         # Verify map was called (which processes each document)
@@ -177,12 +180,13 @@ class TestProcessDocumentsForPretraining:
         mock_load_dataset.return_value = mock_ds
 
         # Should raise ValueError
-        with pytest.raises(ValueError, match="must have 'documents' field"):
+        with pytest.raises(ValueError, match="must have.*field"):
             process_documents_for_pretraining(
                 data_path="dummy.jsonl",
                 data_output_path=temp_output_dir,
                 model_path="test-model",
                 num_cpu_procs=1,
+                document_column_name="documents",
             )
 
     @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
@@ -209,6 +213,7 @@ class TestProcessDocumentsForPretraining:
                 data_output_path=temp_output_dir,
                 model_path="test-model",
                 num_cpu_procs=1,
+                document_column_name="documents",
             )
 
     @patch("instructlab.training.data_process.logger")
@@ -249,6 +254,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="test-model",
             num_cpu_procs=1,
+            document_column_name="documents",
         )
 
         # Verify logging was called (check info was called multiple times)
@@ -270,6 +276,8 @@ class TestProcessDocumentsForPretraining:
 
         def map_side_effect(func, **kwargs):
             mapped_ds = MagicMock()
+            mapped_ds.__len__ = lambda self: 1
+            mapped_ds.__getitem__ = lambda self, key: [10] if key == "len" else None
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
@@ -282,6 +290,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="test-model",
             num_cpu_procs=4,
+            document_column_name="documents",
         )
 
         # Verify map was called with num_proc=4
@@ -307,6 +316,10 @@ class TestProcessDocumentsForPretraining:
 
                 def map_side_effect(func, **kwargs):
                     mapped_ds = MagicMock()
+                    mapped_ds.__len__ = lambda self: 1
+                    mapped_ds.__getitem__ = (
+                        lambda self, key: [10] if key == "len" else None
+                    )
                     mapped_ds.to_json = MagicMock()
                     return mapped_ds
 
@@ -319,6 +332,7 @@ class TestProcessDocumentsForPretraining:
                     data_output_path=str(output_dir),
                     model_path="test-model",
                     num_cpu_procs=1,
+                    document_column_name="documents",
                 )
 
                 # Verify directory was created
@@ -343,6 +357,8 @@ class TestProcessDocumentsForPretraining:
         def map_side_effect(func, **kwargs):
             result = func({"documents": "Test"})
             mapped_ds = MagicMock()
+            mapped_ds.__len__ = lambda self: 1
+            mapped_ds.__getitem__ = lambda self, key: [result[key]]
 
             def to_json_side_effect(path, **kw):
                 nonlocal output_file_path
@@ -364,6 +380,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="test-model",
             num_cpu_procs=1,
+            document_column_name="documents",
         )
 
         # Verify file was created
@@ -404,6 +421,7 @@ class TestProcessDocumentsForPretraining:
             data_output_path=temp_output_dir,
             model_path="gpt2",
             num_cpu_procs=1,
+            document_column_name="documents",
         )
 
         # Verify output
@@ -422,14 +440,11 @@ class TestProcessDocumentsForPretraining:
             # Load tokenizer to verify tokens
             tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
-            # Verify BOS/EOS are present (GPT2 uses same token 50256 for both)
-            # encode() with add_special_tokens=True adds BOS
-            # We manually append EOS
-            assert (
-                data["input_ids"][0] == tokenizer.bos_token_id
-                or data["input_ids"][0] == tokenizer.eos_token_id
-            )
+            # Verify EOS is present at the end
+            # Note: GPT2's encode() with add_special_tokens=True doesn't add BOS
+            # (GPT2 uses the same token for BOS and EOS)
+            # The implementation manually appends EOS if not present
             assert data["input_ids"][-1] == tokenizer.eos_token_id
 
-            # Verify token count is reasonable
-            assert data["len"] > 5  # Should have more than just BOS/EOS
+            # Verify token count is reasonable (should have content tokens + EOS)
+            assert data["len"] > 5
