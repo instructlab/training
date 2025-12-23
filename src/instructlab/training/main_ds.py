@@ -457,9 +457,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     # Enable package logging propagation before setting up loggers
     propagate_package_logs(True)
     setup_root_logger(train_args.log_level)
-    setup_metric_logger(
-        train_args.logger_type, train_args.run_name, train_args.ckpt_output_dir
-    )
+    setup_metric_logger("async", None, train_args.ckpt_output_dir)
 
     logger = logging.getLogger("instructlab.training")
     logger.info("Starting training setup...")
