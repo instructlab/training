@@ -1153,7 +1153,7 @@ def process_documents_for_pretraining(
     Pattern: Each document → [BOS][tokens][EOS]
 
     Args:
-        data_path: Path to input JSONL with {"documents": "text"} format
+        data_path: Path to input JSONL with {"document": "text"} format
         data_output_path: Directory for processed data output
         model_path: Path to model/tokenizer
         num_cpu_procs: Number of parallel processes
@@ -1200,11 +1200,25 @@ def process_documents_for_pretraining(
             "len": len(input_ids),
         }
 
-    tokenized_data = data.map(
+    # Filter out empty documents before tokenization
+    def filter_empty_documents(batch):
+        return [bool(doc) for doc in batch[document_column_name]]
+
+    filtered_data = data.filter(
+        filter_empty_documents,
+        batched=True,
+        num_proc=num_cpu_procs,
+        desc="Filtering empty documents",
+    )
+
+    dropped_count = data.num_rows - filtered_data.num_rows
+    if dropped_count > 0:
+        logger.info(f"Dropped {dropped_count:,} empty documents")
+    tokenized_data = filtered_data.map(
         tokenize_document,
         num_proc=num_cpu_procs,
         desc="Tokenizing documents",
-        remove_columns=data.column_names,
+        remove_columns=filtered_data.column_names,
     )
 
     # Calculate statistics

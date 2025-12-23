@@ -82,7 +82,14 @@ class TestProcessDocumentsForPretraining:
 
         # Mock single document
         mock_ds.__iter__ = lambda self: iter([{"documents": "Test document"}])
-        mock_ds.map = MagicMock()
+
+        # Create filtered dataset mock
+        filtered_ds = MagicMock()
+        filtered_ds.num_rows = 1
+        filtered_ds.column_names = ["documents"]
+
+        # Mock filter to return the filtered dataset
+        mock_ds.filter = MagicMock(return_value=filtered_ds)
 
         # Make map return a dataset with tokenized data
         def map_side_effect(func, **kwargs):
@@ -93,7 +100,7 @@ class TestProcessDocumentsForPretraining:
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
-        mock_ds.map.side_effect = map_side_effect
+        filtered_ds.map = MagicMock(side_effect=map_side_effect)
         mock_load_dataset.return_value = mock_ds
 
         # Run function
@@ -108,8 +115,8 @@ class TestProcessDocumentsForPretraining:
         # Verify tokenizer was loaded
         mock_from_pretrained.assert_called_once_with("test-model")
 
-        # Verify dataset map was called
-        assert mock_ds.map.called
+        # Verify dataset filter and map were called
+        assert mock_ds.filter.called
 
     @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
     @patch("instructlab.training.data_process.load_dataset")
@@ -127,6 +134,14 @@ class TestProcessDocumentsForPretraining:
 
         docs = [{"documents": "Doc 1"}, {"documents": "Doc 2"}, {"documents": "Doc 3"}]
 
+        # Create filtered dataset mock
+        filtered_ds = MagicMock()
+        filtered_ds.num_rows = 3
+        filtered_ds.column_names = ["documents"]
+
+        # Mock filter to return the filtered dataset
+        mock_ds.filter = MagicMock(return_value=filtered_ds)
+
         # Mock map to process all documents
         def map_side_effect(func, **kwargs):
             results = [func(doc) for doc in docs]
@@ -136,7 +151,7 @@ class TestProcessDocumentsForPretraining:
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
-        mock_ds.map.side_effect = map_side_effect
+        filtered_ds.map = MagicMock(side_effect=map_side_effect)
         mock_load_dataset.return_value = mock_ds
 
         # Run
@@ -148,8 +163,8 @@ class TestProcessDocumentsForPretraining:
             document_column_name="documents",
         )
 
-        # Verify map was called (which processes each document)
-        assert mock_ds.map.called
+        # Verify filter and map were called (which processes each document)
+        assert mock_ds.filter.called
 
     @patch("instructlab.training.data_process.load_dataset")
     def test_empty_dataset_raises_error(self, mock_load_dataset, temp_output_dir):
@@ -236,6 +251,14 @@ class TestProcessDocumentsForPretraining:
         mock_ds.num_rows = 2
         mock_ds.column_names = ["documents"]
 
+        # Create filtered dataset mock
+        filtered_ds = MagicMock()
+        filtered_ds.num_rows = 2
+        filtered_ds.column_names = ["documents"]
+
+        # Mock filter to return the filtered dataset
+        mock_ds.filter = MagicMock(return_value=filtered_ds)
+
         # Mock map to return known lengths
         def map_side_effect(func, **kwargs):
             # Simulate 2 documents with 5 and 10 tokens each
@@ -245,7 +268,7 @@ class TestProcessDocumentsForPretraining:
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
-        mock_ds.map.side_effect = map_side_effect
+        filtered_ds.map = MagicMock(side_effect=map_side_effect)
         mock_load_dataset.return_value = mock_ds
 
         # Run
@@ -272,7 +295,14 @@ class TestProcessDocumentsForPretraining:
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
         mock_ds.column_names = ["documents"]
-        mock_ds.map = MagicMock()
+
+        # Create filtered dataset mock
+        filtered_ds = MagicMock()
+        filtered_ds.num_rows = 1
+        filtered_ds.column_names = ["documents"]
+
+        # Mock filter to return the filtered dataset
+        mock_ds.filter = MagicMock(return_value=filtered_ds)
 
         def map_side_effect(func, **kwargs):
             mapped_ds = MagicMock()
@@ -281,7 +311,7 @@ class TestProcessDocumentsForPretraining:
             mapped_ds.to_json = MagicMock()
             return mapped_ds
 
-        mock_ds.map.side_effect = map_side_effect
+        filtered_ds.map = MagicMock(side_effect=map_side_effect)
         mock_load_dataset.return_value = mock_ds
 
         # Run with specific num_cpu_procs
@@ -293,9 +323,13 @@ class TestProcessDocumentsForPretraining:
             document_column_name="documents",
         )
 
-        # Verify map was called with num_proc=4
-        call_args = mock_ds.map.call_args
-        assert call_args[1]["num_proc"] == 4
+        # Verify filter was called with num_proc=4
+        filter_call_args = mock_ds.filter.call_args
+        assert filter_call_args[1]["num_proc"] == 4
+
+        # Verify map was also called with num_proc=4
+        map_call_args = filtered_ds.map.call_args
+        assert map_call_args[1]["num_proc"] == 4
 
     def test_output_directory_creation(self, tmp_path, mock_tokenizer):
         """Verify directory is created if it doesn't exist."""
@@ -314,6 +348,14 @@ class TestProcessDocumentsForPretraining:
                 mock_ds.num_rows = 1
                 mock_ds.column_names = ["documents"]
 
+                # Create filtered dataset mock
+                filtered_ds = MagicMock()
+                filtered_ds.num_rows = 1
+                filtered_ds.column_names = ["documents"]
+
+                # Mock filter to return the filtered dataset
+                mock_ds.filter = MagicMock(return_value=filtered_ds)
+
                 def map_side_effect(func, **kwargs):
                     mapped_ds = MagicMock()
                     mapped_ds.__len__ = lambda self: 1
@@ -323,7 +365,7 @@ class TestProcessDocumentsForPretraining:
                     mapped_ds.to_json = MagicMock()
                     return mapped_ds
 
-                mock_ds.map.side_effect = map_side_effect
+                filtered_ds.map = MagicMock(side_effect=map_side_effect)
                 mock_load_dataset.return_value = mock_ds
 
                 # Run
@@ -351,6 +393,14 @@ class TestProcessDocumentsForPretraining:
         mock_ds.num_rows = 1
         mock_ds.column_names = ["documents"]
 
+        # Create filtered dataset mock
+        filtered_ds = MagicMock()
+        filtered_ds.num_rows = 1
+        filtered_ds.column_names = ["documents"]
+
+        # Mock filter to return the filtered dataset
+        mock_ds.filter = MagicMock(return_value=filtered_ds)
+
         # Track what gets written
         output_file_path = None
 
@@ -371,7 +421,7 @@ class TestProcessDocumentsForPretraining:
             mapped_ds.to_json = to_json_side_effect
             return mapped_ds
 
-        mock_ds.map.side_effect = map_side_effect
+        filtered_ds.map = MagicMock(side_effect=map_side_effect)
         mock_load_dataset.return_value = mock_ds
 
         # Run
