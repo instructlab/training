@@ -67,7 +67,9 @@ class TestComprehensiveUnmasking(unittest.TestCase):
         messages: t.List[Message],
         tokenize: bool = True,
         add_special_tokens: bool = True,
-    ) -> t.Union[str, t.List[int]]:
+        return_dict: bool = False,
+        **kwargs,
+    ) -> t.Union[str, t.List[int], t.Dict[str, t.Any]]:
         """Mock implementation of apply_chat_template."""
         template_tokens = []
 
@@ -91,10 +93,14 @@ class TestComprehensiveUnmasking(unittest.TestCase):
                 ]
                 template_tokens.extend(reasoning_tokens)
 
-        if tokenize:
-            return template_tokens
-        else:
-            return " ".join([f"token_{t}" for t in template_tokens])
+        result = (
+            template_tokens
+            if tokenize
+            else " ".join([f"token_{t}" for t in template_tokens])
+        )
+        if return_dict:
+            return {"input_ids": result}
+        return result
 
     def test_single_turn_assistant_only_content(self):
         """Test basic single-turn conversation with assistant content only."""
@@ -555,7 +561,9 @@ class TestReasoningContentSupport(unittest.TestCase):
         messages: t.List[Message],
         tokenize: bool = True,
         add_special_tokens: bool = True,
-    ) -> t.Union[str, t.List[int]]:
+        return_dict: bool = False,
+        **kwargs,
+    ) -> t.Union[str, t.List[int], t.Dict[str, t.Any]]:
         """Mock implementation of apply_chat_template."""
         template_str = ""
         for msg in messages:
@@ -566,10 +574,14 @@ class TestReasoningContentSupport(unittest.TestCase):
                 template_str += msg["reasoning_content"]
             template_str += "\n"
 
-        if tokenize:
-            return [hash(template_str) % 1000 for _ in range(len(template_str.split()))]
-        else:
-            return template_str
+        result = (
+            [hash(template_str) % 1000 for _ in range(len(template_str.split()))]
+            if tokenize
+            else template_str
+        )
+        if return_dict:
+            return {"input_ids": result}
+        return result
 
     def test_wrap_masked_messages_with_reasoning_content(self):
         """Test that wrap_masked_messages correctly wraps both content and reasoning_content."""

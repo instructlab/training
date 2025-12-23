@@ -6,7 +6,6 @@ import datetime
 import logging
 import os
 import subprocess
-import sys
 import time
 import warnings
 
@@ -47,6 +46,7 @@ from instructlab.training.batch_loss_manager import BatchLossManager
 from instructlab.training.config import (
     DistributedBackend,
     ModelTypes,
+    PretrainingConfig,
     TorchrunArgs,
     TrainingArgs,
 )
@@ -364,6 +364,7 @@ def main(args):
     batch_size = args.effective_batch_size
 
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+
     train_loader = get_data_loader(
         data_path=args.data_path,
         batch_size=batch_size,
@@ -374,6 +375,7 @@ def main(args):
         num_workers=8,  # I don't like this but am setting it for consistency
         flash_enabled=flash_enabled,
         pad_token_id=pad_token_id,
+        pretraining_config=getattr(args, "pretraining_config", None),
     )
 
     if args.local_rank == 0:
@@ -469,18 +471,27 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         )
 
     if train_args.process_data:
-        # TODO(osilkin):
-        #   Decouple the data processing logic from training.
-        #   Now that we've decided that repos will be less tethered to the
-        #   design choices of the `ilab` CLI, we can make this change.
-        dp.process_data(
-            data_output_path=train_args.data_output_dir,
-            model_path=train_args.model_path,
-            data_path=train_args.data_path,
-            max_seq_len=train_args.max_seq_len,
-            chat_tmpl_path=train_args.chat_tmpl_path,
-            num_cpu_procs=train_args.data_process_num_cpu_procs,
-        )
+        if train_args.pretraining_config is not None:
+            dp.process_documents_for_pretraining(
+                data_path=train_args.data_path,
+                data_output_path=train_args.data_output_dir,
+                model_path=train_args.model_path,
+                num_cpu_procs=train_args.data_process_num_cpu_procs,
+                document_column_name=train_args.pretraining_config.document_column_name,
+            )
+        else:
+            # TODO(osilkin):
+            #   Decouple the data processing logic from training.
+            #   Now that we've decided that repos will be less tethered to the
+            #   design choices of the `ilab` CLI, we can make this change.
+            dp.process_data(
+                data_output_path=train_args.data_output_dir,
+                model_path=train_args.model_path,
+                data_path=train_args.data_path,
+                max_seq_len=train_args.max_seq_len,
+                chat_tmpl_path=train_args.chat_tmpl_path,
+                num_cpu_procs=train_args.data_process_num_cpu_procs,
+            )
 
     if not os.path.exists(train_args.ckpt_output_dir):
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
@@ -537,6 +548,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         ]
     )
 
+    if train_args.pretraining_config is not None:
+        command.append(f"--block-size={train_args.pretraining_config.block_size}")
+        command.append(
+            f"--document-column-name={train_args.pretraining_config.document_column_name}"
+        )
+
     if train_args.chat_tmpl_path is not None:
         command.append(f"--chat-tmpl-path={train_args.chat_tmpl_path}")
 
@@ -554,8 +571,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.mock_data:
         command.append("--mock_data")
-        if train_args.mock_len:
-            command.append(f"--mock_len={train_args.mock_len}")
+        if train_args.mock_data_len:
+            command.append(f"--mock_len={train_args.mock_data_len}")
 
     if train_args.disable_flash_attn:
         command.append("--disable_flash_attn")
@@ -785,6 +802,18 @@ if __name__ == "__main__":
     )
     parser.add_argument("--max_batch_len", type=int, default=60000)
     parser.add_argument(
+        "--block-size",
+        type=int,
+        default=None,
+        help="When provided, enables pretraining mode with the given token block size.",
+    )
+    parser.add_argument(
+        "--document-column-name",
+        type=str,
+        default=None,
+        help="Column name containing raw documents for continual pretraining data.",
+    )
+    parser.add_argument(
         "--cpu_offload_optimizer",
         action="store_true",
         default=False,
@@ -856,6 +885,18 @@ if __name__ == "__main__":
         help="Epsilon for numerical stability in AdamW optimizer.",
     )
     args = parser.parse_args()
+    if args.document_column_name is not None and args.block_size is None:
+        parser.error("--document-column-name requires --block-size to be specified.")
+
+    if args.block_size is not None:
+        pretraining_kwargs = {}
+        if args.document_column_name is not None:
+            pretraining_kwargs["document_column_name"] = args.document_column_name
+        args.pretraining_config = PretrainingConfig(
+            block_size=args.block_size, **pretraining_kwargs
+        )
+    else:
+        args.pretraining_config = None
     set_random_seed(args.seed)
     main(args)
 

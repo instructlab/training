@@ -10,6 +10,7 @@ __all__ = (
     "FSDPOptions",
     "ShardingStrategies",
     "DistributedBackend",
+    "PretrainingConfig",
 )
 
 # First Party
@@ -23,6 +24,7 @@ from .config import (
     DistributedBackend,
     FSDPOptions,
     LoraOptions,
+    PretrainingConfig,
     QuantizeDataType,
     ShardingStrategies,
     TorchrunArgs,
