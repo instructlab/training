@@ -666,15 +666,12 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             return
 
         # wait for the process to exit so we can properly read the exit code
-        process.wait(timeout=60)
-        process_code = process.poll()
-        failure = process_code != 0
-
-        if not failure:
+        return_code = process.wait(timeout=60)  # wait for 1 min or error
+        if return_code == 0:
             logger.info("Operation completed successfully! 🎉")
         else:
             logger.error(
-                f"Training subprocess has not exited yet. Sending SIGTERM. Process code: {process_code}"
+                f"Training subprocess has not exited yet. Sending SIGTERM. Process code: {return_code}"
             )
 
         process.terminate()
