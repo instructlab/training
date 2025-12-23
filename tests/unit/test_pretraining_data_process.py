@@ -3,14 +3,14 @@
 """Unit tests for pretraining data processing functionality."""
 
 # Standard
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 import json
 import os
 import tempfile
 
 # Third Party
-import pytest
 from transformers import AutoTokenizer
+import pytest
 
 # First Party
 from instructlab.training.data_process import process_documents_for_pretraining
@@ -44,13 +44,13 @@ class TestProcessDocumentsForPretraining:
         samples = [
             {"documents": "This is document one."},
             {"documents": "This is document two with more text."},
-            {"documents": "Short doc."}
+            {"documents": "Short doc."},
         ]
 
-        with open(data_file, 'w') as f:
+        with open(data_file, "w") as f:
             for sample in samples:
                 json.dump(sample, f)
-                f.write('\n')
+                f.write("\n")
 
         return str(data_file)
 
@@ -61,15 +61,15 @@ class TestProcessDocumentsForPretraining:
         output_dir.mkdir()
         return str(output_dir)
 
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_basic_tokenization_with_bos_eos(
         self,
         mock_load_dataset,
         mock_from_pretrained,
         mock_tokenizer,
         temp_pretraining_jsonl,
-        temp_output_dir
+        temp_output_dir,
     ):
         """Verify basic tokenization adds BOS and EOS tokens correctly."""
         # Setup mocks
@@ -78,7 +78,7 @@ class TestProcessDocumentsForPretraining:
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
 
         # Mock single document
         mock_ds.__iter__ = lambda self: iter([{"documents": "Test document"}])
@@ -109,14 +109,10 @@ class TestProcessDocumentsForPretraining:
         # Verify dataset map was called
         assert mock_ds.map.called
 
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_multiple_documents_separate_records(
-        self,
-        mock_load_dataset,
-        mock_from_pretrained,
-        mock_tokenizer,
-        temp_output_dir
+        self, mock_load_dataset, mock_from_pretrained, mock_tokenizer, temp_output_dir
     ):
         """Ensure each document gets its own JSONL record."""
         # Setup
@@ -125,13 +121,9 @@ class TestProcessDocumentsForPretraining:
         # Create mock dataset with 3 documents
         mock_ds = MagicMock()
         mock_ds.num_rows = 3
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
 
-        docs = [
-            {"documents": "Doc 1"},
-            {"documents": "Doc 2"},
-            {"documents": "Doc 3"}
-        ]
+        docs = [{"documents": "Doc 1"}, {"documents": "Doc 2"}, {"documents": "Doc 3"}]
 
         # Mock map to process all documents
         def map_side_effect(func, **kwargs):
@@ -156,7 +148,7 @@ class TestProcessDocumentsForPretraining:
         # Verify map was called (which processes each document)
         assert mock_ds.map.called
 
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.load_dataset")
     def test_empty_dataset_raises_error(self, mock_load_dataset, temp_output_dir):
         """Validate error handling for empty input."""
         # Create empty dataset
@@ -173,13 +165,15 @@ class TestProcessDocumentsForPretraining:
                 num_cpu_procs=1,
             )
 
-    @patch('instructlab.training.data_process.load_dataset')
-    def test_missing_documents_field_raises_error(self, mock_load_dataset, temp_output_dir):
+    @patch("instructlab.training.data_process.load_dataset")
+    def test_missing_documents_field_raises_error(
+        self, mock_load_dataset, temp_output_dir
+    ):
         """Validate schema enforcement."""
         # Create dataset with wrong field name
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
-        mock_ds.column_names = ['text']  # Wrong field name
+        mock_ds.column_names = ["text"]  # Wrong field name
         mock_load_dataset.return_value = mock_ds
 
         # Should raise ValueError
@@ -191,19 +185,16 @@ class TestProcessDocumentsForPretraining:
                 num_cpu_procs=1,
             )
 
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_tokenizer_without_eos_raises_error(
-        self,
-        mock_load_dataset,
-        mock_from_pretrained,
-        temp_output_dir
+        self, mock_load_dataset, mock_from_pretrained, temp_output_dir
     ):
         """Validate tokenizer requirements."""
         # Create valid dataset
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
         mock_load_dataset.return_value = mock_ds
 
         # Create tokenizer without EOS token
@@ -220,16 +211,16 @@ class TestProcessDocumentsForPretraining:
                 num_cpu_procs=1,
             )
 
-    @patch('instructlab.training.data_process.logger')
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.logger")
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_statistics_logging(
         self,
         mock_load_dataset,
         mock_from_pretrained,
         mock_logger,
         mock_tokenizer,
-        temp_output_dir
+        temp_output_dir,
     ):
         """Verify statistics are calculated correctly."""
         # Setup
@@ -238,13 +229,13 @@ class TestProcessDocumentsForPretraining:
         # Create dataset with known token counts
         mock_ds = MagicMock()
         mock_ds.num_rows = 2
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
 
         # Mock map to return known lengths
         def map_side_effect(func, **kwargs):
             # Simulate 2 documents with 5 and 10 tokens each
             mapped_ds = MagicMock()
-            mapped_ds.__getitem__ = lambda self, key: [5, 10] if key == 'len' else None
+            mapped_ds.__getitem__ = lambda self, key: [5, 10] if key == "len" else None
             mapped_ds.__len__ = lambda self: 2
             mapped_ds.to_json = MagicMock()
             return mapped_ds
@@ -263,14 +254,10 @@ class TestProcessDocumentsForPretraining:
         # Verify logging was called (check info was called multiple times)
         assert mock_logger.info.call_count >= 3
 
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_parallel_processing(
-        self,
-        mock_load_dataset,
-        mock_from_pretrained,
-        mock_tokenizer,
-        temp_output_dir
+        self, mock_load_dataset, mock_from_pretrained, mock_tokenizer, temp_output_dir
     ):
         """Ensure num_cpu_procs parameter works."""
         # Setup
@@ -278,7 +265,7 @@ class TestProcessDocumentsForPretraining:
 
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
         mock_ds.map = MagicMock()
 
         def map_side_effect(func, **kwargs):
@@ -299,20 +286,24 @@ class TestProcessDocumentsForPretraining:
 
         # Verify map was called with num_proc=4
         call_args = mock_ds.map.call_args
-        assert call_args[1]['num_proc'] == 4
+        assert call_args[1]["num_proc"] == 4
 
     def test_output_directory_creation(self, tmp_path, mock_tokenizer):
         """Verify directory is created if it doesn't exist."""
         # Use non-existent output path
         output_dir = tmp_path / "nonexistent" / "nested" / "dir"
 
-        with patch('instructlab.training.data_process.AutoTokenizer.from_pretrained') as mock_from_pretrained:
-            with patch('instructlab.training.data_process.load_dataset') as mock_load_dataset:
+        with patch(
+            "instructlab.training.data_process.AutoTokenizer.from_pretrained"
+        ) as mock_from_pretrained:
+            with patch(
+                "instructlab.training.data_process.load_dataset"
+            ) as mock_load_dataset:
                 mock_from_pretrained.return_value = mock_tokenizer
 
                 mock_ds = MagicMock()
                 mock_ds.num_rows = 1
-                mock_ds.column_names = ['documents']
+                mock_ds.column_names = ["documents"]
 
                 def map_side_effect(func, **kwargs):
                     mapped_ds = MagicMock()
@@ -333,14 +324,10 @@ class TestProcessDocumentsForPretraining:
                 # Verify directory was created
                 assert output_dir.exists()
 
-    @patch('instructlab.training.data_process.AutoTokenizer.from_pretrained')
-    @patch('instructlab.training.data_process.load_dataset')
+    @patch("instructlab.training.data_process.AutoTokenizer.from_pretrained")
+    @patch("instructlab.training.data_process.load_dataset")
     def test_output_jsonl_format(
-        self,
-        mock_load_dataset,
-        mock_from_pretrained,
-        mock_tokenizer,
-        temp_output_dir
+        self, mock_load_dataset, mock_from_pretrained, mock_tokenizer, temp_output_dir
     ):
         """Validate JSONL output format."""
         # Setup
@@ -348,7 +335,7 @@ class TestProcessDocumentsForPretraining:
 
         mock_ds = MagicMock()
         mock_ds.num_rows = 1
-        mock_ds.column_names = ['documents']
+        mock_ds.column_names = ["documents"]
 
         # Track what gets written
         output_file_path = None
@@ -361,9 +348,9 @@ class TestProcessDocumentsForPretraining:
                 nonlocal output_file_path
                 output_file_path = path
                 # Write actual JSON to verify format
-                with open(path, 'w') as f:
+                with open(path, "w") as f:
                     json.dump(result, f)
-                    f.write('\n')
+                    f.write("\n")
 
             mapped_ds.to_json = to_json_side_effect
             return mapped_ds
@@ -384,30 +371,32 @@ class TestProcessDocumentsForPretraining:
         assert os.path.exists(output_file_path)
 
         # Verify format
-        with open(output_file_path, 'r') as f:
+        with open(output_file_path, "r") as f:
             line = f.readline()
             data = json.loads(line)
 
             # Should have input_ids and len fields
-            assert 'input_ids' in data
-            assert 'len' in data
+            assert "input_ids" in data
+            assert "len" in data
 
             # Should NOT have labels field
-            assert 'labels' not in data
+            assert "labels" not in data
 
             # input_ids should be a list starting with BOS
-            assert isinstance(data['input_ids'], list)
-            assert data['input_ids'][0] == 1  # BOS token
-            assert data['input_ids'][-1] == 2  # EOS token
+            assert isinstance(data["input_ids"], list)
+            assert data["input_ids"][0] == 1  # BOS token
+            assert data["input_ids"][-1] == 2  # EOS token
 
     @pytest.mark.slow
     def test_integration_with_real_tokenizer(self, temp_output_dir):
         """Integration test with actual GPT2 tokenizer."""
         # Create real input file
         input_file = os.path.join(temp_output_dir, "input.jsonl")
-        with open(input_file, 'w') as f:
-            json.dump({"documents": "This is a test document for GPT2 tokenization."}, f)
-            f.write('\n')
+        with open(input_file, "w") as f:
+            json.dump(
+                {"documents": "This is a test document for GPT2 tokenization."}, f
+            )
+            f.write("\n")
 
         # Run with real tokenizer
         process_documents_for_pretraining(
@@ -421,14 +410,14 @@ class TestProcessDocumentsForPretraining:
         output_file = os.path.join(temp_output_dir, "data.jsonl")
         assert os.path.exists(output_file)
 
-        with open(output_file, 'r') as f:
+        with open(output_file, "r") as f:
             line = f.readline()
             data = json.loads(line)
 
             # Verify structure
-            assert 'input_ids' in data
-            assert 'len' in data
-            assert len(data['input_ids']) == data['len']
+            assert "input_ids" in data
+            assert "len" in data
+            assert len(data["input_ids"]) == data["len"]
 
             # Load tokenizer to verify tokens
             tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -436,8 +425,11 @@ class TestProcessDocumentsForPretraining:
             # Verify BOS/EOS are present (GPT2 uses same token 50256 for both)
             # encode() with add_special_tokens=True adds BOS
             # We manually append EOS
-            assert data['input_ids'][0] == tokenizer.bos_token_id or data['input_ids'][0] == tokenizer.eos_token_id
-            assert data['input_ids'][-1] == tokenizer.eos_token_id
+            assert (
+                data["input_ids"][0] == tokenizer.bos_token_id
+                or data["input_ids"][0] == tokenizer.eos_token_id
+            )
+            assert data["input_ids"][-1] == tokenizer.eos_token_id
 
             # Verify token count is reasonable
-            assert data['len'] > 5  # Should have more than just BOS/EOS
+            assert data["len"] > 5  # Should have more than just BOS/EOS

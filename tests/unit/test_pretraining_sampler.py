@@ -38,9 +38,7 @@ class TestPretrainingBlockDataset:
     def test_dataset_initialization(self, mock_hf_dataset):
         """Test basic initialization of PretrainingBlockDataset."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Verify basic attributes
@@ -53,9 +51,7 @@ class TestPretrainingBlockDataset:
     def test_concatenation_of_documents(self, mock_hf_dataset):
         """Verify documents are concatenated in the correct order."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Check concatenation order
@@ -65,9 +61,7 @@ class TestPretrainingBlockDataset:
     def test_num_blocks_calculation_with_partial(self, mock_hf_dataset):
         """Test num_blocks calculation with partial block."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # 14 tokens / 5 = 2 complete + 1 partial
@@ -84,11 +78,7 @@ class TestPretrainingBlockDataset:
         mock_ds.__len__ = lambda self: len(data)
         mock_ds.__iter__ = lambda self: iter(data)
 
-        dataset = PretrainingBlockDataset(
-            dataset=mock_ds,
-            block_size=5,
-            pad_token_id=0
-        )
+        dataset = PretrainingBlockDataset(dataset=mock_ds, block_size=5, pad_token_id=0)
 
         # 15 tokens / 5 = 3 complete blocks
         assert dataset.num_blocks == 3
@@ -97,9 +87,7 @@ class TestPretrainingBlockDataset:
     def test_getitem_complete_block(self, mock_hf_dataset):
         """Test __getitem__ for a complete block."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Get first block (indices 0-4)
@@ -111,15 +99,17 @@ class TestPretrainingBlockDataset:
         assert block["num_loss_counted_tokens"] == 4  # block_size - 1 (causal shift)
 
         # Check actual token values
-        assert torch.equal(block["input_ids"], torch.tensor([1, 2, 3, 4, 5], dtype=torch.long))
-        assert torch.equal(block["labels"], torch.tensor([1, 2, 3, 4, 5], dtype=torch.long))
+        assert torch.equal(
+            block["input_ids"], torch.tensor([1, 2, 3, 4, 5], dtype=torch.long)
+        )
+        assert torch.equal(
+            block["labels"], torch.tensor([1, 2, 3, 4, 5], dtype=torch.long)
+        )
 
     def test_getitem_partial_block_with_padding(self, mock_hf_dataset):
         """Test __getitem__ for partial last block with padding."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Get last block (index 2) - should have 4 real tokens + 1 padding
@@ -147,9 +137,7 @@ class TestPretrainingBlockDataset:
     def test_labels_are_copy_not_reference(self, mock_hf_dataset):
         """Test that labels are a copy, not a reference to input_ids."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         block = dataset[0]
@@ -181,9 +169,7 @@ class TestPretrainingBlockDataset:
             mock_ds.__iter__ = lambda self: iter(data)
 
             dataset = PretrainingBlockDataset(
-                dataset=mock_ds,
-                block_size=block_size,
-                pad_token_id=0
+                dataset=mock_ds, block_size=block_size, pad_token_id=0
             )
 
             # Check first complete block
@@ -193,9 +179,7 @@ class TestPretrainingBlockDataset:
     def test_num_loss_counted_tokens_partial_block(self, mock_hf_dataset):
         """Test num_loss_counted_tokens for partial blocks."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Last block has 4 real tokens
@@ -207,9 +191,7 @@ class TestPretrainingBlockDataset:
     def test_index_out_of_range(self, mock_hf_dataset):
         """Test that accessing beyond num_blocks raises IndexError."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         # Try to access block beyond num_blocks (which is 3)
@@ -225,20 +207,14 @@ class TestPretrainingBlockDataset:
         mock_ds.column_names = ["len"]  # Missing input_ids
 
         with pytest.raises(ValueError) as exc_info:
-            _ = PretrainingBlockDataset(
-                dataset=mock_ds,
-                block_size=5,
-                pad_token_id=0
-            )
+            _ = PretrainingBlockDataset(dataset=mock_ds, block_size=5, pad_token_id=0)
 
         assert "input_ids" in str(exc_info.value)
 
     def test_tensor_dtype_correct(self, mock_hf_dataset):
         """Test that all tensors use torch.long dtype."""
         dataset = PretrainingBlockDataset(
-            dataset=mock_hf_dataset,
-            block_size=5,
-            pad_token_id=0
+            dataset=mock_hf_dataset, block_size=5, pad_token_id=0
         )
 
         block = dataset[0]
@@ -260,29 +236,29 @@ class TestGetDataLoaderPretraining:
             {"input_ids": list(range(300, 370)), "len": 70},
         ]
 
-        with open(data_file, 'w') as f:
+        with open(data_file, "w") as f:
             for sample in samples:
                 json.dump(sample, f)
-                f.write('\n')
+                f.write("\n")
 
         return str(data_file)
 
-    @patch('instructlab.training.sampler.load_dataset')
+    @patch("instructlab.training.sampler.load_dataset")
     def test_pretraining_mode_creates_block_dataset(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
+        self, mock_load_dataset, temp_pretraining_file
     ):
         """Test that is_pretraining=True creates PretrainingBlockDataset."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 3
-        mock_ds.__iter__ = lambda self: iter([
-            {"input_ids": [1, 2, 3], "len": 3},
-            {"input_ids": [4, 5, 6], "len": 3},
-            {"input_ids": [7, 8, 9], "len": 3},
-        ])
+        mock_ds.__iter__ = lambda self: iter(
+            [
+                {"input_ids": [1, 2, 3], "len": 3},
+                {"input_ids": [4, 5, 6], "len": 3},
+                {"input_ids": [7, 8, 9], "len": 3},
+            ]
+        )
         mock_load_dataset.return_value = mock_ds
 
         # Call with pretraining mode
@@ -294,7 +270,7 @@ class TestGetDataLoaderPretraining:
             rank=0,
             world_size=1,
             is_pretraining=True,
-            block_size=128
+            block_size=128,
         )
 
         # Verify load_dataset was called
@@ -306,16 +282,18 @@ class TestGetDataLoaderPretraining:
     def test_instruction_tuning_mode_creates_token_dataset(self, temp_pretraining_file):
         """Test that is_pretraining=False uses TokenDataset."""
         # Create a valid instruction tuning JSONL file
+        # Standard
         from pathlib import Path
+
         inst_file = Path(temp_pretraining_file).parent / "inst_data.jsonl"
         samples = [
             {"input_ids": [1, 2, 3], "labels": [1, 2, 3], "len": 3},
             {"input_ids": [4, 5, 6], "labels": [4, 5, 6], "len": 3},
         ]
-        with open(inst_file, 'w') as f:
+        with open(inst_file, "w") as f:
             for sample in samples:
                 json.dump(sample, f)
-                f.write('\n')
+                f.write("\n")
 
         # Call with instruction tuning mode (default)
         loader = get_data_loader(
@@ -325,26 +303,28 @@ class TestGetDataLoaderPretraining:
             seed=42,
             rank=0,
             world_size=1,
-            is_pretraining=False
+            is_pretraining=False,
         )
 
         # Verify dataset is TokenDataset (not PretrainingBlockDataset)
+        # First Party
         from instructlab.training.sampler import TokenDataset
+
         assert isinstance(loader.dataset, TokenDataset)
         assert not isinstance(loader.dataset, PretrainingBlockDataset)
 
-    @patch('instructlab.training.sampler.load_dataset')
+    @patch("instructlab.training.sampler.load_dataset")
     def test_pretraining_block_size_parameter(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
+        self, mock_load_dataset, temp_pretraining_file
     ):
         """Test that block_size parameter is correctly passed."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 1
-        mock_ds.__iter__ = lambda self: iter([{"input_ids": list(range(100)), "len": 100}])
+        mock_ds.__iter__ = lambda self: iter(
+            [{"input_ids": list(range(100)), "len": 100}]
+        )
         mock_load_dataset.return_value = mock_ds
 
         # Call with specific block_size
@@ -357,24 +337,24 @@ class TestGetDataLoaderPretraining:
             rank=0,
             world_size=1,
             is_pretraining=True,
-            block_size=block_size
+            block_size=block_size,
         )
 
         # Verify dataset has correct block_size
         assert loader.dataset.block_size == block_size
 
-    @patch('instructlab.training.sampler.load_dataset')
+    @patch("instructlab.training.sampler.load_dataset")
     def test_pretraining_pad_token_id_used(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
+        self, mock_load_dataset, temp_pretraining_file
     ):
         """Test that pad_token_id is correctly passed to PretrainingBlockDataset."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 1
-        mock_ds.__iter__ = lambda self: iter([{"input_ids": list(range(10)), "len": 10}])
+        mock_ds.__iter__ = lambda self: iter(
+            [{"input_ids": list(range(10)), "len": 10}]
+        )
         mock_load_dataset.return_value = mock_ds
 
         # Call with specific pad_token_id
@@ -388,27 +368,27 @@ class TestGetDataLoaderPretraining:
             world_size=1,
             is_pretraining=True,
             block_size=7,  # Will create partial block
-            pad_token_id=pad_token_id
+            pad_token_id=pad_token_id,
         )
 
         # Verify dataset has correct pad_token_id
         assert loader.dataset.pad_token_id == pad_token_id
 
-    @patch('instructlab.training.sampler.load_dataset')
+    @patch("instructlab.training.sampler.load_dataset")
     def test_data_loader_returns_correct_structure(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
+        self, mock_load_dataset, temp_pretraining_file
     ):
         """Test that get_data_loader returns a properly configured DataLoader."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 2
-        mock_ds.__iter__ = lambda self: iter([
-            {"input_ids": list(range(50)), "len": 50},
-            {"input_ids": list(range(50, 100)), "len": 50},
-        ])
+        mock_ds.__iter__ = lambda self: iter(
+            [
+                {"input_ids": list(range(50)), "len": 50},
+                {"input_ids": list(range(50, 100)), "len": 50},
+            ]
+        )
         mock_load_dataset.return_value = mock_ds
 
         # Call get_data_loader
@@ -420,28 +400,28 @@ class TestGetDataLoaderPretraining:
             rank=0,
             world_size=1,
             is_pretraining=True,
-            block_size=25
+            block_size=25,
         )
 
         # Verify it's a DataLoader
+        # Third Party
         from torch.utils.data import DataLoader
+
         assert isinstance(loader, DataLoader)
 
         # Verify batch_size
         assert loader.batch_size == 2
 
-    @patch('instructlab.training.sampler.load_dataset')
-    def test_epoch_sampler_created(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
-    ):
+    @patch("instructlab.training.sampler.load_dataset")
+    def test_epoch_sampler_created(self, mock_load_dataset, temp_pretraining_file):
         """Test that EpochSampler is created with correct parameters."""
         # Create mock dataset with known length
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 1
-        mock_ds.__iter__ = lambda self: iter([{"input_ids": list(range(100)), "len": 100}])
+        mock_ds.__iter__ = lambda self: iter(
+            [{"input_ids": list(range(100)), "len": 100}]
+        )
         mock_load_dataset.return_value = mock_ds
 
         seed = 123
@@ -455,28 +435,28 @@ class TestGetDataLoaderPretraining:
             rank=0,
             world_size=1,
             is_pretraining=True,
-            block_size=block_size
+            block_size=block_size,
         )
 
         # Verify sampler is EpochSampler
+        # First Party
         from instructlab.training.sampler import EpochSampler
+
         assert isinstance(loader.sampler, EpochSampler)
 
         # Verify seed is set correctly
         assert loader.sampler.seed == seed
 
-    @patch('instructlab.training.sampler.load_dataset')
-    def test_collator_configuration(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
-    ):
+    @patch("instructlab.training.sampler.load_dataset")
+    def test_collator_configuration(self, mock_load_dataset, temp_pretraining_file):
         """Test that MaxTokensPerRankCollator is configured correctly."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 1
-        mock_ds.__iter__ = lambda self: iter([{"input_ids": list(range(50)), "len": 50}])
+        mock_ds.__iter__ = lambda self: iter(
+            [{"input_ids": list(range(50)), "len": 50}]
+        )
         mock_load_dataset.return_value = mock_ds
 
         flash_enabled = False
@@ -493,11 +473,13 @@ class TestGetDataLoaderPretraining:
             is_pretraining=True,
             block_size=25,
             flash_enabled=flash_enabled,
-            pad_token_id=pad_token_id
+            pad_token_id=pad_token_id,
         )
 
         # Verify collate_fn is MaxTokensPerRankCollator
+        # First Party
         from instructlab.training.sampler import MaxTokensPerRankCollator
+
         assert isinstance(loader.collate_fn, MaxTokensPerRankCollator)
 
         # Verify collator configuration
@@ -505,18 +487,16 @@ class TestGetDataLoaderPretraining:
         assert loader.collate_fn.flash_enabled == flash_enabled
         assert loader.collate_fn.pad_token_id == pad_token_id
 
-    @patch('instructlab.training.sampler.load_dataset')
-    def test_num_workers_parameter(
-        self,
-        mock_load_dataset,
-        temp_pretraining_file
-    ):
+    @patch("instructlab.training.sampler.load_dataset")
+    def test_num_workers_parameter(self, mock_load_dataset, temp_pretraining_file):
         """Test that num_workers parameter is correctly applied."""
         # Create mock dataset
         mock_ds = MagicMock()
         mock_ds.column_names = ["input_ids", "len"]
         mock_ds.__len__ = lambda self: 1
-        mock_ds.__iter__ = lambda self: iter([{"input_ids": list(range(50)), "len": 50}])
+        mock_ds.__iter__ = lambda self: iter(
+            [{"input_ids": list(range(50)), "len": 50}]
+        )
         mock_load_dataset.return_value = mock_ds
 
         num_workers = 4
@@ -530,7 +510,7 @@ class TestGetDataLoaderPretraining:
             world_size=1,
             is_pretraining=True,
             block_size=25,
-            num_workers=num_workers
+            num_workers=num_workers,
         )
 
         # Verify num_workers is set
