@@ -571,8 +571,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.mock_data:
         command.append("--mock_data")
-        if train_args.mock_len:
-            command.append(f"--mock_len={train_args.mock_len}")
+        if train_args.mock_data_len:
+            command.append(f"--mock_len={train_args.mock_data_len}")
 
     if train_args.disable_flash_attn:
         command.append("--disable_flash_attn")

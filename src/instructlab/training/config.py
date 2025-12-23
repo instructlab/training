@@ -291,7 +291,7 @@ class TrainingArgs(BaseModel):
     keep_last_checkpoint_only: Optional[bool] = False
 
     pretraining_config: Optional[PretrainingConfig] = Field(
-        default="document",
+        default=None,
         description=(
             "Pretraining configuration. When provided, enables block-based sampling "
             "for raw document pretraining datasets."
