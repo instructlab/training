@@ -63,16 +63,6 @@ class DataProcessArgs(BaseModel):
         description="this is the number of CPU procs we use for data processing parallelization",
     )
 
-    # Pretraining mode flag
-    is_pretraining: bool = Field(
-        default=False,
-        description="Enable pretraining mode: tokenizes raw documents without chat templates or chunking",
-    )
-    pretraining_column_name: str = Field(
-        default="document",
-        description="the name of the column containing the text to pretrain on",
-    )
-
     # disable the protected namespace for the model_config field
     model_config = ConfigDict(protected_namespaces=())
 
