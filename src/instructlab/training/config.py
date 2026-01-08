@@ -67,6 +67,20 @@ class DataProcessArgs(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class PretrainingConfig(BaseModel):
+    """
+    Configuration for pretraining mode.
+    """
+
+    block_size: int = Field(
+        description="Size of each block in tokens for pretraining datasets."
+    )
+    document_column_name: str = Field(
+        default="document",
+        description="Name of the column containing raw documents for pretraining.",
+    )
+
+
 # public API
 class TorchrunArgs(BaseModel):
     """
@@ -265,6 +279,14 @@ class TrainingArgs(BaseModel):
     # will overwrite the previous checkpoint directory, keeping only one directory called
     # "last_epoch". This works alongside the '--checkpoint_at_epoch' flag.
     keep_last_checkpoint_only: Optional[bool] = False
+
+    pretraining_config: Optional[PretrainingConfig] = Field(
+        default=None,
+        description=(
+            "Pretraining configuration. When provided, enables block-based sampling "
+            "for raw document pretraining datasets."
+        ),
+    )
 
     # TODO(osilkin):
     #   we are only exposing this here because `run_training` today is implicitly coupled

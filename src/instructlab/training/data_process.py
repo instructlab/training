@@ -412,7 +412,10 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
     logger.info("Tokenizing the dataset with %s tokenizer...", args.model_path)
     data_with_input_ids = data.map(
         lambda x: {
-            "input_ids": tokenizer.apply_chat_template(x["messages"], tokenize=True),
+            # newer versions of transformers have `return_dict=True` by default
+            "input_ids": tokenizer.apply_chat_template(
+                x["messages"], tokenize=True, return_dict=False
+            ),
             "unmask": bool(x["unmask"]) if "unmask" in x else False,
         },
         num_proc=NUM_PROC,
@@ -687,7 +690,8 @@ def unmask_messages(
             if regions:
                 message_regions_map[idx] = regions
 
-    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking)
+    # newer versions of transformers have `return_dict=True` by default
+    input_ids = tokenizer.apply_chat_template(msgs_with_unmasking, return_dict=False)
 
     # Get token IDs for all unmask tokens
     unmask_begin_token_id = tokenizer.encode(
@@ -1131,6 +1135,109 @@ def process_messages_into_input_ids(
         data_with_input_ids_and_labels, tokenizer, num_cpu_procs
     )
     save_dataset(final_dataset, data_output_path, num_cpu_procs)
+
+
+def process_documents_for_pretraining(
+    data_path: str,
+    data_output_path: str,
+    model_path: str,
+    num_cpu_procs: int,
+    document_column_name: str = "document",
+) -> None:
+    """
+    Process raw documents for pretraining by tokenizing without chunking.
+
+    Outputs one JSONL record per document with only input_ids (no labels).
+    Blocking/chunking happens later during training.
+
+    Pattern: Each document → [BOS][tokens][EOS]
+
+    Args:
+        data_path: Path to input JSONL with {"document": "text"} format
+        data_output_path: Directory for processed data output
+        model_path: Path to model/tokenizer
+        num_cpu_procs: Number of parallel processes
+        document_column_name: Name of the column containing the documents
+    """
+    ensure_can_write_to_directory(data_output_path)
+
+    # Load and validate dataset
+    try:
+        data = load_dataset("json", data_files=data_path, split="train")
+    except Exception as e:
+        raise ValueError(
+            "Malformed or missing data, please ensure your dataset is correctly formatted"
+        ) from e
+
+    if data.num_rows == 0:
+        raise ValueError("The provided dataset is empty")
+
+    if document_column_name not in data.column_names:
+        raise ValueError(
+            f"Pretraining data must have '{document_column_name}' field. Found: {data.column_names}"
+        )
+
+    logger.info("Loading tokenizer from %s", model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+    if tokenizer.eos_token_id is None:
+        raise ValueError("Tokenizer must have an EOS token defined for pretraining")
+
+    logger.info("Tokenizing %d documents for pretraining...", data.num_rows)
+
+    # Tokenize each document: encode() adds BOS, then append EOS
+    def tokenize_document(sample):
+        input_ids = tokenizer.encode(
+            sample[document_column_name], add_special_tokens=True
+        )
+
+        # ensures eos token is present without double-adding it.
+        if input_ids[-1] != tokenizer.eos_token_id:
+            input_ids.append(tokenizer.eos_token_id)
+
+        return {
+            "input_ids": input_ids,
+            "len": len(input_ids),
+        }
+
+    # Filter out empty documents before tokenization
+    def filter_empty_documents(batch):
+        return [bool(doc) for doc in batch[document_column_name]]
+
+    filtered_data = data.filter(
+        filter_empty_documents,
+        batched=True,
+        num_proc=num_cpu_procs,
+        desc="Filtering empty documents",
+    )
+
+    dropped_count = data.num_rows - filtered_data.num_rows
+    if dropped_count > 0:
+        logger.info(f"Dropped {dropped_count:,} empty documents")
+    tokenized_data = filtered_data.map(
+        tokenize_document,
+        num_proc=num_cpu_procs,
+        desc="Tokenizing documents",
+        remove_columns=filtered_data.column_names,
+    )
+
+    # Calculate statistics
+    total_tokens = sum(tokenized_data["len"])
+    avg_tokens = total_tokens / len(tokenized_data)
+    logger.info(f"Processed {len(tokenized_data):,} documents")
+    logger.info(f"Total tokens: {total_tokens:,}")
+    logger.info(f"Average tokens per document: {avg_tokens:.1f}")
+
+    # Save to JSONL (one record per document)
+    os.makedirs(data_output_path, exist_ok=True)
+    output_file = Path(data_output_path) / "data.jsonl"
+
+    tokenized_data.to_json(
+        output_file, num_proc=num_cpu_procs, lines=True, orient="records"
+    )
+
+    logger.info(f"Saved tokenized documents to {output_file}")
+    logger.info("Note: Blocking into fixed-size chunks will happen during training")
 
 
 def ensure_can_write_to_directory(output_dir: str) -> None:
