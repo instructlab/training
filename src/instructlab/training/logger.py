@@ -680,8 +680,7 @@ class MLflowHandler(logging.Handler):
             mlflow.set_experiment(self.experiment_name)
 
         self._mlflow_run = mlflow.start_run(
-            run_name=self.run_name,
-            **self.mlflow_init_kwargs
+            run_name=self.run_name, **self.mlflow_init_kwargs
         )
 
     def emit(self, record: logging.LogRecord):
@@ -954,8 +953,10 @@ def setup_metric_logger(
                 "()": MLflowHandler,
                 "log_dir": output_dir,
                 "run_name": run_name,
-                "tracking_uri": mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI"),
-                "experiment_name": mlflow_experiment_name or os.environ.get("MLFLOW_EXPERIMENT_NAME"),
+                "tracking_uri": mlflow_tracking_uri
+                or os.environ.get("MLFLOW_TRACKING_URI"),
+                "experiment_name": mlflow_experiment_name
+                or os.environ.get("MLFLOW_EXPERIMENT_NAME"),
                 "filters": ["is_mapping", "is_rank0"],
             },
         },
