@@ -2,7 +2,7 @@
 
 This module provides a logging system for training machine learning models,
 supporting multiple logging backends including TensorBoard (tensorboard), Weights & Biases (wandb),
-and structured JSONL logging (async).
+MLflow (mlflow), and structured JSONL logging (async).
 
 Example Usage:
     ```python
@@ -72,6 +72,12 @@ try:
     import wandb
 except ImportError:
     wandb = None  # type: ignore
+
+try:
+    # Third Party
+    import mlflow
+except ImportError:
+    mlflow = None  # type: ignore
 
 # Third Party
 from rich.logging import RichHandler
@@ -581,6 +587,148 @@ class WandbHandler(logging.Handler):
         self._wandb_run.log(flat_dict, step=step)
 
 
+class MLflowHandler(logging.Handler):
+    """Logger that sends metrics to MLflow.
+
+    This handler expects a (nested) dictionary of metrics to be logged with string keys.
+    A step can be specified by passing `extra={"step": <step>}` to the logging method.
+    To log hyperparameters, pass a (nested) mapping of hyperparameters to the logging method
+    and set `extra={"hparams": True}`.
+
+    Example:
+        ```python
+        import logging
+        from instructlab.training.logger import MLflowHandler
+
+        # Create handler
+        handler = MLflowHandler(
+            level=logging.INFO,
+            run_name="experiment_{time}",
+            tracking_uri="http://localhost:5000",
+            experiment_name="my_experiment"
+        )
+
+        # Create logger
+        logger = logging.getLogger("metrics")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
+        # Log metrics
+        logger.info(
+            {
+                "training": {
+                    "loss": 0.5,
+                    "accuracy": 0.95
+                }
+            },
+            extra={"step": 100}
+        )
+
+        # Log hyperparameters
+        logger.info(
+            {
+                "learning_rate": 0.001,
+                "batch_size": 32
+            },
+            extra={"hparams": True}
+        )
+        ```
+    """
+
+    def __init__(
+        self,
+        level: int = logging.INFO,
+        run_name: str | None = None,
+        log_dir: str | os.PathLike = "logs",
+        tracking_uri: str | None = None,
+        experiment_name: str | None = None,
+        **mlflow_init_kwargs: Any,
+    ):
+        """Initialize the MLflow logger and check for required dependencies.
+
+        Args:
+            level: The logging level for this handler
+            run_name: Name of the run, can contain placeholders
+            log_dir: Directory where MLflow artifacts should be stored (used as artifact location)
+            tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000")
+            experiment_name: Name of the MLflow experiment
+            **mlflow_init_kwargs: Additional keyword arguments passed to mlflow.start_run()
+        """
+        super().__init__(level)
+
+        self.run_name = _substitute_placeholders(run_name)
+        self.log_dir = Path(log_dir)
+        self.tracking_uri = tracking_uri
+        self.experiment_name = experiment_name
+        self.mlflow_init_kwargs = mlflow_init_kwargs.copy()
+
+        self._mlflow_run = None
+
+    def _setup(self):
+        """Initialize the MLflow run with the configured settings."""
+        if mlflow is None:
+            msg = (
+                "Could not initialize MLflowHandler because package mlflow could not be imported.\n"
+                "Please ensure it is installed by running 'pip install mlflow'"
+            )
+            raise RuntimeError(msg)
+
+        if self.tracking_uri:
+            mlflow.set_tracking_uri(self.tracking_uri)
+
+        if self.experiment_name:
+            mlflow.set_experiment(self.experiment_name)
+
+        self._mlflow_run = mlflow.start_run(
+            run_name=self.run_name,
+            **self.mlflow_init_kwargs
+        )
+
+    def emit(self, record: logging.LogRecord):
+        """Emit a log record to MLflow.
+
+        Args:
+            record: The log record to emit
+        """
+        if self._mlflow_run is None:
+            self._setup()
+
+        if not isinstance(record.msg, Mapping):
+            warnings.warn(
+                f"MLflowHandler expected a mapping, got {type(record.msg)}. Skipping log. "
+                "Please ensure the handler is configured correctly to filter out non-mapping objects."
+            )
+            return
+
+        flat_dict = _flatten_dict(record.msg, sep=".")
+        step = getattr(record, "step", None)
+
+        if getattr(record, "hparams", None):
+            # Log as parameters - MLflow params must be strings
+            params_dict = {k: str(v) for k, v in flat_dict.items()}
+            mlflow.log_params(params_dict)
+            return
+
+        # Filter to only numeric values for metrics
+        metrics_dict = {}
+        for k, v in flat_dict.items():
+            try:
+                metrics_dict[k] = float(v)
+            except (ValueError, TypeError):
+                # Skip non-numeric values for metrics
+                pass
+
+        if metrics_dict:
+            mlflow.log_metrics(metrics_dict, step=step)
+
+    def close(self):
+        """End the MLflow run and cleanup resources."""
+        if self._mlflow_run is not None:
+            mlflow.end_run()
+            self._mlflow_run = None
+        super().close()
+
+
 class AsyncStructuredHandler(logging.Handler):
     """Logger that asynchronously writes data to a JSONL file.
 
@@ -708,7 +856,16 @@ def setup_root_logger(level="DEBUG"):
     )
 
 
-def setup_metric_logger(loggers, run_name, output_dir):
+def setup_metric_logger(
+    loggers,
+    run_name,
+    output_dir,
+    *,
+    mlflow_tracking_uri: str | None = None,
+    mlflow_experiment_name: str | None = None,
+    wandb_project: str | None = None,
+    wandb_entity: str | None = None,
+):
     """Configure the metric logging system with specified backends.
 
     This function sets up a comprehensive logging configuration that supports
@@ -717,10 +874,16 @@ def setup_metric_logger(loggers, run_name, output_dir):
 
     Args:
         loggers: A string or list of strings specifying which logging backends to use.
-                Supported values: "tensorboard", "wandb", "async"
+                Supported values: "tensorboard", "wandb", "mlflow", "async"
         run_name: Name for the current training run. Can include placeholders like
                  {time}, {rank}, {utc_time}, {local_rank}.
         output_dir: Directory where log files will be stored
+        mlflow_tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000").
+                Falls back to MLFLOW_TRACKING_URI environment variable if not provided.
+        mlflow_experiment_name: MLflow experiment name.
+                Falls back to MLFLOW_EXPERIMENT_NAME environment variable if not provided.
+        wandb_project: Weights & Biases project name.
+        wandb_entity: Weights & Biases team/entity name.
 
     Example:
         ```python
@@ -731,11 +894,13 @@ def setup_metric_logger(loggers, run_name, output_dir):
             output_dir="logs"
         )
 
-        # Setup logging with a single backend
+        # Setup logging with MLflow
         setup_metric_logger(
-            loggers="tensorboard",
+            loggers=["mlflow"],
             run_name="my_run",
-            output_dir="logs"
+            output_dir="logs",
+            mlflow_tracking_uri="http://localhost:5000",
+            mlflow_experiment_name="my_experiment"
         )
         ```
     """
@@ -781,6 +946,16 @@ def setup_metric_logger(loggers, run_name, output_dir):
                 "()": WandbHandler,
                 "log_dir": output_dir,
                 "run_name": run_name,
+                "project": wandb_project,
+                "entity": wandb_entity,
+                "filters": ["is_mapping", "is_rank0"],
+            },
+            "mlflow": {
+                "()": MLflowHandler,
+                "log_dir": output_dir,
+                "run_name": run_name,
+                "tracking_uri": mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI"),
+                "experiment_name": mlflow_experiment_name or os.environ.get("MLFLOW_EXPERIMENT_NAME"),
                 "filters": ["is_mapping", "is_rank0"],
             },
         },

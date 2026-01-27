@@ -272,7 +272,15 @@ def main(args):
             "DeepSpeed was selected and CPU offloading was requested, but DeepSpeedCPUAdam could not be imported. This likely means you need to build DeepSpeed with the CPU adam flags."
         )
 
-    setup_metric_logger(args.logger_type, args.run_name, args.output_dir)
+    setup_metric_logger(
+        args.logger_type,
+        args.run_name,
+        args.output_dir,
+        mlflow_tracking_uri=getattr(args, 'mlflow_tracking_uri', None),
+        mlflow_experiment_name=getattr(args, 'mlflow_experiment_name', None),
+        wandb_project=getattr(args, 'wandb_project', None),
+        wandb_entity=getattr(args, 'wandb_entity', None),
+    )
     metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
         metric_logger.info(vars(args), extra={"hparams": True})
@@ -457,7 +465,15 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     # Enable package logging propagation before setting up loggers
     propagate_package_logs(True)
     setup_root_logger(train_args.log_level)
-    setup_metric_logger("async", None, train_args.ckpt_output_dir)
+    setup_metric_logger(
+        train_args.logger_type,
+        train_args.run_name,
+        train_args.ckpt_output_dir,
+        mlflow_tracking_uri=train_args.mlflow_tracking_uri,
+        mlflow_experiment_name=train_args.mlflow_experiment_name,
+        wandb_project=train_args.wandb_project,
+        wandb_entity=train_args.wandb_entity,
+    )
 
     logger = logging.getLogger("instructlab.training")
     logger.info("Starting training setup...")
@@ -545,8 +561,21 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
             f"--adamw_beta1={train_args.adamw_betas[0]}",
             f"--adamw_beta2={train_args.adamw_betas[1]}",
             f"--adamw_eps={train_args.adamw_eps}",
+            f"--logger_type={train_args.logger_type}",
         ]
     )
+
+    # Add optional logging parameters
+    if train_args.run_name is not None:
+        command.append(f"--run_name={train_args.run_name}")
+    if train_args.mlflow_tracking_uri is not None:
+        command.append(f"--mlflow_tracking_uri={train_args.mlflow_tracking_uri}")
+    if train_args.mlflow_experiment_name is not None:
+        command.append(f"--mlflow_experiment_name={train_args.mlflow_experiment_name}")
+    if train_args.wandb_project is not None:
+        command.append(f"--wandb_project={train_args.wandb_project}")
+    if train_args.wandb_entity is not None:
+        command.append(f"--wandb_entity={train_args.wandb_entity}")
 
     if train_args.pretraining_config is not None:
         command.append(f"--block-size={train_args.pretraining_config.block_size}")
@@ -766,6 +795,30 @@ if __name__ == "__main__":
     parser.add_argument("--log_level", type=str, default="INFO")
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--logger_type", type=str, default="async")
+    parser.add_argument(
+        "--mlflow_tracking_uri",
+        type=str,
+        default=None,
+        help="MLflow tracking server URI (e.g., 'http://localhost:5000')",
+    )
+    parser.add_argument(
+        "--mlflow_experiment_name",
+        type=str,
+        default=None,
+        help="MLflow experiment name",
+    )
+    parser.add_argument(
+        "--wandb_project",
+        type=str,
+        default=None,
+        help="Weights & Biases project name",
+    )
+    parser.add_argument(
+        "--wandb_entity",
+        type=str,
+        default=None,
+        help="Weights & Biases team/entity name",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
     parser.add_argument("--mock_len", type=int, default=2600)
