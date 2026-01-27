@@ -3,7 +3,7 @@ wheel>=0.43
 pyyaml
 py-cpuinfo
 torch>=2.6.0
-transformers>=4.55.0
+transformers>=4.55.0,<5
 
 datasets>=2.15.0
 numba>=0.62.0
