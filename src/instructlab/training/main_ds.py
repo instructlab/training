@@ -279,11 +279,11 @@ def main(args):
         args.logger_type,
         args.run_name,
         args.output_dir,
-        mlflow_tracking_uri=getattr(args, "mlflow_tracking_uri", None),
-        mlflow_experiment_name=getattr(args, "mlflow_experiment_name", None),
-        wandb_project=getattr(args, "wandb_project", None),
-        wandb_entity=getattr(args, "wandb_entity", None),
-        tensorboard_log_dir=getattr(args, "tensorboard_log_dir", None),
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_experiment_name=args.mlflow_experiment_name,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        tensorboard_log_dir=args.tensorboard_log_dir,
     )
     metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
