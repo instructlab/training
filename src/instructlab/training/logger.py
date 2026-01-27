@@ -639,7 +639,6 @@ class MLflowHandler(logging.Handler):
         self,
         level: int = logging.INFO,
         run_name: str | None = None,
-        log_dir: str | os.PathLike = "logs",
         tracking_uri: str | None = None,
         experiment_name: str | None = None,
         **mlflow_init_kwargs: Any,
@@ -649,7 +648,6 @@ class MLflowHandler(logging.Handler):
         Args:
             level: The logging level for this handler
             run_name: Name of the run, can contain placeholders
-            log_dir: Directory where MLflow artifacts should be stored (used as artifact location)
             tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000")
             experiment_name: Name of the MLflow experiment
             **mlflow_init_kwargs: Additional keyword arguments passed to mlflow.start_run()
@@ -657,7 +655,6 @@ class MLflowHandler(logging.Handler):
         super().__init__(level)
 
         self.run_name = _substitute_placeholders(run_name)
-        self.log_dir = Path(log_dir)
         self.tracking_uri = tracking_uri
         self.experiment_name = experiment_name
         self.mlflow_init_kwargs = mlflow_init_kwargs.copy()
@@ -710,12 +707,19 @@ class MLflowHandler(logging.Handler):
 
         # Filter to only numeric values for metrics
         metrics_dict = {}
+        skipped_keys = []
         for k, v in flat_dict.items():
             try:
                 metrics_dict[k] = float(v)
             except (ValueError, TypeError):
                 # Skip non-numeric values for metrics
-                pass
+                skipped_keys.append(k)
+
+        if skipped_keys:
+            logging.debug(
+                f"MLflowHandler skipped non-numeric metrics: {skipped_keys}. "
+                "Only numeric values can be logged as MLflow metrics."
+            )
 
         if metrics_dict:
             mlflow.log_metrics(metrics_dict, step=step)
@@ -953,7 +957,6 @@ def setup_metric_logger(
             },
             "mlflow": {
                 "()": MLflowHandler,
-                "log_dir": output_dir,
                 "run_name": run_name,
                 "tracking_uri": mlflow_tracking_uri
                 or os.environ.get("MLFLOW_TRACKING_URI"),
