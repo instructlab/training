@@ -864,6 +864,7 @@ def setup_metric_logger(
     mlflow_experiment_name: str | None = None,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
+    tensorboard_log_dir: str | None = None,
 ):
     """Configure the metric logging system with specified backends.
 
@@ -883,6 +884,7 @@ def setup_metric_logger(
                 Falls back to MLFLOW_EXPERIMENT_NAME environment variable if not provided.
         wandb_project: Weights & Biases project name.
         wandb_entity: Weights & Biases team/entity name.
+        tensorboard_log_dir: Directory for TensorBoard logs. Defaults to output_dir if not provided.
 
     Example:
         ```python
@@ -937,7 +939,7 @@ def setup_metric_logger(
             },
             "tensorboard": {
                 "()": TensorBoardHandler,
-                "log_dir": output_dir,
+                "log_dir": tensorboard_log_dir or output_dir,
                 "run_name": run_name,
                 "filters": ["is_mapping", "is_rank0"],
             },

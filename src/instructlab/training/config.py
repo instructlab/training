@@ -335,3 +335,8 @@ class TrainingArgs(BaseModel):
         default=None,
         description="Weights & Biases team/entity name.",
     )
+
+    tensorboard_log_dir: str | None = Field(
+        default=None,
+        description="Directory for TensorBoard logs. Defaults to ckpt_output_dir if not specified.",
+    )
