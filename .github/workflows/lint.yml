@@ -74,6 +74,9 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
+          cache-dependency-glob: |
+            **/requirements*.txt
+            **/constraints-dev.txt
 
       - name: Install tox
         run: |
