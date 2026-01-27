@@ -283,6 +283,7 @@ def main(args):
         mlflow_experiment_name=getattr(args, "mlflow_experiment_name", None),
         wandb_project=getattr(args, "wandb_project", None),
         wandb_entity=getattr(args, "wandb_entity", None),
+        tensorboard_log_dir=getattr(args, "tensorboard_log_dir", None),
     )
     metric_logger = logging.getLogger("instructlab.training.metrics")
     if os.environ["LOCAL_RANK"] == "0":
@@ -476,6 +477,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         mlflow_experiment_name=train_args.mlflow_experiment_name,
         wandb_project=train_args.wandb_project,
         wandb_entity=train_args.wandb_entity,
+        tensorboard_log_dir=train_args.tensorboard_log_dir,
     )
 
     logger = logging.getLogger("instructlab.training")
@@ -579,6 +581,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append(f"--wandb_project={train_args.wandb_project}")
     if train_args.wandb_entity is not None:
         command.append(f"--wandb_entity={train_args.wandb_entity}")
+    if train_args.tensorboard_log_dir is not None:
+        command.append(f"--tensorboard_log_dir={train_args.tensorboard_log_dir}")
 
     if train_args.pretraining_config is not None:
         command.append(f"--block-size={train_args.pretraining_config.block_size}")
@@ -821,6 +825,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Weights & Biases team/entity name",
+    )
+    parser.add_argument(
+        "--tensorboard_log_dir",
+        type=str,
+        default=None,
+        help="Directory for TensorBoard logs. Defaults to output_dir if not specified.",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--mock_data", action="store_true")
