@@ -393,7 +393,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     # Adding after tokenizer setup as these are temp tokens, not to be saved
     tokenizer.add_special_tokens(
-        {"additional_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<|MASK|>"]}
+        {"extra_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<|MASK|>"]}
     )
 
     try:
@@ -1300,7 +1300,7 @@ def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
     # Add special tokens for masking
     tokenizer.add_special_tokens(
         {
-            "additional_special_tokens": [
+            "extra_special_tokens": [
                 UNMASK_BEGIN_TOKEN,
                 UNMASK_END_TOKEN,
                 UNMASK_REASONING_BEGIN_TOKEN,
