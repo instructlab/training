@@ -861,9 +861,10 @@ def setup_root_logger(level="DEBUG"):
 
 def setup_metric_logger(
     loggers,
-    run_name,
     output_dir,
     *,
+    wandb_run_name: str | None = None,
+    mlflow_run_name: str | None = None,
     mlflow_tracking_uri: str | None = None,
     mlflow_experiment_name: str | None = None,
     wandb_project: str | None = None,
@@ -879,9 +880,11 @@ def setup_metric_logger(
     Args:
         loggers: A string or list of strings specifying which logging backends to use.
                 Supported values: "tensorboard", "wandb", "mlflow", "async"
-        run_name: Name for the current training run. Can include placeholders like
-                 {time}, {rank}, {utc_time}, {local_rank}.
         output_dir: Directory where log files will be stored
+        wandb_run_name: Weights & Biases run name. Can include placeholders like
+                 {time}, {rank}, {utc_time}, {local_rank}.
+        mlflow_run_name: MLflow run name. Can include placeholders like
+                 {time}, {rank}, {utc_time}, {local_rank}.
         mlflow_tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000").
                 Falls back to MLFLOW_TRACKING_URI environment variable if not provided.
         mlflow_experiment_name: MLflow experiment name.
@@ -895,15 +898,15 @@ def setup_metric_logger(
         # Setup logging with multiple backends
         setup_metric_logger(
             loggers=["tensorboard", "wandb", "async"],
-            run_name="experiment_{time}",
-            output_dir="logs"
+            output_dir="logs",
+            wandb_run_name="experiment_{time}"
         )
 
         # Setup logging with MLflow
         setup_metric_logger(
             loggers=["mlflow"],
-            run_name="my_run",
             output_dir="logs",
+            mlflow_run_name="my_run",
             mlflow_tracking_uri="http://localhost:5000",
             mlflow_experiment_name="my_experiment"
         )
@@ -919,9 +922,12 @@ def setup_metric_logger(
         loggers = loggers.split(",")
     loggers = [logger.strip() for logger in loggers]
 
+    # Determine async run_name - use a default template for file naming
+    async_run_name = None  # Will use default template in AsyncStructuredHandler
+
     async_filters = ["is_mapping"]
-    if run_name is not None and "{rank}" not in run_name:
-        async_filters.append("is_rank0")
+    # For async handler, we always include rank in the default template, so no rank0 filter needed
+    # unless a specific run_name was provided that doesn't include {rank}
 
     logging_config = {
         "version": 1,
@@ -938,26 +944,26 @@ def setup_metric_logger(
             "async": {
                 "()": AsyncStructuredHandler,
                 "log_dir": output_dir,
-                "run_name": run_name,
+                "run_name": async_run_name,
                 "filters": async_filters,
             },
             "tensorboard": {
                 "()": TensorBoardHandler,
                 "log_dir": tensorboard_log_dir or output_dir,
-                "run_name": run_name,
+                "run_name": None,  # TensorBoard uses its own run naming
                 "filters": ["is_mapping", "is_rank0"],
             },
             "wandb": {
                 "()": WandbHandler,
                 "log_dir": output_dir,
-                "run_name": run_name,
+                "run_name": wandb_run_name,
                 "project": wandb_project,
                 "entity": wandb_entity,
                 "filters": ["is_mapping", "is_rank0"],
             },
             "mlflow": {
                 "()": MLflowHandler,
-                "run_name": run_name,
+                "run_name": mlflow_run_name,
                 "tracking_uri": mlflow_tracking_uri
                 or os.environ.get("MLFLOW_TRACKING_URI"),
                 "experiment_name": mlflow_experiment_name

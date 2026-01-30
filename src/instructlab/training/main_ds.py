@@ -274,8 +274,9 @@ def main(args):
 
     setup_metric_logger(
         args.logger_type,
-        args.run_name,
         args.output_dir,
+        wandb_run_name=args.wandb_run_name,
+        mlflow_run_name=args.mlflow_run_name,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         mlflow_experiment_name=args.mlflow_experiment_name,
         wandb_project=args.wandb_project,
@@ -468,8 +469,9 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     setup_root_logger(train_args.log_level)
     setup_metric_logger(
         train_args.logger_type,
-        train_args.run_name,
         train_args.ckpt_output_dir,
+        wandb_run_name=train_args.wandb_run_name,
+        mlflow_run_name=train_args.mlflow_run_name,
         mlflow_tracking_uri=train_args.mlflow_tracking_uri,
         mlflow_experiment_name=train_args.mlflow_experiment_name,
         wandb_project=train_args.wandb_project,
@@ -568,8 +570,10 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     )
 
     # Add optional logging parameters
-    if train_args.run_name is not None:
-        command.append(f"--run_name={train_args.run_name}")
+    if train_args.wandb_run_name is not None:
+        command.append(f"--wandb_run_name={train_args.wandb_run_name}")
+    if train_args.mlflow_run_name is not None:
+        command.append(f"--mlflow_run_name={train_args.mlflow_run_name}")
     if train_args.mlflow_tracking_uri is not None:
         command.append(f"--mlflow_tracking_uri={train_args.mlflow_tracking_uri}")
     if train_args.mlflow_experiment_name is not None:
@@ -797,7 +801,8 @@ if __name__ == "__main__":
         help="Save full model state using Accelerate after finishing an epoch.",
     )
     parser.add_argument("--log_level", type=str, default="INFO")
-    parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="Weights & Biases run name")
+    parser.add_argument("--mlflow_run_name", type=str, default=None, help="MLflow run name")
     parser.add_argument("--logger_type", type=str, default="async")
     parser.add_argument(
         "--mlflow_tracking_uri",

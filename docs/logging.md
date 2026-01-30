@@ -75,12 +75,17 @@ This can be done by calling `instructlab.training.logger.propagate_package_logs(
 
 ### Setup for training with InstructLab directly
 
-If you are training with `instructlab.training` directly, you likely don't need to do anything beyond passing in the `run_name`, `logger_type`, and `output_dir` arguments when calling the script. Internally, the training script will call `setup_root_logger()` and `setup_metric_logger()` with a reasonable default configuration.
+If you are training with `instructlab.training` directly, you likely don't need to do anything beyond passing in the `logger_type` and `output_dir` arguments when calling the script. Internally, the training script will call `setup_root_logger()` and `setup_metric_logger()` with a reasonable default configuration.
+
+Each logging backend has its own run name parameter:
+- `--wandb_run_name`: Run name for Weights & Biases
+- `--mlflow_run_name`: Run name for MLflow
 
 ```bash
 python src/instructlab/training/main_ds.py \
     ... \
-    --run_name "my_run" \
-    --logger_type "async,tensorboard,wandb" \
+    --wandb_run_name "my_wandb_run" \
+    --mlflow_run_name "my_mlflow_run" \
+    --logger_type "async,tensorboard,wandb,mlflow" \
     --output_dir "out/"
 ```

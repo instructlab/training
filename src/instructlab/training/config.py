@@ -311,9 +311,15 @@ class TrainingArgs(BaseModel):
         description="Comma-separated list of loggers to use: tensorboard, wandb, async, mlflow",
     )
 
-    run_name: str | None = Field(
+    # Logging backend-specific run names
+    wandb_run_name: str | None = Field(
         default=None,
-        description="Run name for logging. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}",
+        description="Weights & Biases run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}",
+    )
+
+    mlflow_run_name: str | None = Field(
+        default=None,
+        description="MLflow run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}",
     )
 
     mlflow_tracking_uri: str | None = Field(
