@@ -9,6 +9,9 @@ import subprocess
 import time
 import warnings
 
+# Suppress verbose HTTP request logs from httpx (used by huggingface_hub in transformers v5+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 try:
     # Third Party
     from deepspeed.ops.adam import DeepSpeedCPUAdam

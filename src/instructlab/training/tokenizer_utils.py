@@ -18,19 +18,17 @@ def setup_tokenizer_with_existing_chat_template(
         # we need to set the padding token
         tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 
-    # ensure the pad token is in the additional special tokens without duplicating anything else
+    # ensure the pad token is in the extra special tokens without duplicating anything else
     new_tokens = []
-    if tokenizer.pad_token not in tokenizer.additional_special_tokens:
+    if tokenizer.pad_token not in tokenizer.extra_special_tokens:
         new_tokens.append(tokenizer.pad_token)
-    if tokenizer.eos_token not in tokenizer.additional_special_tokens:
+    if tokenizer.eos_token not in tokenizer.extra_special_tokens:
         new_tokens.append(tokenizer.eos_token)
 
     # ensure the tokens are being sorted to prevent any issues
     new_tokens = sorted(new_tokens)
-    additional_special_tokens = tokenizer.additional_special_tokens + new_tokens
-    tokenizer.add_special_tokens(
-        {"additional_special_tokens": additional_special_tokens}
-    )
+    extra_special_tokens = tokenizer.extra_special_tokens + new_tokens
+    tokenizer.add_special_tokens({"extra_special_tokens": extra_special_tokens})
 
     # ensure the necessary tokens exist
     assert len(get_sp_token(tokenizer, tokenizer.pad_token)) == 1, (
@@ -57,7 +55,7 @@ def setup_tokenizer_from_new_chat_template(
         }
     )
     tokenizer.add_special_tokens(
-        {"additional_special_tokens": SPECIAL_TOKENS.get_tokens_to_add()}
+        {"extra_special_tokens": SPECIAL_TOKENS.get_tokens_to_add()}
     )
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False
