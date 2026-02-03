@@ -888,6 +888,13 @@ def setup_metric_logger(
     and loggers for structured metric logging. Backends are automatically
     detected based on the presence of their configuration parameters.
 
+    Note:
+        Run names are configured per-backend (e.g., `mlflow_run_name`, `wandb_run_name`)
+        rather than using a shared global run name. This design provides explicit control
+        over each backend's naming without coupling them together. File-based loggers
+        (async JSONL, TensorBoard) use a default template "{time}_rank{rank}" when no
+        run name is specified, ensuring unique identifiers across distributed runs.
+
     Args:
         output_dir: Directory where log files will be stored
         mlflow_tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000").
