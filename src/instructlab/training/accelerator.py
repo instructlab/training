@@ -153,11 +153,28 @@ class Accelerator:
         prefetch_policy = (
             BackwardPrefetch.BACKWARD_POST if is_lora else BackwardPrefetch.BACKWARD_PRE
         )
+
+        # Handle HYBRID_SHARD when world_size < num_devices_per_node
+        # HYBRID_SHARD creates intra-node groups based on detected GPU count,
+        # which fails when world_size is smaller than the number of available GPUs
+        sharding_strategy = self.fsdp_sharding_strategy
+        if sharding_strategy == "HYBRID_SHARD":
+            world_size = torch.distributed.get_world_size()
+            # FSDP1 auto-detects num_devices_per_node from available GPUs
+            num_devices_per_node = torch.cuda.device_count()
+            if world_size < num_devices_per_node:
+                logger.warning(
+                    f"HYBRID_SHARD requested but world_size ({world_size}) < "
+                    f"num_devices_per_node ({num_devices_per_node}). "
+                    f"Falling back to FULL_SHARD to avoid group_size error."
+                )
+                sharding_strategy = "FULL_SHARD"
+
         fsdp_plugin = FullyShardedDataParallelPlugin(
             auto_wrap_policy=wrap_policy,
             limit_all_gathers=True,
             backward_prefetch=prefetch_policy,
-            sharding_strategy=ShardingStrategy[self.fsdp_sharding_strategy],
+            sharding_strategy=ShardingStrategy[sharding_strategy],
             cpu_offload=CPUOffload(self.fsdp_cpu_offload_params),
             use_orig_params=self.fsdp_use_orig_params,
             # TODO(osilkin): expose switch for fp32 reduction
