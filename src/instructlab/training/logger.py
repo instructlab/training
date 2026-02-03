@@ -660,6 +660,7 @@ class MLflowHandler(logging.Handler):
         self.mlflow_init_kwargs = mlflow_init_kwargs.copy()
 
         self._mlflow_run = None
+        self._owns_mlflow_run = False
 
     def _setup(self):
         """Initialize the MLflow run with the configured settings."""
@@ -680,10 +681,12 @@ class MLflowHandler(logging.Handler):
         active = mlflow.active_run()
         if active is not None:
             self._mlflow_run = active
+            self._owns_mlflow_run = False
         else:
             self._mlflow_run = mlflow.start_run(
                 run_name=self.run_name, **self.mlflow_init_kwargs
             )
+            self._owns_mlflow_run = True
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record to MLflow.
@@ -732,8 +735,11 @@ class MLflowHandler(logging.Handler):
     def close(self):
         """End the MLflow run and cleanup resources."""
         if self._mlflow_run is not None:
-            mlflow.end_run()
+            # Only end the run if we started it (not if we reused an existing one)
+            if self._owns_mlflow_run:
+                mlflow.end_run()
             self._mlflow_run = None
+            self._owns_mlflow_run = False
         super().close()
 
 
