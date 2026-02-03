@@ -676,9 +676,14 @@ class MLflowHandler(logging.Handler):
         if self.experiment_name:
             mlflow.set_experiment(self.experiment_name)
 
-        self._mlflow_run = mlflow.start_run(
-            run_name=self.run_name, **self.mlflow_init_kwargs
-        )
+        # Reuse existing active run if one exists, otherwise start a new one
+        active = mlflow.active_run()
+        if active is not None:
+            self._mlflow_run = active
+        else:
+            self._mlflow_run = mlflow.start_run(
+                run_name=self.run_name, **self.mlflow_init_kwargs
+            )
 
     def emit(self, record: logging.LogRecord):
         """Emit a log record to MLflow.
