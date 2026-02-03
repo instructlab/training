@@ -921,7 +921,13 @@ def setup_metric_logger(
 
     # Auto-detect which loggers to enable based on configuration
     detected_loggers = []
-    if mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI"):
+    if (
+        mlflow_tracking_uri
+        or mlflow_experiment_name
+        or mlflow_run_name
+        or os.environ.get("MLFLOW_TRACKING_URI")
+        or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+    ):
         detected_loggers.append("mlflow")
     if wandb_project or os.environ.get("WANDB_PROJECT"):
         detected_loggers.append("wandb")
