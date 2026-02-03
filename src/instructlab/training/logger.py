@@ -860,68 +860,81 @@ def setup_root_logger(level="DEBUG"):
 
 
 def setup_metric_logger(
-    loggers,
-    run_name,
     output_dir,
     *,
     mlflow_tracking_uri: str | None = None,
     mlflow_experiment_name: str | None = None,
+    mlflow_run_name: str | None = None,
     wandb_project: str | None = None,
     wandb_entity: str | None = None,
+    wandb_run_name: str | None = None,
     tensorboard_log_dir: str | None = None,
 ):
-    """Configure the metric logging system with specified backends.
+    """Configure the metric logging system with auto-detected backends.
 
     This function sets up a comprehensive logging configuration that supports
     multiple logging backends simultaneously. It configures filters, handlers,
-    and loggers for structured metric logging.
+    and loggers for structured metric logging. Backends are automatically
+    detected based on the presence of their configuration parameters.
 
     Args:
-        loggers: A string or list of strings specifying which logging backends to use.
-                Supported values: "tensorboard", "wandb", "mlflow", "async"
-        run_name: Name for the current training run. Can include placeholders like
-                 {time}, {rank}, {utc_time}, {local_rank}.
         output_dir: Directory where log files will be stored
         mlflow_tracking_uri: MLflow tracking server URI (e.g., "http://localhost:5000").
                 Falls back to MLFLOW_TRACKING_URI environment variable if not provided.
+                When set (or env var present), MLflow logging is automatically enabled.
         mlflow_experiment_name: MLflow experiment name.
                 Falls back to MLFLOW_EXPERIMENT_NAME environment variable if not provided.
+        mlflow_run_name: MLflow run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}.
         wandb_project: Weights & Biases project name.
+                When set (or WANDB_PROJECT env var present), wandb logging is automatically enabled.
         wandb_entity: Weights & Biases team/entity name.
-        tensorboard_log_dir: Directory for TensorBoard logs. Defaults to output_dir if not provided.
+        wandb_run_name: Weights & Biases run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}.
+        tensorboard_log_dir: Directory for TensorBoard logs.
+                When set, TensorBoard logging is automatically enabled.
 
     Example:
         ```python
-        # Setup logging with multiple backends
+        # Setup logging with MLflow (auto-detected from tracking URI)
         setup_metric_logger(
-            loggers=["tensorboard", "wandb", "async"],
-            run_name="experiment_{time}",
-            output_dir="logs"
-        )
-
-        # Setup logging with MLflow
-        setup_metric_logger(
-            loggers=["mlflow"],
-            run_name="my_run",
             output_dir="logs",
             mlflow_tracking_uri="http://localhost:5000",
-            mlflow_experiment_name="my_experiment"
+            mlflow_experiment_name="my_experiment",
+            mlflow_run_name="my_run"
+        )
+
+        # Setup logging with wandb (auto-detected from project)
+        setup_metric_logger(
+            output_dir="logs",
+            wandb_project="my_project",
+            wandb_run_name="my_run"
+        )
+
+        # Setup logging with TensorBoard (auto-detected from log_dir)
+        setup_metric_logger(
+            output_dir="logs",
+            tensorboard_log_dir="logs/tensorboard"
         )
         ```
     """
-    if not loggers:
-        return
-
     # Enable package logging
     propagate_package_logs()
 
-    if isinstance(loggers, str):
-        loggers = loggers.split(",")
-    loggers = [logger.strip() for logger in loggers]
+    # Auto-detect which loggers to enable based on configuration
+    detected_loggers = []
+    if mlflow_tracking_uri or os.environ.get("MLFLOW_TRACKING_URI"):
+        detected_loggers.append("mlflow")
+    if wandb_project or os.environ.get("WANDB_PROJECT"):
+        detected_loggers.append("wandb")
+    if tensorboard_log_dir:
+        detected_loggers.append("tensorboard")
+
+    # Always include async logger for file logging
+    loggers = detected_loggers if detected_loggers else ["async"]
+    # Also include async logger alongside other loggers for file-based logging
+    if detected_loggers and "async" not in loggers:
+        loggers.append("async")
 
     async_filters = ["is_mapping"]
-    if run_name is not None and "{rank}" not in run_name:
-        async_filters.append("is_rank0")
 
     logging_config = {
         "version": 1,
@@ -938,26 +951,26 @@ def setup_metric_logger(
             "async": {
                 "()": AsyncStructuredHandler,
                 "log_dir": output_dir,
-                "run_name": run_name,
+                "run_name": None,  # Uses default template
                 "filters": async_filters,
             },
             "tensorboard": {
                 "()": TensorBoardHandler,
                 "log_dir": tensorboard_log_dir or output_dir,
-                "run_name": run_name,
+                "run_name": None,  # Uses default template
                 "filters": ["is_mapping", "is_rank0"],
             },
             "wandb": {
                 "()": WandbHandler,
                 "log_dir": output_dir,
-                "run_name": run_name,
+                "run_name": wandb_run_name,
                 "project": wandb_project,
                 "entity": wandb_entity,
                 "filters": ["is_mapping", "is_rank0"],
             },
             "mlflow": {
                 "()": MLflowHandler,
-                "run_name": run_name,
+                "run_name": mlflow_run_name,
                 "tracking_uri": mlflow_tracking_uri
                 or os.environ.get("MLFLOW_TRACKING_URI"),
                 "experiment_name": mlflow_experiment_name
