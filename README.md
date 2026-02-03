@@ -75,16 +75,13 @@ The library supports optional logging backends for experiment tracking. Install 
 
 ```bash
 # MLflow logging
-pip install 'instructlab-training[mlflow]'
+pip install mlflow
 
 # Weights & Biases logging
-pip install 'instructlab-training[wandb]'
+pip install wandb
 
 # TensorBoard logging
-pip install 'instructlab-training[tensorboard]'
-
-# Install multiple logging backends at once
-pip install 'instructlab-training[mlflow,wandb,tensorboard]'
+pip install tensorboard
 ```
 
 For more details on configuring logging, see the [Logging Documentation](docs/logging.md).

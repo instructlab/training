@@ -418,7 +418,7 @@ class TensorBoardHandler(logging.Handler):
         if SummaryWriter is None:
             msg = (
                 "Could not initialize TensorBoardHandler because package tensorboard could not be imported.\n"
-                "Please ensure it is installed by running: pip install 'instructlab-training[tensorboard]'"
+                "Please ensure it is installed by running: pip install tensorboard"
             )
             raise RuntimeError(msg)
         os.makedirs(self.tboard_init_kwargs["log_dir"], exist_ok=True)
@@ -557,7 +557,7 @@ class WandbHandler(logging.Handler):
         if wandb is None:
             msg = (
                 "Could not initialize WandbHandler because package wandb could not be imported.\n"
-                "Please ensure it is installed by running: pip install 'instructlab-training[wandb]'"
+                "Please ensure it is installed by running: pip install wandb"
             )
             raise RuntimeError(msg)
         self._wandb_run = wandb.init(**self.wandb_init_kwargs)
@@ -667,7 +667,7 @@ class MLflowHandler(logging.Handler):
         if mlflow is None:
             msg = (
                 "Could not initialize MLflowHandler because package mlflow could not be imported.\n"
-                "Please ensure it is installed by running: pip install 'instructlab-training[mlflow]'"
+                "Please ensure it is installed by running: pip install mlflow"
             )
             raise RuntimeError(msg)
 
