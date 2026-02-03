@@ -48,6 +48,9 @@ optional-dependencies.cuda = { file = ["requirements-cuda.txt"] }
 optional-dependencies.rocm = { file = ["requirements-rocm.txt"] }
 optional-dependencies.hpu = { file = ["requirements-hpu.txt"] }
 optional-dependencies.deepspeed = { file = ["requirements-deepspeed.txt"] }
+optional-dependencies.mlflow = { file = ["requirements-mlflow.txt"] }
+optional-dependencies.wandb = { file = ["requirements-wandb.txt"] }
+optional-dependencies.tensorboard = { file = ["requirements-tensorboard.txt"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]

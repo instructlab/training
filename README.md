@@ -22,6 +22,7 @@ The library now supports reasoning traces through the `reasoning_content` field 
 
 - [Installing](#installing-the-library)
   - [Additional Nvidia packages](#additional-nvidia-packages)
+  - [Optional logging dependencies](#optional-logging-dependencies)
 - [Using the library](#using-the-library)
 - [Data format](#data-format)
   - [Reasoning content support](#reasoning-content-support-1)
@@ -67,6 +68,26 @@ Editable install (development)
 ```bash
 pip install -e .[cuda]
 ```
+
+### Optional Logging Dependencies
+
+The library supports optional logging backends for experiment tracking. Install the ones you need:
+
+```bash
+# MLflow logging
+pip install 'instructlab-training[mlflow]'
+
+# Weights & Biases logging
+pip install 'instructlab-training[wandb]'
+
+# TensorBoard logging
+pip install 'instructlab-training[tensorboard]'
+
+# Install multiple logging backends at once
+pip install 'instructlab-training[mlflow,wandb,tensorboard]'
+```
+
+For more details on configuring logging, see the [Logging Documentation](docs/logging.md).
 
 ## Using the library
 
