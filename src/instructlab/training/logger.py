@@ -672,27 +672,20 @@ class MLflowHandler(logging.Handler):
             )
             raise RuntimeError(msg)
 
-        # Check for existing active run first
+        # Always set tracking URI and experiment first (before checking for active run)
+        # This ensures the client is configured correctly even if we reuse an existing run
+        if self.tracking_uri:
+            mlflow.set_tracking_uri(self.tracking_uri)
+
+        if self.experiment_name:
+            mlflow.set_experiment(self.experiment_name)
+
+        # Reuse existing active run if one exists, otherwise start a new one
         active = mlflow.active_run()
         if active is not None:
-            # Warn if user provided settings that will be ignored
-            if self.tracking_uri or self.experiment_name:
-                warnings.warn(
-                    "An MLflow run is already active. The provided tracking_uri and "
-                    "experiment_name settings will be ignored. The handler will log "
-                    "to the existing active run.",
-                    stacklevel=3,
-                )
             self._mlflow_run = active
             self._owns_mlflow_run = False
         else:
-            # Only set tracking URI and experiment when starting a new run
-            if self.tracking_uri:
-                mlflow.set_tracking_uri(self.tracking_uri)
-
-            if self.experiment_name:
-                mlflow.set_experiment(self.experiment_name)
-
             self._mlflow_run = mlflow.start_run(
                 run_name=self.run_name, **self.mlflow_init_kwargs
             )
