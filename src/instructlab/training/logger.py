@@ -8,11 +8,12 @@ Example Usage:
     ```python
     from instructlab.training.logger import setup_metric_logger
 
-    # Setup logging with TensorBoard and wandb
+    # Setup logging with TensorBoard and wandb (auto-detected from params)
     setup_metric_logger(
-        loggers=["tensorboard", "wandb"],
-        run_name="my_training_run",
-        output_dir="logs"
+        output_dir="logs",
+        tensorboard_log_dir="logs/tensorboard",
+        wandb_project="my_project",
+        wandb_run_name="my_training_run",
     )
 
     # Log metrics
@@ -671,18 +672,27 @@ class MLflowHandler(logging.Handler):
             )
             raise RuntimeError(msg)
 
-        if self.tracking_uri:
-            mlflow.set_tracking_uri(self.tracking_uri)
-
-        if self.experiment_name:
-            mlflow.set_experiment(self.experiment_name)
-
-        # Reuse existing active run if one exists, otherwise start a new one
+        # Check for existing active run first
         active = mlflow.active_run()
         if active is not None:
+            # Warn if user provided settings that will be ignored
+            if self.tracking_uri or self.experiment_name:
+                warnings.warn(
+                    "An MLflow run is already active. The provided tracking_uri and "
+                    "experiment_name settings will be ignored. The handler will log "
+                    "to the existing active run.",
+                    stacklevel=3,
+                )
             self._mlflow_run = active
             self._owns_mlflow_run = False
         else:
+            # Only set tracking URI and experiment when starting a new run
+            if self.tracking_uri:
+                mlflow.set_tracking_uri(self.tracking_uri)
+
+            if self.experiment_name:
+                mlflow.set_experiment(self.experiment_name)
+
             self._mlflow_run = mlflow.start_run(
                 run_name=self.run_name, **self.mlflow_init_kwargs
             )
@@ -892,8 +902,9 @@ def setup_metric_logger(
         Run names are configured per-backend (e.g., `mlflow_run_name`, `wandb_run_name`)
         rather than using a shared global run name. This design provides explicit control
         over each backend's naming without coupling them together. File-based loggers
-        (async JSONL, TensorBoard) use a default template "{time}_rank{rank}" when no
-        run name is specified, ensuring unique identifiers across distributed runs.
+        use default templates when no run name is specified: TensorBoard uses
+        "{time}_rank{rank}", and async JSONL uses "training_params_and_metrics_global{rank}",
+        ensuring unique identifiers across distributed runs.
 
     Args:
         output_dir: Directory where log files will be stored
@@ -952,11 +963,8 @@ def setup_metric_logger(
     if tensorboard_log_dir:
         detected_loggers.append("tensorboard")
 
-    # Always include async logger for file logging
-    loggers = detected_loggers if detected_loggers else ["async"]
-    # Also include async logger alongside other loggers for file-based logging
-    if detected_loggers and "async" not in loggers:
-        loggers.append("async")
+    # Always include async logger for file-based logging alongside other loggers
+    loggers = [*detected_loggers, "async"]
 
     async_filters = ["is_mapping"]
 
