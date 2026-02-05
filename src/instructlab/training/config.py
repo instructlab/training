@@ -305,3 +305,38 @@ class TrainingArgs(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO"
     )
+
+    mlflow_tracking_uri: str | None = Field(
+        default=None,
+        description="MLflow tracking server URI (e.g., 'http://localhost:5000'). Falls back to MLFLOW_TRACKING_URI env var.",
+    )
+
+    mlflow_experiment_name: str | None = Field(
+        default=None,
+        description="MLflow experiment name. Falls back to MLFLOW_EXPERIMENT_NAME env var.",
+    )
+
+    mlflow_run_name: str | None = Field(
+        default=None,
+        description="MLflow run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}",
+    )
+
+    wandb_project: str | None = Field(
+        default=None,
+        description="Weights & Biases project name.",
+    )
+
+    wandb_entity: str | None = Field(
+        default=None,
+        description="Weights & Biases team/entity name.",
+    )
+
+    wandb_run_name: str | None = Field(
+        default=None,
+        description="Weights & Biases run name. Supports placeholders: {time}, {rank}, {utc_time}, {local_rank}",
+    )
+
+    tensorboard_log_dir: str | None = Field(
+        default=None,
+        description="Directory for TensorBoard logs. Defaults to ckpt_output_dir if not specified.",
+    )
