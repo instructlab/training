@@ -135,7 +135,7 @@ class Accelerator:
 
     def get_fsdp_config(self):
         is_lora = self.model.lora_config is not None
-        block_name = self.model._no_split_modules[0]
+        block_name = next(iter(self.model._no_split_modules))
 
         wrap_policy = None
         if is_lora > 0:

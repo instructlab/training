@@ -18,7 +18,7 @@ def mock_model():
     model = MagicMock(spec=Model)
     model.model = MagicMock()
     model.lora_config = None
-    model._no_split_modules = ["LlamaDecoderLayer"]
+    model._no_split_modules = {"LlamaDecoderLayer"}
     # Add children method to model
     model.children = MagicMock(return_value=[])
     model.model.children = MagicMock(return_value=[])
