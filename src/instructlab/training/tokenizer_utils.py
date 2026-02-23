@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Third Party
-import transformers
 from transformers import AutoTokenizer, PreTrainedTokenizer
+import transformers
 
 # First Party
 from instructlab.training.utils import log_rank_0, retrieve_chat_template

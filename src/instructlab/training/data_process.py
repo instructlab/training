@@ -24,9 +24,9 @@ import regex as re
 from instructlab.training.config import DataProcessArgs
 from instructlab.training.logger import setup_root_logger
 from instructlab.training.tokenizer_utils import (
+    SPECIAL_TOKENS_KEY,
     get_sp_token,
     setup_tokenizer,
-    SPECIAL_TOKENS_KEY,
 )
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
 from instructlab.training.utils import log_rank_0, retrieve_chat_template
