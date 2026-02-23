@@ -1,10 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Third Party
+import transformers
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 # First Party
 from instructlab.training.utils import log_rank_0, retrieve_chat_template
+
+# Transformers v5 renamed 'additional_special_tokens' to 'extra_special_tokens'
+_TRANSFORMERS_V5 = int(transformers.__version__.split(".")[0]) >= 5
+SPECIAL_TOKENS_KEY = "extra_special_tokens" if _TRANSFORMERS_V5 else "additional_special_tokens"
+
+
+def get_extra_special_tokens(tokenizer: PreTrainedTokenizer) -> list[str]:
+    """Get extra/additional special tokens, compatible with both transformers v4 and v5."""
+    if _TRANSFORMERS_V5:
+        return tokenizer.extra_special_tokens
+    return tokenizer.additional_special_tokens
 
 
 def setup_tokenizer_with_existing_chat_template(
@@ -19,16 +31,17 @@ def setup_tokenizer_with_existing_chat_template(
         tokenizer.add_special_tokens({"pad_token": tokenizer.eos_token})
 
     # ensure the pad token is in the extra special tokens without duplicating anything else
+    current_special = get_extra_special_tokens(tokenizer)
     new_tokens = []
-    if tokenizer.pad_token not in tokenizer.extra_special_tokens:
+    if tokenizer.pad_token not in current_special:
         new_tokens.append(tokenizer.pad_token)
-    if tokenizer.eos_token not in tokenizer.extra_special_tokens:
+    if tokenizer.eos_token not in current_special:
         new_tokens.append(tokenizer.eos_token)
 
     # ensure the tokens are being sorted to prevent any issues
     new_tokens = sorted(new_tokens)
-    extra_special_tokens = tokenizer.extra_special_tokens + new_tokens
-    tokenizer.add_special_tokens({"extra_special_tokens": extra_special_tokens})
+    extra_special_tokens = current_special + new_tokens
+    tokenizer.add_special_tokens({SPECIAL_TOKENS_KEY: extra_special_tokens})
 
     # ensure the necessary tokens exist
     assert len(get_sp_token(tokenizer, tokenizer.pad_token)) == 1, (
@@ -55,7 +68,7 @@ def setup_tokenizer_from_new_chat_template(
         }
     )
     tokenizer.add_special_tokens(
-        {"extra_special_tokens": SPECIAL_TOKENS.get_tokens_to_add()}
+        {SPECIAL_TOKENS_KEY: SPECIAL_TOKENS.get_tokens_to_add()}
     )
     if getattr(tokenizer, "add_bos_token", False) or getattr(
         tokenizer, "add_eos_token", False

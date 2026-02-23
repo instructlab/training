@@ -23,7 +23,7 @@ import regex as re
 # First Party
 from instructlab.training.config import DataProcessArgs
 from instructlab.training.logger import setup_root_logger
-from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer
+from instructlab.training.tokenizer_utils import get_sp_token, setup_tokenizer, SPECIAL_TOKENS_KEY
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
 from instructlab.training.utils import log_rank_0, retrieve_chat_template
 
@@ -393,7 +393,7 @@ def process_messages_into_input_ids_with_chat_template(args: DataProcessArgs):
 
     # Adding after tokenizer setup as these are temp tokens, not to be saved
     tokenizer.add_special_tokens(
-        {"extra_special_tokens": ["<|pretrain|>", "<|/pretrain|>", "<|MASK|>"]}
+        {SPECIAL_TOKENS_KEY: ["<|pretrain|>", "<|/pretrain|>", "<|MASK|>"]}
     )
 
     try:
@@ -1300,7 +1300,7 @@ def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
     # Add special tokens for masking
     tokenizer.add_special_tokens(
         {
-            "extra_special_tokens": [
+            SPECIAL_TOKENS_KEY: [
                 UNMASK_BEGIN_TOKEN,
                 UNMASK_END_TOKEN,
                 UNMASK_REASONING_BEGIN_TOKEN,
