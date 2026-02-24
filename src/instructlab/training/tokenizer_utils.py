@@ -8,7 +8,7 @@ import transformers
 from instructlab.training.utils import log_rank_0, retrieve_chat_template
 
 # Transformers v5 renamed 'additional_special_tokens' to 'extra_special_tokens'
-_TRANSFORMERS_V5 = int(transformers.__version__.split(".")[0]) >= 5
+_TRANSFORMERS_V5 = int(transformers.__version__.split(".", maxsplit=1)[0]) >= 5
 SPECIAL_TOKENS_KEY = (
     "extra_special_tokens" if _TRANSFORMERS_V5 else "additional_special_tokens"
 )
