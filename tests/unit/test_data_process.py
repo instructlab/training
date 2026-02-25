@@ -521,9 +521,11 @@ class TestReasoningContentSupport(unittest.TestCase):
         # Mock tokenizer for basic tests
         self.mock_tokenizer = MagicMock(spec=PreTrainedTokenizerBase)
         self.mock_tokenizer.name_or_path = "test-model"
-        self.mock_tokenizer.encode.side_effect = lambda text, add_special_tokens=False: [
-            hash(text) % 1000 for _ in text.split()
-        ]
+        self.mock_tokenizer.encode.side_effect = (
+            lambda text, add_special_tokens=False: [
+                hash(text) % 1000 for _ in text.split()
+            ]
+        )
         self.mock_tokenizer.decode.side_effect = lambda tokens: " ".join(
             [f"token_{t}" for t in tokens]
         )
