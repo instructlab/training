@@ -84,10 +84,96 @@ import instructlab.training.data_process as dp
 logger = logging.getLogger(__name__)
 
 
+def compute_validation_loss(model, val_data_loader, device, world_size):
+    """Compute validation loss on the validation dataset.
+
+    Follows the same loss computation as training (manual per-token CE loss)
+    but without backward passes or gradient accumulation.
+
+    Args:
+        model: The model to evaluate
+        val_data_loader: Validation data loader
+        device: Device to run evaluation on
+        world_size: Number of distributed processes
+
+    Returns:
+        dict: Dictionary containing validation metrics, empty if no data
+    """
+    if val_data_loader is None:
+        return {}
+
+    local_rank = int(os.environ["LOCAL_RANK"])
+    base_logger = logging.getLogger("instructlab.training")
+
+    if local_rank == 0:
+        base_logger.info("Computing validation loss...")
+
+    model.eval()
+    total_loss = 0.0
+    total_tokens = 0
+
+    with torch.no_grad():
+        for batch in val_data_loader:
+            batch_loss = 0.0
+
+            for mb in batch:
+                # Prepare model inputs
+                input_ids = mb["input_ids"].to(device)
+                labels = mb["labels"].to(device)
+
+                model_inputs = {"input_ids": input_ids, "labels": labels}
+
+                if "position_ids" in mb:
+                    model_inputs["position_ids"] = mb["position_ids"].to(device)
+                if "attention_mask" in mb:
+                    model_inputs["attention_mask"] = mb["attention_mask"].to(device)
+
+                # Forward pass
+                output = model(**model_inputs, use_cache=False)
+
+                # Manual CE loss computation (same as model.compute_loss but without scaling)
+                logits = output.logits
+                shift_logits = logits[..., :-1, :].contiguous()
+                shift_labels = labels[..., 1:].contiguous()
+                shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+                shift_labels = shift_labels.view(-1)
+
+                loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+                token_losses = loss_fct(shift_logits, shift_labels)
+                valid_tokens = shift_labels != -100
+                batch_loss += token_losses[valid_tokens].sum().item()
+
+                torch.cuda.empty_cache()
+
+            # Reduce loss across ranks (SUM since each rank processes different tokens)
+            batch_loss_tensor = torch.tensor(batch_loss, device=device)
+            dist.all_reduce(batch_loss_tensor, op=dist.ReduceOp.SUM)
+
+            total_loss += batch_loss_tensor.item()
+            total_tokens += batch[0]["batch_num_loss_counted_tokens"]
+
+            dist.barrier()
+
+    val_metrics = {}
+    if total_tokens > 0:
+        avg_val_loss = total_loss / total_tokens
+        val_metrics = {
+            "val_loss": avg_val_loss,
+            "val_num_tokens": total_tokens,
+        }
+        if local_rank == 0:
+            base_logger.info("Validation loss: %.6f", avg_val_loss)
+
+    model.train()
+    return val_metrics
+
+
 def train(
     args,
     model: Model,
     accelerator: Accelerator,
+    val_data_loader=None,
+    validation_frequency=None,
 ):
     model.train()
 
@@ -192,6 +278,22 @@ def train(
                     },
                     extra={"step": global_step},
                 )
+
+            # Compute validation loss if it's time to validate
+            if (
+                val_data_loader is not None
+                and validation_frequency is not None
+                and global_step % validation_frequency == 0
+            ):
+                torch_device = torch.device("cuda", local_rank)
+                val_metrics = compute_validation_loss(
+                    model, val_data_loader, torch_device, world_size
+                )
+                if val_metrics and local_rank == 0:
+                    metric_logger.info(
+                        val_metrics,
+                        extra={"step": global_step},
+                    )
 
             if args.save_samples > 0 and (samples_seen % args.save_samples == 0):
                 base_logger.debug(f"Saving checkpoint at step {global_step}")
@@ -377,7 +479,10 @@ def main(args):
 
     pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
-    train_loader = get_data_loader(
+    validation_split = getattr(args, "validation_split", 0.0)
+    validation_frequency = getattr(args, "validation_frequency", None)
+
+    train_loader, val_loader = get_data_loader(
         data_path=args.data_path,
         batch_size=batch_size,
         max_tokens_per_gpu=packing_max_batch_len,
@@ -388,6 +493,7 @@ def main(args):
         flash_enabled=flash_enabled,
         pad_token_id=pad_token_id,
         pretraining_config=getattr(args, "pretraining_config", None),
+        validation_split=validation_split,
     )
 
     if args.local_rank == 0:
@@ -454,6 +560,8 @@ def main(args):
         args,
         model=m,
         accelerator=accelerator,
+        val_data_loader=val_loader,
+        validation_frequency=validation_frequency,
     )
 
     dist.barrier()
@@ -584,6 +692,14 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         command.append(f"--wandb_run_name={train_args.wandb_run_name}")
     if train_args.tensorboard_log_dir is not None:
         command.append(f"--tensorboard_log_dir={train_args.tensorboard_log_dir}")
+
+    # Validation parameters
+    if train_args.validation_split > 0.0:
+        command.append(f"--validation_split={train_args.validation_split}")
+        if train_args.validation_frequency is not None:
+            command.append(
+                f"--validation_frequency={train_args.validation_frequency}"
+            )
 
     if train_args.pretraining_config is not None:
         command.append(f"--block-size={train_args.pretraining_config.block_size}")
@@ -961,7 +1077,27 @@ if __name__ == "__main__":
         default=1e-8,
         help="Epsilon for numerical stability in AdamW optimizer.",
     )
+    parser.add_argument(
+        "--validation_split",
+        type=float,
+        default=0.0,
+        help="Fraction of data to use for validation (0.0 to 1.0). 0.0 disables validation.",
+    )
+    parser.add_argument(
+        "--validation_frequency",
+        type=int,
+        default=None,
+        help="How often to evaluate validation loss (in training steps). Required when validation_split > 0.",
+    )
     args = parser.parse_args()
+
+    if args.validation_split > 0.0 and (
+        args.validation_frequency is None or args.validation_frequency <= 0
+    ):
+        parser.error(
+            "--validation_frequency must be provided and positive when --validation_split > 0"
+        )
+
     if args.document_column_name is not None and args.block_size is None:
         parser.error("--document-column-name requires --block-size to be specified.")
 

@@ -340,3 +340,13 @@ class TrainingArgs(BaseModel):
         default=None,
         description="Directory for TensorBoard logs. Defaults to ckpt_output_dir if not specified.",
     )
+
+    validation_split: float = Field(
+        default=0.0,
+        description="Fraction of data to use for validation (0.0 to 1.0). 0.0 disables validation.",
+    )
+
+    validation_frequency: Optional[int] = Field(
+        default=None,
+        description="How often to evaluate validation loss (in training steps). Required when validation_split > 0.",
+    )

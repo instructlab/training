@@ -7,7 +7,7 @@ import logging
 # Third Party
 from datasets import Dataset as HFDataset
 from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Dataset, Sampler, SequentialSampler
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -382,6 +382,44 @@ class PretrainingBlockDataset(Dataset):
         dataset = load_dataset("json", data_files=data_path, split="train")
         return cls(dataset, block_size, pad_token_id)
 
+    @classmethod
+    def load_and_split(
+        cls,
+        data_path: str,
+        block_size: int,
+        pad_token_id: int,
+        validation_split: float = 0.0,
+        seed: int = 42,
+    ) -> tuple["PretrainingBlockDataset", "PretrainingBlockDataset | None"]:
+        """Load dataset and optionally split into train/validation sets.
+
+        Args:
+            data_path: Path to JSONL file with tokenized documents
+            block_size: Size of each block in tokens
+            pad_token_id: Token ID to use for padding
+            validation_split: Fraction of data to use for validation (0.0 to 1.0)
+            seed: Random seed for reproducible splits
+
+        Returns:
+            tuple: (train_dataset, val_dataset) where val_dataset is None if validation_split <= 0
+        """
+        dataset = load_dataset("json", data_files=data_path, split="train")
+
+        if validation_split <= 0.0:
+            return cls(dataset, block_size, pad_token_id), None
+
+        split_dataset = dataset.train_test_split(
+            test_size=validation_split, seed=seed, shuffle=True
+        )
+        train_ds = cls(split_dataset["train"], block_size, pad_token_id)
+        val_ds = cls(split_dataset["test"], block_size, pad_token_id)
+        logger.info(
+            "Pretraining dataset split: %d train blocks, %d validation blocks",
+            len(train_ds),
+            len(val_ds),
+        )
+        return train_ds, val_ds
+
     def get_lengths(self) -> np.ndarray:
         lengths = np.full(self.num_blocks, self.block_size, dtype=np.int64)
         if self.num_blocks and self.last_block_len != self.block_size:
@@ -432,6 +470,71 @@ class TokenDataset(Dataset):
     def get_lengths(self):
         return self.lengths
 
+    @classmethod
+    def load_and_split(
+        cls,
+        data_path: str,
+        validation_split: float = 0.0,
+        seed: int = 42,
+    ) -> tuple["TokenDataset", "TokenDataset | None"]:
+        """Load dataset and optionally split into train/validation sets.
+
+        Args:
+            data_path: Path to JSONL file
+            validation_split: Fraction of data to use for validation (0.0 to 1.0)
+            seed: Random seed for reproducible splits
+
+        Returns:
+            tuple: (train_dataset, val_dataset) where val_dataset is None if validation_split <= 0
+        """
+        dataset = load_dataset("json", data_files=data_path, split="train")
+
+        if validation_split <= 0.0:
+            train_ds = cls.__new__(cls)
+            train_ds.dataset = dataset
+            if "len" not in dataset.column_names:
+                train_ds.lengths = np.array(
+                    dataset.map(lambda x: {"len": len(x["input_ids"])}, num_proc=8)[
+                        "len"
+                    ]
+                )
+            else:
+                train_ds.lengths = np.array(dataset["len"])
+            return train_ds, None
+
+        split_dataset = dataset.train_test_split(
+            test_size=validation_split, seed=seed, shuffle=True
+        )
+
+        train_ds = cls.__new__(cls)
+        train_ds.dataset = split_dataset["train"]
+        if "len" not in split_dataset["train"].column_names:
+            train_ds.lengths = np.array(
+                split_dataset["train"].map(
+                    lambda x: {"len": len(x["input_ids"])}, num_proc=8
+                )["len"]
+            )
+        else:
+            train_ds.lengths = np.array(split_dataset["train"]["len"])
+
+        val_ds = cls.__new__(cls)
+        val_ds.dataset = split_dataset["test"]
+        if "len" not in split_dataset["test"].column_names:
+            val_ds.lengths = np.array(
+                split_dataset["test"].map(
+                    lambda x: {"len": len(x["input_ids"])}, num_proc=8
+                )["len"]
+            )
+        else:
+            val_ds.lengths = np.array(split_dataset["test"]["len"])
+
+        logger.info(
+            "Dataset split: %d train, %d validation samples",
+            len(train_ds),
+            len(val_ds),
+        )
+        return train_ds, val_ds
+
 
 def get_data_loader(
     data_path: str,
@@ -445,8 +548,9 @@ def get_data_loader(
     flash_enabled: bool = True,
     pad_token_id: int = 0,
     pretraining_config: Optional[PretrainingConfig] = None,
-):
-    """Create a data loader with epoch-based sampling and batch packing.
+    validation_split: float = 0.0,
+) -> tuple[DataLoader, DataLoader | None]:
+    """Create data loader(s) with epoch-based sampling, batch packing, and optional validation split.
 
     Args:
         data_path: Path to the JSONL data file
@@ -460,23 +564,35 @@ def get_data_loader(
         flash_enabled: Whether flash attention is enabled (affects collation strategy)
         pad_token_id: Token ID to use for padding (only used when flash_enabled=False)
         pretraining_config: When provided, enables block-based pretraining dataset loading
+        validation_split: Fraction of data to use for validation (0.0 to 1.0). 0.0 disables validation.
 
     Returns:
-        DataLoader configured with appropriate collator based on flash_enabled
+        tuple: (train_loader, val_loader) where val_loader is None if validation_split <= 0
     """
+    if validation_split < 0.0 or validation_split >= 1.0:
+        raise ValueError(
+            f"validation_split must be between 0.0 and 1.0 (exclusive), got {validation_split}"
+        )
+
     if pretraining_config is not None:
-        dataset = PretrainingBlockDataset.from_jsonl_file(
-            data_path, pretraining_config.block_size, pad_token_id
+        train_dataset, val_dataset = PretrainingBlockDataset.load_and_split(
+            data_path,
+            pretraining_config.block_size,
+            pad_token_id,
+            validation_split=validation_split,
+            seed=seed,
         )
         logger.info(
-            "Using pretraining dataset with block_size=%s and %s block(s)",
+            "Using pretraining dataset with block_size=%s and %s train block(s)",
             pretraining_config.block_size,
-            f"{len(dataset):,}",
+            f"{len(train_dataset):,}",
         )
     else:
-        dataset = TokenDataset(data_path)
-
-    sampler = EpochSampler(len(dataset), seed=seed)
+        train_dataset, val_dataset = TokenDataset.load_and_split(
+            data_path,
+            validation_split=validation_split,
+            seed=seed,
+        )
 
     # Create unified collator with appropriate mode
     collate_fn = MaxTokensPerRankCollator(
@@ -488,8 +604,9 @@ def get_data_loader(
         pad_token_id=pad_token_id,
     )
 
-    return DataLoader(
-        dataset,
+    sampler = EpochSampler(len(train_dataset), seed=seed)
+    train_loader = DataLoader(
+        train_dataset,
         batch_size,
         sampler=sampler,
         collate_fn=collate_fn,
@@ -497,3 +614,22 @@ def get_data_loader(
         persistent_workers=(num_workers > 0),
         drop_last=False,
     )
+
+    val_loader = None
+    if val_dataset is not None:
+        val_sampler = SequentialSampler(val_dataset)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size,
+            sampler=val_sampler,
+            collate_fn=collate_fn,
+            num_workers=num_workers,
+            persistent_workers=(num_workers > 0),
+            drop_last=False,
+        )
+        logger.info(
+            "Validation data loader created with %d samples",
+            len(val_dataset),
+        )
+
+    return train_loader, val_loader
