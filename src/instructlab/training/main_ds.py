@@ -697,9 +697,7 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.validation_split > 0.0:
         command.append(f"--validation_split={train_args.validation_split}")
         if train_args.validation_frequency is not None:
-            command.append(
-                f"--validation_frequency={train_args.validation_frequency}"
-            )
+            command.append(f"--validation_frequency={train_args.validation_frequency}")
 
     if train_args.pretraining_config is not None:
         command.append(f"--block-size={train_args.pretraining_config.block_size}")
