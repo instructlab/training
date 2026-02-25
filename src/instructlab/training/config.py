@@ -350,3 +350,17 @@ class TrainingArgs(BaseModel):
         default=None,
         description="How often to evaluate validation loss (in training steps). Required when validation_split > 0.",
     )
+
+    @model_validator(mode="after")
+    def validate_validation_config(self):
+        if not 0.0 <= self.validation_split < 1.0:
+            raise ValueError(
+                f"validation_split must be in [0.0, 1.0), got {self.validation_split}"
+            )
+        if self.validation_split > 0.0 and (
+            self.validation_frequency is None or self.validation_frequency <= 0
+        ):
+            raise ValueError(
+                "validation_frequency must be provided and > 0 when validation_split > 0"
+            )
+        return self

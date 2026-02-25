@@ -142,16 +142,16 @@ def compute_validation_loss(model, val_data_loader, device):
                 valid_tokens = shift_labels != -100
                 batch_loss += token_losses[valid_tokens].sum().item()
 
-                torch.cuda.empty_cache()
-
-            # Reduce loss across ranks (SUM since each rank processes different tokens)
-            batch_loss_tensor = torch.tensor(batch_loss, device=device)
-            dist.all_reduce(batch_loss_tensor, op=dist.ReduceOp.SUM)
-
-            total_loss += batch_loss_tensor.item()
+            total_loss += batch_loss
             total_tokens += batch[0]["batch_num_loss_counted_tokens"]
 
-            dist.barrier()
+    # Single reduction after all batches (SUM is associative)
+    loss_tensor = torch.tensor(total_loss, device=device)
+    tokens_tensor = torch.tensor(total_tokens, device=device, dtype=torch.long)
+    dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+    dist.all_reduce(tokens_tensor, op=dist.ReduceOp.SUM)
+    total_loss = loss_tensor.item()
+    total_tokens = int(tokens_tensor.item())
 
     val_metrics = {}
     if total_tokens > 0:

@@ -254,8 +254,8 @@ class MaxTokensPerRankCollator:
         else:
             self.batch_packer = batch_lengths_to_minibatches_padded
             # Create a wrapper for padded collate that includes pad_token_id
-            self.collate_fn = (
-                lambda minibatch, batch_num_loss_counted_tokens: padded_mb_collate_fn(
+            self.collate_fn = lambda minibatch, batch_num_loss_counted_tokens: (
+                padded_mb_collate_fn(
                     minibatch, batch_num_loss_counted_tokens, pad_token_id
                 )
             )
