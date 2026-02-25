@@ -19,6 +19,7 @@ from instructlab.training.data_process import (
     unmask_sample,
     wrap_masked_messages,
 )
+from instructlab.training.tokenizer_utils import SPECIAL_TOKENS_KEY
 from instructlab.training.type_definitions import Message, ProcessedMessagesData
 
 
@@ -520,11 +521,9 @@ class TestReasoningContentSupport(unittest.TestCase):
         # Mock tokenizer for basic tests
         self.mock_tokenizer = MagicMock(spec=PreTrainedTokenizerBase)
         self.mock_tokenizer.name_or_path = "test-model"
-        self.mock_tokenizer.encode.side_effect = (
-            lambda text, add_special_tokens=False: [
-                hash(text) % 1000 for _ in text.split()
-            ]
-        )
+        self.mock_tokenizer.encode.side_effect = lambda text, add_special_tokens=False: [
+            hash(text) % 1000 for _ in text.split()
+        ]
         self.mock_tokenizer.decode.side_effect = lambda tokens: " ".join(
             [f"token_{t}" for t in tokens]
         )
@@ -853,7 +852,7 @@ class TestReasoningContentWithRealTokenizers(unittest.TestCase):
         # Add the unmask tokens to the tokenizer
         tokenizer.add_special_tokens(
             {
-                "additional_special_tokens": [
+                SPECIAL_TOKENS_KEY: [
                     UNMASK_BEGIN_TOKEN,
                     UNMASK_END_TOKEN,
                     UNMASK_REASONING_BEGIN_TOKEN,
@@ -909,7 +908,7 @@ class TestReasoningContentWithRealTokenizers(unittest.TestCase):
         # Add the unmask tokens to the tokenizer
         tokenizer.add_special_tokens(
             {
-                "additional_special_tokens": [
+                SPECIAL_TOKENS_KEY: [
                     UNMASK_BEGIN_TOKEN,
                     UNMASK_END_TOKEN,
                     UNMASK_REASONING_BEGIN_TOKEN,
