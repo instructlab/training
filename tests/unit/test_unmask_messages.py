@@ -24,6 +24,7 @@ from instructlab.training.data_process import (
     unmask_sample,
     wrap_masked_messages,
 )
+from instructlab.training.tokenizer_utils import SPECIAL_TOKENS_KEY
 from instructlab.training.type_definitions import Message
 
 
@@ -342,7 +343,7 @@ class TestWithRealTokenizers:
             # Add the special tokens
             tokenizer.add_special_tokens(
                 {
-                    "additional_special_tokens": [
+                    SPECIAL_TOKENS_KEY: [
                         UNMASK_BEGIN_TOKEN,
                         UNMASK_END_TOKEN,
                         UNMASK_REASONING_BEGIN_TOKEN,
@@ -492,7 +493,7 @@ class TestRealTokenizersUnmaskBehavior:
             # Add the special unmask tokens
             tokenizer.add_special_tokens(
                 {
-                    "additional_special_tokens": [
+                    SPECIAL_TOKENS_KEY: [
                         UNMASK_BEGIN_TOKEN,
                         UNMASK_END_TOKEN,
                         UNMASK_REASONING_BEGIN_TOKEN,
