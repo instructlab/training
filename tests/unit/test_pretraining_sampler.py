@@ -263,7 +263,7 @@ class TestGetDataLoaderPretraining:
         mock_load_dataset.return_value = mock_ds
 
         # Call with pretraining mode
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=100,
@@ -296,7 +296,7 @@ class TestGetDataLoaderPretraining:
                 f.write("\n")
 
         # Call with instruction tuning mode (default)
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=str(inst_file),
             batch_size=2,
             max_tokens_per_gpu=100,
@@ -329,7 +329,7 @@ class TestGetDataLoaderPretraining:
 
         # Call with specific block_size
         block_size = 256
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=1000,
@@ -358,7 +358,7 @@ class TestGetDataLoaderPretraining:
 
         # Call with specific pad_token_id
         pad_token_id = 99
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=100,
@@ -392,7 +392,7 @@ class TestGetDataLoaderPretraining:
         mock_load_dataset.return_value = mock_ds
 
         # Call get_data_loader
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=100,
@@ -426,7 +426,7 @@ class TestGetDataLoaderPretraining:
         seed = 123
         block_size = 25
 
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=100,
@@ -461,7 +461,7 @@ class TestGetDataLoaderPretraining:
         pad_token_id = 42
         max_tokens = 200
 
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=max_tokens,
@@ -498,7 +498,7 @@ class TestGetDataLoaderPretraining:
 
         num_workers = 4
 
-        loader = get_data_loader(
+        loader, _ = get_data_loader(
             data_path=temp_pretraining_file,
             batch_size=2,
             max_tokens_per_gpu=100,

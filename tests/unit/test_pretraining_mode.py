@@ -76,7 +76,7 @@ class TestPretrainingDataLoader(unittest.TestCase):
                 for record in records:
                     fh.write(json.dumps(record) + "\n")
 
-            loader = get_data_loader(
+            loader, _ = get_data_loader(
                 data_path=str(data_path),
                 batch_size=2,
                 max_tokens_per_gpu=8,
