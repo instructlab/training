@@ -84,7 +84,7 @@ import instructlab.training.data_process as dp
 logger = logging.getLogger(__name__)
 
 
-def compute_validation_loss(model, val_data_loader, device, world_size):
+def compute_validation_loss(model, val_data_loader, device):
     """Compute validation loss on the validation dataset.
 
     Follows the same loss computation as training (manual per-token CE loss)
@@ -94,7 +94,6 @@ def compute_validation_loss(model, val_data_loader, device, world_size):
         model: The model to evaluate
         val_data_loader: Validation data loader
         device: Device to run evaluation on
-        world_size: Number of distributed processes
 
     Returns:
         dict: Dictionary containing validation metrics, empty if no data
@@ -287,7 +286,7 @@ def train(
             ):
                 torch_device = torch.device("cuda", local_rank)
                 val_metrics = compute_validation_loss(
-                    model, val_data_loader, torch_device, world_size
+                    model, val_data_loader, torch_device
                 )
                 if val_metrics and local_rank == 0:
                     metric_logger.info(
