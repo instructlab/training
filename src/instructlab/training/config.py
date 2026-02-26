@@ -340,3 +340,27 @@ class TrainingArgs(BaseModel):
         default=None,
         description="Directory for TensorBoard logs. Defaults to ckpt_output_dir if not specified.",
     )
+
+    validation_split: float = Field(
+        default=0.0,
+        description="Fraction of data to use for validation (0.0 to 1.0). 0.0 disables validation.",
+    )
+
+    validation_frequency: Optional[int] = Field(
+        default=None,
+        description="How often to evaluate validation loss (in training steps). Required when validation_split > 0.",
+    )
+
+    @model_validator(mode="after")
+    def validate_validation_config(self):
+        if not 0.0 <= self.validation_split < 1.0:
+            raise ValueError(
+                f"validation_split must be in [0.0, 1.0), got {self.validation_split}"
+            )
+        if self.validation_split > 0.0 and (
+            self.validation_frequency is None or self.validation_frequency <= 0
+        ):
+            raise ValueError(
+                "validation_frequency must be provided and > 0 when validation_split > 0"
+            )
+        return self
