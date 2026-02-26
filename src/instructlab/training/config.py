@@ -351,6 +351,19 @@ class TrainingArgs(BaseModel):
         description="How often to evaluate validation loss (in training steps). Required when validation_split > 0.",
     )
 
+    on_demand_checkpointing: bool = Field(
+        default=False,
+        description=(
+            "Enable on-demand full-state checkpointing triggered by Unix signals. "
+            "When enabled, the parent process intercepts termination signals "
+            "(SIGTERM, SIGINT, SIGUSR1, SIGUSR2, SIGXCPU, SIGHUP) and writes a "
+            "trigger file to /dev/shm. Worker processes check for this trigger "
+            "after each training step and collectively save a distributed "
+            "checkpoint before exiting gracefully. Designed for OpenShift AI / "
+            "KubeFlow training jobs where preemption signals must be handled."
+        ),
+    )
+
     @model_validator(mode="after")
     def validate_validation_config(self):
         if not 0.0 <= self.validation_split < 1.0:
