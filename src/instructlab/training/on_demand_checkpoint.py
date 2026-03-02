@@ -44,16 +44,22 @@ hard SIGKILL (which cannot be caught):
 """
 
 # Standard
+from pathlib import Path
+from typing import Callable, Optional, Union
 import logging
 import os
 import signal
 import tempfile
-from pathlib import Path
-from typing import Optional
+import types
 
 # Third Party
 import torch
 import torch.distributed as dist
+
+# Type alias matching the return type of signal.getsignal().
+_SignalHandler = Union[
+    Callable[[int, Optional[types.FrameType]], None], int, signal.Handlers, None
+]
 
 logger = logging.getLogger("instructlab.training")
 
@@ -122,12 +128,12 @@ def remove_trigger_file(job_id: Optional[str] = None) -> None:
 # Signals that OpenShift / Kubernetes / batch schedulers may send before
 # the hard SIGKILL. SIGKILL (9) and SIGSTOP (19) cannot be caught.
 _CATCHABLE_SIGNALS = (
-    signal.SIGTERM,   # Kubernetes default graceful shutdown signal
-    signal.SIGINT,    # Ctrl-C / some job controllers
-    signal.SIGUSR1,   # Custom preemption controllers
-    signal.SIGUSR2,   # Custom preemption controllers
-    signal.SIGXCPU,   # CPU time limit exceeded (resource quotas)
-    signal.SIGHUP,    # Terminal disconnect / some eviction paths
+    signal.SIGTERM,  # Kubernetes default graceful shutdown signal
+    signal.SIGINT,  # Ctrl-C / some job controllers
+    signal.SIGUSR1,  # Custom preemption controllers
+    signal.SIGUSR2,  # Custom preemption controllers
+    signal.SIGXCPU,  # CPU time limit exceeded (resource quotas)
+    signal.SIGHUP,  # Terminal disconnect / some eviction paths
 )
 
 
@@ -152,7 +158,7 @@ class ParentSignalHandler:
     def __init__(self, job_id: Optional[str] = None):
         self.job_id = job_id
         self.signal_received: Optional[signal.Signals] = None
-        self._original_handlers: dict[signal.Signals, object] = {}
+        self._original_handlers: dict[signal.Signals, _SignalHandler] = {}
         self._trigger_written = False
 
     def install(self) -> None:
@@ -174,7 +180,7 @@ class ParentSignalHandler:
         """Restore original signal handlers."""
         for sig, handler in self._original_handlers.items():
             try:
-                signal.signal(sig, handler)
+                signal.signal(sig, handler)  # type: ignore[arg-type]
             except (OSError, ValueError):
                 pass
         self._original_handlers.clear()
@@ -223,10 +229,11 @@ def check_checkpoint_requested(job_id: Optional[str] = None) -> bool:
     requested = trigger_tensor.item() > 0
 
     if requested:
-        logger.info(
-            "On-demand checkpoint: global consensus reached – "
-            "all ranks will save a checkpoint."
-        )
+        if dist.is_initialized() and dist.get_rank() == 0:
+            logger.info(
+                "On-demand checkpoint: global consensus reached – "
+                "all ranks will save a checkpoint."
+            )
         # Clean up the trigger file so that if the process somehow
         # continues, we don't save again immediately.
         remove_trigger_file(job_id)
@@ -249,7 +256,7 @@ def save_on_demand_checkpoint(
     utility with ``full_state=True`` so that optimizer + LR scheduler
     state are also persisted, enabling exact training resumption.
     """
-    # First Party – imported here to avoid circular imports
+    # First Party
     from instructlab.training.utils import save_checkpoint
 
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))

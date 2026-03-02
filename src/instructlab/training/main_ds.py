@@ -185,12 +185,15 @@ def train(
     base_logger = logging.getLogger("instructlab.training")
 
     # Import on-demand checkpointing utilities once if the feature is enabled
+    checkpoint_job_id = None
     if on_demand_checkpointing:
+        # First Party
         from instructlab.training.on_demand_checkpoint import (
             check_checkpoint_requested,
             save_on_demand_checkpoint,
         )
 
+        checkpoint_job_id = os.environ.get("INSTRUCTLAB_ON_DEMAND_JOB_ID")
         base_logger.info("On-demand checkpointing is enabled in worker process.")
 
     # Mini_trainer approach: batch_size will be determined dynamically by data loader
@@ -319,7 +322,9 @@ def train(
                 dist.barrier()
 
             # --- On-demand checkpointing: check if a signal triggered a save ---
-            if on_demand_checkpointing and check_checkpoint_requested():
+            if on_demand_checkpointing and check_checkpoint_requested(
+                checkpoint_job_id
+            ):
                 save_on_demand_checkpoint(
                     args=args,
                     accelerator=accelerator,
@@ -847,11 +852,16 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         # First Party
         from instructlab.training.on_demand_checkpoint import ParentSignalHandler
 
-        signal_handler = ParentSignalHandler()
+        # Use rdzv_id to namespace the trigger file so concurrent jobs
+        # sharing /dev/shm don't interfere with each other.
+        checkpoint_job_id = str(torch_args.rdzv_id)
+        os.environ["INSTRUCTLAB_ON_DEMAND_JOB_ID"] = checkpoint_job_id
+        signal_handler = ParentSignalHandler(job_id=checkpoint_job_id)
         signal_handler.install()
         logger.info(
-            "On-demand checkpointing is ENABLED. "
-            "Termination signals will trigger a full-state checkpoint before exit."
+            "On-demand checkpointing is ENABLED (job_id=%s). "
+            "Termination signals will trigger a full-state checkpoint before exit.",
+            checkpoint_job_id,
         )
 
     process = None
@@ -902,30 +912,33 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         except subprocess.TimeoutExpired:
             pass
         process_code = process.poll()
-        failure = process_code is not None and process_code != 0
 
-        if process_code is not None and not failure:
+        if process_code is not None and process_code == 0:
             logger.info("Operation completed successfully!")
+        elif process_code is None:
+            logger.error("Training subprocess has not exited yet. Sending SIGTERM.")
+            process.terminate()
+            try:
+                logger.info("Waiting for process to exit, 60s...")
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "Training subprocess did not terminate before timeout, sending SIGKILL."
+                )
+                process.kill()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
         else:
-            if process_code is None:
-                logger.error(
-                    "Training subprocess has not exited yet. Sending SIGTERM."
-                )
-            else:
-                logger.error(
-                    "Training subprocess exited with code %d. Sending SIGTERM.",
-                    process_code,
-                )
-
-        process.terminate()
-        try:
-            logger.info("Waiting for process to exit, 60s...")
-            process.wait(timeout=60)
-        except subprocess.TimeoutExpired:
             logger.error(
-                "Training subprocess did not terminate before timeout, sending SIGKILL."
+                "Training subprocess exited with code %d.",
+                process_code,
             )
-            process.kill()
+
+        # Recompute final exit status after any forced shutdown
+        process_code = process.poll()
+        failure = process_code is None or process_code != 0
 
         if signal_handler is not None:
             signal_handler.uninstall()
