@@ -937,9 +937,22 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         if interrupt:
             raise interrupt
         if failure:
-            raise RuntimeError(
-                "Suffered a failure during distributed training. Please see the training logs for more context."
-            )
+            msg = "Suffered a failure during distributed training. Please see the training logs for more context."
+            if (
+                signal_handler is not None
+                and signal_handler.signal_received is not None
+            ):
+                msg += (
+                    f"\n\nNote: signal {signal_handler.signal_received.name} was"
+                    " received and on-demand checkpointing was enabled, but the"
+                    " training subprocess did not exit cleanly. This usually"
+                    " means the process was killed (SIGKILL) before the"
+                    " checkpoint could be saved. To fix this, increase"
+                    " terminationGracePeriodSeconds in your pod spec to give"
+                    " workers more time, or reduce the model's forward/backward"
+                    " pass time so the checkpoint check fires sooner."
+                )
+            raise RuntimeError(msg)
 
 
 if __name__ == "__main__":
