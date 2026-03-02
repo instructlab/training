@@ -358,7 +358,7 @@ class TrainingArgs(BaseModel):
             "When enabled, the parent process intercepts termination signals "
             "(SIGTERM, SIGINT, SIGUSR1, SIGUSR2, SIGXCPU, SIGHUP) and writes a "
             "trigger file to /dev/shm. Worker processes check for this trigger "
-            "after each training step and collectively save a distributed "
+            "after each minibatch backward pass and collectively save a distributed "
             "checkpoint before exiting gracefully. Designed for OpenShift AI / "
             "KubeFlow training jobs where preemption signals must be handled."
         ),
