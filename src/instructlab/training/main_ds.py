@@ -1191,7 +1191,7 @@ if __name__ == "__main__":
         help=(
             "Enable on-demand full-state checkpointing triggered by Unix signals. "
             "When enabled, workers check for a trigger file in /dev/shm after each "
-            "training step and collectively save a distributed checkpoint before "
+            "minibatch backward pass and collectively save a distributed checkpoint before "
             "exiting. Designed for OpenShift AI / KubeFlow preemption handling."
         ),
     )
