@@ -233,10 +233,37 @@ def train(
                 continue
             start = time.time()
 
-            # Process the batch using the BatchLossManager
-            batch_metrics, avg_loss_across_ranks = batch_loss_manager.process_batch(
-                batch
+            # Process the batch using the BatchLossManager.
+            # When on-demand checkpointing is enabled, pass a callback so
+            # the check runs after every minibatch backward rather than
+            # waiting for the full optimizer step.
+            _interrupt_check = (
+                (lambda: check_checkpoint_requested(checkpoint_job_id))
+                if on_demand_checkpointing
+                else None
             )
+            batch_metrics, avg_loss_across_ranks = batch_loss_manager.process_batch(
+                batch, interrupt_check=_interrupt_check
+            )
+
+            # If the batch was interrupted by an on-demand checkpoint
+            # request, save immediately and exit — skip the optimizer step
+            # since we want to preserve the pre-step model state for
+            # exact resumption.
+            if batch_metrics.interrupted:
+                save_on_demand_checkpoint(
+                    args=args,
+                    accelerator=accelerator,
+                    model=model,
+                    tokenizer=model.tokenizer,
+                    samples_seen=samples_seen,
+                    epoch=epoch,
+                    is_lora=bool(args.lora_r),
+                )
+                base_logger.info(
+                    "On-demand checkpoint saved. Exiting training gracefully."
+                )
+                return
 
             # Update samples seen
             samples_seen += batch_metrics.total_samples
@@ -320,24 +347,6 @@ def train(
                 )
                 base_logger.debug("RANK (%d) waiting at post-save barrier.", local_rank)
                 dist.barrier()
-
-            # --- On-demand checkpointing: check if a signal triggered a save ---
-            if on_demand_checkpointing and check_checkpoint_requested(
-                checkpoint_job_id
-            ):
-                save_on_demand_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=model.tokenizer,
-                    samples_seen=samples_seen,
-                    epoch=epoch,
-                    is_lora=bool(args.lora_r),
-                )
-                base_logger.info(
-                    "On-demand checkpoint saved. Exiting training gracefully."
-                )
-                return
 
             global_step += 1
             if local_rank == 0:

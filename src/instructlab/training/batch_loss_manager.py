@@ -7,7 +7,8 @@ and reduction across distributed training environments.
 """
 
 # Standard
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 import logging
 
 # Third Party
@@ -33,6 +34,7 @@ class BatchMetrics:
     accumulated_aux_loss: torch.Tensor | None
     grad_accum_steps: int
     num_minibatches: int
+    interrupted: bool = field(default=False)
 
 
 class BatchLossManager:
@@ -62,12 +64,21 @@ class BatchLossManager:
         self.local_rank: int = local_rank
         self.torch_device = torch.device("cuda", local_rank)
 
-    def process_batch(self, batch: list[CollatedItem]) -> tuple[BatchMetrics, float]:
+    def process_batch(
+        self,
+        batch: list[CollatedItem],
+        interrupt_check: Callable[[], bool] | None = None,
+    ) -> tuple[BatchMetrics, float]:
         """
         Process a batch of minibatches, computing losses and accumulating gradients.
 
         Args:
             batch: List of minibatches to process
+            interrupt_check: Optional callback invoked after each minibatch's
+                backward pass. If it returns ``True``, gradient accumulation
+                stops early and ``BatchMetrics.interrupted`` is set. Used by
+                on-demand checkpointing to react within one fwd+bwd cycle
+                instead of waiting for the full optimizer step.
 
         Returns:
             tuple: (BatchMetrics, average_loss_across_ranks)
@@ -82,6 +93,7 @@ class BatchLossManager:
         accumulated_loss = 0.0
         accumulated_aux_loss = 0.0
         grad_accum_steps = 0
+        interrupted = False
 
         # process each minibatch
         for mb in batch:
@@ -108,6 +120,11 @@ class BatchLossManager:
             if raw_losses.aux_loss is not None:
                 accumulated_aux_loss += raw_losses.aux_loss
 
+            # check for early exit (e.g. on-demand checkpoint requested)
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
+
         # reduce metrics across ranks
         batch_total_samples, batch_total_length = self._reduce_metrics(
             batch_total_samples, batch_total_length
@@ -127,6 +144,7 @@ class BatchLossManager:
             accumulated_aux_loss=accumulated_aux_loss,
             grad_accum_steps=grad_accum_steps,
             num_minibatches=num_minibatches,
+            interrupted=interrupted,
         )
 
         return metrics, avg_loss_across_ranks
