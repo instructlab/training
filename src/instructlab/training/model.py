@@ -95,11 +95,40 @@ class Model:
 
         # set flash attention accordingly
         if flash_enabled:
-            self.base_model_args["attn_implementation"] = "flash_attention_2"
-            if self.is_gpt_oss:
-                self.base_model_args["attn_implementation"] = (
-                    "kernels-community/vllm-flash-attn3"
+            # Models using M-RoPE (multimodal rotary position embeddings)
+            # produce 3D position_ids (3, batch, seq) which causes Flash
+            # Attention 2's _is_packed_sequence() to misinterpret them as
+            # packed sequences, leading to CUDA illegal memory access.
+            # Detect M-RoPE via the model config and fall back to SDPA.
+            has_mrope = self._has_mrope(model_path)
+            if has_mrope:
+                logger.warning(
+                    "Disabling flash_attention_2 — model uses M-RoPE "
+                    "(multimodal rotary position embeddings) which is "
+                    "incompatible with Flash Attention 2. Using SDPA instead."
                 )
+                self.base_model_args["attn_implementation"] = "sdpa"
+            else:
+                self.base_model_args["attn_implementation"] = "flash_attention_2"
+                if self.is_gpt_oss:
+                    self.base_model_args["attn_implementation"] = (
+                        "kernels-community/vllm-flash-attn3"
+                    )
+
+    @staticmethod
+    def _has_mrope(model_path: str) -> bool:
+        """Check if a model uses M-RoPE (multimodal rotary position embeddings).
+
+        Models with M-RoPE produce 3D position_ids that are incompatible with
+        Flash Attention 2's packed-sequence detection.
+        """
+        from transformers import AutoConfig
+
+        config = AutoConfig.from_pretrained(model_path)
+        rope_scaling = getattr(config, "rope_scaling", None) or getattr(
+            getattr(config, "text_config", None), "rope_scaling", None
+        )
+        return rope_scaling is not None and "mrope_section" in rope_scaling
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""

@@ -135,17 +135,29 @@ class Accelerator:
 
     def get_fsdp_config(self):
         is_lora = self.model.lora_config is not None
-        block_name = next(iter(self.model._no_split_modules))
 
         wrap_policy = None
         if is_lora > 0:
             wrap_policy = fsdp_auto_wrap_policy(self.model)
         else:
+            # Resolve all _no_split_modules names to actual classes present
+            # in the model. Some models (e.g. Qwen3.5) declare module names
+            # for architectures not loaded (e.g. vision blocks in a CausalLM),
+            # so we must filter out None results.
+            layer_classes = set()
+            for block_name in self.model._no_split_modules:
+                cls = get_module_class_from_name(self.model, block_name)
+                if cls is not None:
+                    layer_classes.add(cls)
+            if not layer_classes:
+                raise ValueError(
+                    f"Could not resolve any _no_split_modules "
+                    f"({self.model._no_split_modules}) to actual module classes "
+                    f"in the model."
+                )
             wrap_policy = partial(
                 transformer_auto_wrap_policy,
-                transformer_layer_cls={
-                    get_module_class_from_name(self.model, block_name),
-                },
+                transformer_layer_cls=layer_classes,
             )
 
         # TODO(osilkin): BACKWARD_POST trades memory utilization for processing time, which is important for systems utilizing LoRA
