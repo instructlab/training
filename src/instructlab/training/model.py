@@ -67,6 +67,12 @@ class Model:
         # check model type & set on the mclasss
         self.is_granitemoehybrid = is_known_model(model_path, "granitemoehybrid")
         self.is_gpt_oss = is_gpt_oss(model_path)
+
+        # The Hub kernel for mamba-ssm is incompatible with causal_conv1d
+        # v1.6.0 (different C API). Use local packages instead.
+        if self.is_granitemoehybrid:
+            self._use_local_mamba_kernels()
+
         if self.is_gpt_oss:
             # Third Party
             quant_config = Mxfp4Config(dequantize=True)
@@ -111,9 +117,52 @@ class Model:
             else:
                 self.base_model_args["attn_implementation"] = "flash_attention_2"
                 if self.is_gpt_oss:
-                    self.base_model_args["attn_implementation"] = (
-                        "kernels-community/vllm-flash-attn3"
-                    )
+                    # vllm-flash-attn3 requires Hopper (SM 9.0+) GPUs;
+                    # GPT-OSS only supports flash-attn3 or eager
+                    major, _ = torch.cuda.get_device_capability(0)
+                    if major >= 9:
+                        self.base_model_args["attn_implementation"] = (
+                            "kernels-community/vllm-flash-attn3"
+                        )
+                    else:
+                        self.base_model_args["attn_implementation"] = "eager"
+                        logger.warning(
+                            "GPT-OSS: flash-attn3 requires Hopper (SM 9.0+) GPUs, "
+                            "but found SM %d.x. Using eager attention instead.",
+                            major,
+                        )
+
+    @staticmethod
+    def _use_local_mamba_kernels():
+        """Use locally installed mamba_ssm/causal_conv1d instead of Hub kernels.
+
+        The Hub kernel for mamba-ssm is compiled against an older causal_conv1d
+        C API that is incompatible with causal_conv1d v1.6.0. Pre-populate the
+        transformers kernel cache with the local packages so the Hub kernels
+        are never loaded.
+        """
+        try:
+            from transformers.integrations.hub_kernels import _KERNEL_MODULE_MAPPING
+            import causal_conv1d
+            import mamba_ssm
+            from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+            from mamba_ssm.ops.triton.ssd_combined import (
+                mamba_chunk_scan_combined,
+                mamba_split_conv1d_scan_combined,
+            )
+
+            mamba_ssm.selective_state_update = selective_state_update
+            mamba_ssm.mamba_chunk_scan_combined = mamba_chunk_scan_combined
+            mamba_ssm.mamba_split_conv1d_scan_combined = mamba_split_conv1d_scan_combined
+
+            _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
+            _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
+            logger.info("Using local mamba_ssm/causal_conv1d instead of Hub kernels")
+        except ImportError:
+            logger.warning(
+                "mamba_ssm or causal_conv1d not installed; "
+                "GraniteMoeHybrid will use slow (torch) path"
+            )
 
     @staticmethod
     def _has_mrope(model_path: str) -> bool:
@@ -530,9 +579,51 @@ class CausalLMModel(Model):
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
         )
-        self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
+        self.model = self._load_causal_lm(model_path, self.base_model_args)
         self._post_model_init()
         self.model.gradient_checkpointing_enable()
+
+    @staticmethod
+    def _load_causal_lm(model_path: str, base_model_args: dict):
+        """Load a CausalLM model, handling VLM-wrapped architectures.
+
+        Some models (e.g. Ministral-3-3B) use a VLM architecture as a wrapper
+        around a CausalLM text model.  AutoModelForCausalLM cannot resolve the
+        VLM config, so we load the full VLM and extract the text backbone.
+        """
+        from transformers import AutoConfig
+        from transformers.models.auto import MODEL_FOR_CAUSAL_LM_MAPPING
+
+        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+        text_config = getattr(config, "text_config", None)
+
+        if (
+            text_config is not None
+            and text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
+            and config.__class__ not in MODEL_FOR_CAUSAL_LM_MAPPING
+        ):
+            from transformers import AutoModelForImageTextToText
+
+            logger.info(
+                "VLM config detected (%s) – extracting CausalLM text backbone",
+                config.__class__.__name__,
+            )
+            # Filter out None quantization_config to avoid interfering with
+            # the model's built-in quantization handling (e.g. FP8 auto-dequant)
+            vlm_args = {
+                k: v for k, v in base_model_args.items()
+                if not (k == "quantization_config" and v is None)
+            }
+            vlm = AutoModelForImageTextToText.from_pretrained(**vlm_args)
+
+            causal_lm_class = MODEL_FOR_CAUSAL_LM_MAPPING[text_config.__class__]
+            text_model = causal_lm_class(text_config)
+            text_model.model = vlm.model.language_model
+            text_model.lm_head = vlm.lm_head
+            del vlm
+            return text_model
+
+        return AutoModelForCausalLM.from_pretrained(**base_model_args)
 
 
 def setup_optimizer(
