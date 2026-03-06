@@ -45,7 +45,14 @@ from instructlab.training.config import (  # Adjust this import if needed
 )
 from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
-from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, is_vlm_for_direct_loading, load_vlm_for_text_training, needs_sdpa, has_timm_vision_tower
+from instructlab.training.vlm_utils import (
+    is_vlm_with_causal_lm,
+    extract_causal_lm_from_vlm,
+    is_vlm_for_direct_loading,
+    load_vlm_for_text_training,
+    needs_sdpa,
+    has_timm_vision_tower,
+)
 
 
 class Model:
@@ -135,14 +142,17 @@ class Model:
             # while keeping the text model's attention implementation.
             # timm's TimmWrapperModel rejects both FA2 and SDPA.
             if has_timm_vision_tower(model_path):
-                attn_impl = self.base_model_args.get("attn_implementation", "flash_attention_2")
+                attn_impl = self.base_model_args.get(
+                    "attn_implementation", "flash_attention_2"
+                )
                 self.base_model_args["attn_implementation"] = {
                     "text_config": attn_impl,
                     "vision_config": "eager",
                 }
                 logger.info(
                     "Model has timm vision tower — using eager attention for vision, "
-                    "%s for text model.", attn_impl,
+                    "%s for text model.",
+                    attn_impl,
                 )
 
     @staticmethod
@@ -158,7 +168,9 @@ class Model:
             from transformers.integrations.hub_kernels import _KERNEL_MODULE_MAPPING
             import causal_conv1d
             import mamba_ssm
-            from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+            from mamba_ssm.ops.triton.selective_state_update import (
+                selective_state_update,
+            )
             from mamba_ssm.ops.triton.ssd_combined import (
                 mamba_chunk_scan_combined,
                 mamba_split_conv1d_scan_combined,
@@ -166,7 +178,9 @@ class Model:
 
             mamba_ssm.selective_state_update = selective_state_update
             mamba_ssm.mamba_chunk_scan_combined = mamba_chunk_scan_combined
-            mamba_ssm.mamba_split_conv1d_scan_combined = mamba_split_conv1d_scan_combined
+            mamba_ssm.mamba_split_conv1d_scan_combined = (
+                mamba_split_conv1d_scan_combined
+            )
 
             _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
             _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
@@ -388,7 +402,7 @@ class Model:
             text_config.bos_token_id = self.tokenizer.bos_token_id
         if (
             text_config.eos_token_id is not None
-            and self.tokenizer.eos_token_id
+            and self.tokenizer.eos_token_id is not None
             and text_config.eos_token_id != self.tokenizer.eos_token_id
         ):
             logger.warning(
@@ -396,20 +410,11 @@ class Model:
             )
             text_config.eos_token_id = self.tokenizer.eos_token_id
 
-        if (
-            self.tokenizer.pad_token_id is not None
-            and text_config.pad_token_id is None
-        ):
+        if self.tokenizer.pad_token_id is not None and text_config.pad_token_id is None:
             text_config.pad_token_id = self.tokenizer.pad_token_id
-        if (
-            self.tokenizer.bos_token_id is not None
-            and text_config.bos_token_id is None
-        ):
+        if self.tokenizer.bos_token_id is not None and text_config.bos_token_id is None:
             text_config.bos_token_id = self.tokenizer.bos_token_id
-        if (
-            self.tokenizer.eos_token_id is not None
-            and text_config.eos_token_id is None
-        ):
+        if self.tokenizer.eos_token_id is not None and text_config.eos_token_id is None:
             text_config.eos_token_id = self.tokenizer.eos_token_id
 
         if not self._is_causal_lm_model():

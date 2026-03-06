@@ -71,9 +71,7 @@ def is_vlm_for_direct_loading(model_path: str) -> bool:
     return config.__class__ in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING
 
 
-def load_vlm_for_text_training(
-    model_path: str, load_kwargs: dict
-) -> PreTrainedModel:
+def load_vlm_for_text_training(model_path: str, load_kwargs: dict) -> PreTrainedModel:
     """Load a VLM model directly for text-only training.
 
     Used when no CausalLM variant exists. The VLM's forward() works with just
@@ -141,9 +139,7 @@ def _find_text_backbone(vlm_model) -> nn.Module:
     )
 
 
-def extract_causal_lm_from_vlm(
-    model_path: str, load_kwargs: dict
-) -> "PreTrainedModel":  # noqa: F821
+def extract_causal_lm_from_vlm(model_path: str, load_kwargs: dict) -> "PreTrainedModel":  # noqa: F821
     """Load a VLM and extract its CausalLM text backbone.
 
     This is used when a model's config is not directly registered as a CausalLM
@@ -217,7 +213,11 @@ def _config_has_mrope(config) -> bool:
             rope = getattr(cfg, attr, None)
             if rope is not None:
                 candidates.append(rope)
-    return any("mrope_section" in rope for rope in candidates)
+    return any(
+        (isinstance(rope, dict) and "mrope_section" in rope)
+        or (not isinstance(rope, dict) and hasattr(rope, "mrope_section"))
+        for rope in candidates
+    )
 
 
 def needs_sdpa(model_path: str) -> bool:
@@ -264,6 +264,7 @@ def has_timm_vision_tower(model_path: str) -> bool:
         return True
     try:
         from transformers.models.auto import MODEL_MAPPING
+
         if vision_config.__class__ in MODEL_MAPPING:
             vision_cls = MODEL_MAPPING[vision_config.__class__]
             if "Timm" in vision_cls.__name__:
