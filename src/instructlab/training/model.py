@@ -45,7 +45,7 @@ from instructlab.training.config import (  # Adjust this import if needed
 )
 from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
-from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, has_mrope
+from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, is_vlm_for_direct_loading, load_vlm_for_text_training, has_mrope
 
 
 class Model:
@@ -335,12 +335,21 @@ class Model:
             bool: True if the model is a causal language model, False otherwise.
         """
         # Third Party
-        return "ForCausalLM" in self.model.__class__.__name__
+        class_name = self.model.__class__.__name__
+        return "ForCausalLM" in class_name or "ForConditionalGeneration" in class_name
+
+    def _get_text_config(self):
+        """Get the text-relevant config, falling back to text_config for VLMs."""
+        config = self.model.config
+        if not hasattr(config, "vocab_size") and hasattr(config, "text_config"):
+            return config.text_config
+        return config
 
     def reconcile_tokenizer(self):
-        if len(self.tokenizer) > self.model.config.vocab_size:
+        text_config = self._get_text_config()
+        if len(self.tokenizer) > text_config.vocab_size:
             logger.warning(
-                f"WARNING: tokenizer has {len(self.tokenizer)} tokens but model has {self.model.config.vocab_size} vocab size"
+                f"WARNING: tokenizer has {len(self.tokenizer)} tokens but model has {text_config.vocab_size} vocab size"
             )
             self.model.resize_token_embeddings(
                 int(8 * math.ceil(len(self.tokenizer) / 8.0))
@@ -348,48 +357,48 @@ class Model:
 
         # Fix any discrepancy between model and tokenizer
         if (
-            self.model.config.pad_token_id is not None
+            text_config.pad_token_id is not None
             and self.tokenizer.pad_token_id is not None
-            and self.model.config.pad_token_id != self.tokenizer.pad_token_id
+            and text_config.pad_token_id != self.tokenizer.pad_token_id
         ):
             logger.warning(
-                f"WARNING: There is a mismatch between pad token id of model ({self.model.config.pad_token_id}) and tokenizer({self.tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
+                f"WARNING: There is a mismatch between pad token id of model ({text_config.pad_token_id}) and tokenizer({self.tokenizer.pad_token_id}). Fixing model pad token id to be same as tokenizer's pad token id"
             )
-            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+            text_config.pad_token_id = self.tokenizer.pad_token_id
         if (
-            self.model.config.bos_token_id is not None
+            text_config.bos_token_id is not None
             and self.tokenizer.bos_token_id is not None
-            and self.model.config.bos_token_id != self.tokenizer.bos_token_id
+            and text_config.bos_token_id != self.tokenizer.bos_token_id
         ):
             logging.warning(
-                f"WARNING: There is a mismatch between bos token id of model({self.model.config.bos_token_id}) and tokenizer({self.tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
+                f"WARNING: There is a mismatch between bos token id of model({text_config.bos_token_id}) and tokenizer({self.tokenizer.bos_token_id}). Fixing model bos token id to be same as tokenizer's bos token id"
             )
-            self.model.config.bos_token_id = self.tokenizer.bos_token_id
+            text_config.bos_token_id = self.tokenizer.bos_token_id
         if (
-            self.model.config.eos_token_id is not None
+            text_config.eos_token_id is not None
             and self.tokenizer.eos_token_id
-            and self.model.config.eos_token_id != self.tokenizer.eos_token_id
+            and text_config.eos_token_id != self.tokenizer.eos_token_id
         ):
             logger.warning(
-                f"WARNING: There is a mismatch between eos token id of model({self.model.config.eos_token_id}) and tokenizer({self.tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
+                f"WARNING: There is a mismatch between eos token id of model({text_config.eos_token_id}) and tokenizer({self.tokenizer.eos_token_id}). Fixing model eos token id to be same as tokenizer's eos token id"
             )
-            self.model.config.eos_token_id = self.tokenizer.eos_token_id
+            text_config.eos_token_id = self.tokenizer.eos_token_id
 
         if (
             self.tokenizer.pad_token_id is not None
-            and self.model.config.pad_token_id is None
+            and text_config.pad_token_id is None
         ):
-            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+            text_config.pad_token_id = self.tokenizer.pad_token_id
         if (
             self.tokenizer.bos_token_id is not None
-            and self.model.config.bos_token_id is None
+            and text_config.bos_token_id is None
         ):
-            self.model.config.bos_token_id = self.tokenizer.bos_token_id
+            text_config.bos_token_id = self.tokenizer.bos_token_id
         if (
             self.tokenizer.eos_token_id is not None
-            and self.model.config.eos_token_id is None
+            and text_config.eos_token_id is None
         ):
-            self.model.config.eos_token_id = self.tokenizer.eos_token_id
+            text_config.eos_token_id = self.tokenizer.eos_token_id
 
         if not self._is_causal_lm_model():
             raise ValueError(
@@ -567,6 +576,8 @@ class CausalLMModel(Model):
         )
         if is_vlm_with_causal_lm(model_path):
             self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
+        elif is_vlm_for_direct_loading(model_path):
+            self.model = load_vlm_for_text_training(model_path, self.base_model_args)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()

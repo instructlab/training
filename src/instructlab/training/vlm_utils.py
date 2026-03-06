@@ -3,8 +3,11 @@ import logging
 
 # Third Party
 import torch.nn as nn
-from transformers import AutoConfig, AutoModelForImageTextToText
-from transformers.models.auto import MODEL_FOR_CAUSAL_LM_MAPPING
+from transformers import AutoConfig, AutoModelForImageTextToText, PreTrainedModel
+from transformers.models.auto import (
+    MODEL_FOR_CAUSAL_LM_MAPPING,
+    MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING,
+)
 
 logger = logging.getLogger("instructlab.training")
 
@@ -37,6 +40,64 @@ def is_vlm_with_causal_lm(model_path: str) -> bool:
         return False
 
     return text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
+
+
+def is_vlm_for_direct_loading(model_path: str) -> bool:
+    """Check if a model is a VLM that should be loaded directly for text-only training.
+
+    This handles models where:
+    - No CausalLM class exists (top-level config NOT in MODEL_FOR_CAUSAL_LM_MAPPING)
+    - No extractable text backbone (text_config also NOT in MODEL_FOR_CAUSAL_LM_MAPPING)
+    - But the model IS in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING (can be loaded as VLM)
+
+    Args:
+        model_path: HuggingFace model ID or local path.
+
+    Returns:
+        True if the model should be loaded directly as a VLM for text-only training.
+    """
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+
+    # Skip if it can be loaded as CausalLM directly
+    if config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING:
+        return False
+
+    # Skip if extractable (text_config maps to CausalLM)
+    text_config = getattr(config, "text_config", None)
+    if text_config is not None and text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING:
+        return False
+
+    # Check if it's loadable as a VLM
+    return config.__class__ in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING
+
+
+def load_vlm_for_text_training(
+    model_path: str, load_kwargs: dict
+) -> PreTrainedModel:
+    """Load a VLM model directly for text-only training.
+
+    Used when no CausalLM variant exists. The VLM's forward() works with just
+    input_ids + labels, producing logits and CE loss without vision inputs.
+
+    Args:
+        model_path: HuggingFace model ID or local path.
+        load_kwargs: Keyword arguments for ``from_pretrained`` (must include
+            ``pretrained_model_name_or_path``).
+
+    Returns:
+        The VLM ``PreTrainedModel`` loaded for text-only training.
+    """
+    filtered_kwargs = {
+        k: v
+        for k, v in load_kwargs.items()
+        if not (k == "quantization_config" and v is None)
+    }
+
+    logger.info(
+        "VLM config detected — loading VLM directly for text-only training "
+        "(no CausalLM variant available)"
+    )
+    return AutoModelForImageTextToText.from_pretrained(**filtered_kwargs)
 
 
 def _find_text_backbone(vlm_model) -> nn.Module:
