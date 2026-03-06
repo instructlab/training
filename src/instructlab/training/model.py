@@ -45,7 +45,7 @@ from instructlab.training.config import (  # Adjust this import if needed
 )
 from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
-from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, is_vlm_for_direct_loading, load_vlm_for_text_training, has_mrope
+from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, is_vlm_for_direct_loading, load_vlm_for_text_training, needs_sdpa, has_timm_vision_tower
 
 
 class Model:
@@ -102,17 +102,15 @@ class Model:
 
         # set flash attention accordingly
         if flash_enabled:
-            # Models using M-RoPE (multimodal rotary position embeddings)
-            # produce 3D position_ids (3, batch, seq) which causes Flash
-            # Attention 2's _is_packed_sequence() to misinterpret them as
-            # packed sequences, leading to CUDA illegal memory access.
-            # Detect M-RoPE via the model config and fall back to SDPA.
-            mrope = has_mrope(model_path)
-            if mrope:
+            # Some models are incompatible with Flash Attention 2:
+            # - M-RoPE models produce 3D position_ids that FA2 misinterprets
+            # - Models with timm vision towers (TimmWrapperModel rejects FA2)
+            # Detect these and fall back to SDPA.
+            use_sdpa = needs_sdpa(model_path)
+            if use_sdpa:
                 logger.warning(
-                    "Disabling flash_attention_2 — model uses M-RoPE "
-                    "(multimodal rotary position embeddings) which is "
-                    "incompatible with Flash Attention 2. Using SDPA instead."
+                    "Disabling flash_attention_2 — model is incompatible "
+                    "(M-RoPE or timm vision tower). Using SDPA instead."
                 )
                 self.base_model_args["attn_implementation"] = "sdpa"
             else:
@@ -132,6 +130,20 @@ class Model:
                             "but found SM %d.x. Using eager attention instead.",
                             major,
                         )
+
+            # For models with timm vision towers: set vision config to eager
+            # while keeping the text model's attention implementation.
+            # timm's TimmWrapperModel rejects both FA2 and SDPA.
+            if has_timm_vision_tower(model_path):
+                attn_impl = self.base_model_args.get("attn_implementation", "flash_attention_2")
+                self.base_model_args["attn_implementation"] = {
+                    "text_config": attn_impl,
+                    "vision_config": "eager",
+                }
+                logger.info(
+                    "Model has timm vision tower — using eager attention for vision, "
+                    "%s for text model.", attn_impl,
+                )
 
     @staticmethod
     def _use_local_mamba_kernels():
