@@ -45,6 +45,7 @@ from instructlab.training.config import (  # Adjust this import if needed
 )
 from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
+from instructlab.training.vlm_utils import is_vlm_with_causal_lm, extract_causal_lm_from_vlm, has_mrope
 
 
 class Model:
@@ -106,8 +107,8 @@ class Model:
             # Attention 2's _is_packed_sequence() to misinterpret them as
             # packed sequences, leading to CUDA illegal memory access.
             # Detect M-RoPE via the model config and fall back to SDPA.
-            has_mrope = self._has_mrope(model_path)
-            if has_mrope:
+            mrope = has_mrope(model_path)
+            if mrope:
                 logger.warning(
                     "Disabling flash_attention_2 — model uses M-RoPE "
                     "(multimodal rotary position embeddings) which is "
@@ -163,21 +164,6 @@ class Model:
                 "mamba_ssm or causal_conv1d not installed; "
                 "GraniteMoeHybrid will use slow (torch) path"
             )
-
-    @staticmethod
-    def _has_mrope(model_path: str) -> bool:
-        """Check if a model uses M-RoPE (multimodal rotary position embeddings).
-
-        Models with M-RoPE produce 3D position_ids that are incompatible with
-        Flash Attention 2's packed-sequence detection.
-        """
-        from transformers import AutoConfig
-
-        config = AutoConfig.from_pretrained(model_path)
-        rope_scaling = getattr(config, "rope_scaling", None) or getattr(
-            getattr(config, "text_config", None), "rope_scaling", None
-        )
-        return rope_scaling is not None and "mrope_section" in rope_scaling
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
@@ -579,51 +565,12 @@ class CausalLMModel(Model):
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
         )
-        self.model = self._load_causal_lm(model_path, self.base_model_args)
+        if is_vlm_with_causal_lm(model_path):
+            self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()
         self.model.gradient_checkpointing_enable()
-
-    @staticmethod
-    def _load_causal_lm(model_path: str, base_model_args: dict):
-        """Load a CausalLM model, handling VLM-wrapped architectures.
-
-        Some models (e.g. Ministral-3-3B) use a VLM architecture as a wrapper
-        around a CausalLM text model.  AutoModelForCausalLM cannot resolve the
-        VLM config, so we load the full VLM and extract the text backbone.
-        """
-        from transformers import AutoConfig
-        from transformers.models.auto import MODEL_FOR_CAUSAL_LM_MAPPING
-
-        config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-        text_config = getattr(config, "text_config", None)
-
-        if (
-            text_config is not None
-            and text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
-            and config.__class__ not in MODEL_FOR_CAUSAL_LM_MAPPING
-        ):
-            from transformers import AutoModelForImageTextToText
-
-            logger.info(
-                "VLM config detected (%s) – extracting CausalLM text backbone",
-                config.__class__.__name__,
-            )
-            # Filter out None quantization_config to avoid interfering with
-            # the model's built-in quantization handling (e.g. FP8 auto-dequant)
-            vlm_args = {
-                k: v for k, v in base_model_args.items()
-                if not (k == "quantization_config" and v is None)
-            }
-            vlm = AutoModelForImageTextToText.from_pretrained(**vlm_args)
-
-            causal_lm_class = MODEL_FOR_CAUSAL_LM_MAPPING[text_config.__class__]
-            text_model = causal_lm_class(text_config)
-            text_model.model = vlm.model.language_model
-            text_model.lm_head = vlm.lm_head
-            del vlm
-            return text_model
-
-        return AutoModelForCausalLM.from_pretrained(**base_model_args)
 
 
 def setup_optimizer(
