@@ -71,7 +71,13 @@ def test_accelerator_init_deepspeed(
 
 
 def test_accelerator_init_fsdp(mock_model, mock_train_loader, mock_transformers_accel):
-    with patch("torch.distributed.get_world_size", return_value=2):
+    with (
+        patch("torch.distributed.get_world_size", return_value=2),
+        patch(
+            "instructlab.training.accelerator.get_module_class_from_name",
+            return_value=torch.nn.Module,
+        ),
+    ):
         accelerator = Accelerator(
             model=mock_model,
             samples_per_gpu=8,
@@ -148,7 +154,13 @@ def test_accelerator_deepspeed_cpu_offload(
 def test_accelerator_fsdp_cpu_offload(
     mock_model, mock_train_loader, mock_transformers_accel
 ):
-    with patch("torch.distributed.get_world_size", return_value=2):
+    with (
+        patch("torch.distributed.get_world_size", return_value=2),
+        patch(
+            "instructlab.training.accelerator.get_module_class_from_name",
+            return_value=torch.nn.Module,
+        ),
+    ):
         accelerator = Accelerator(
             model=mock_model,
             samples_per_gpu=8,
@@ -208,7 +220,13 @@ def test_accelerator_setup_deepspeed_classmethod(
 def test_accelerator_setup_fsdp_classmethod(
     mock_model, mock_train_loader, mock_transformers_accel
 ):
-    with patch("torch.distributed.get_world_size", return_value=2):
+    with (
+        patch("torch.distributed.get_world_size", return_value=2),
+        patch(
+            "instructlab.training.accelerator.get_module_class_from_name",
+            return_value=torch.nn.Module,
+        ),
+    ):
         accelerator = Accelerator.setup_fsdp(
             model=mock_model,
             samples_per_gpu=8,
