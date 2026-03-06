@@ -46,12 +46,12 @@ from instructlab.training.config import (  # Adjust this import if needed
 from instructlab.training.gpt_oss_utils_correct import is_gpt_oss, is_known_model
 from instructlab.training.type_definitions import ModelInputs, ModelLosses
 from instructlab.training.vlm_utils import (
-    is_vlm_with_causal_lm,
     extract_causal_lm_from_vlm,
+    has_timm_vision_tower,
     is_vlm_for_direct_loading,
+    is_vlm_with_causal_lm,
     load_vlm_for_text_training,
     needs_sdpa,
-    has_timm_vision_tower,
 )
 
 
@@ -165,9 +165,7 @@ class Model:
         are never loaded.
         """
         try:
-            from transformers.integrations.hub_kernels import _KERNEL_MODULE_MAPPING
-            import causal_conv1d
-            import mamba_ssm
+            # Third Party
             from mamba_ssm.ops.triton.selective_state_update import (
                 selective_state_update,
             )
@@ -175,6 +173,9 @@ class Model:
                 mamba_chunk_scan_combined,
                 mamba_split_conv1d_scan_combined,
             )
+            from transformers.integrations.hub_kernels import _KERNEL_MODULE_MAPPING
+            import causal_conv1d
+            import mamba_ssm
 
             mamba_ssm.selective_state_update = selective_state_update
             mamba_ssm.mamba_chunk_scan_combined = mamba_chunk_scan_combined

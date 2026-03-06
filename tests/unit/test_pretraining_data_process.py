@@ -359,8 +359,8 @@ class TestProcessDocumentsForPretraining:
                 def map_side_effect(func, **kwargs):
                     mapped_ds = MagicMock()
                     mapped_ds.__len__ = lambda self: 1
-                    mapped_ds.__getitem__ = (
-                        lambda self, key: [10] if key == "len" else None
+                    mapped_ds.__getitem__ = lambda self, key: (
+                        [10] if key == "len" else None
                     )
                     mapped_ds.to_json = MagicMock()
                     return mapped_ds

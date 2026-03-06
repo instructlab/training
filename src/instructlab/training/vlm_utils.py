@@ -2,7 +2,7 @@
 import logging
 
 # Third Party
-import torch.nn as nn
+from torch import nn
 from transformers import AutoConfig, AutoModelForImageTextToText, PreTrainedModel
 from transformers.models.auto import (
     MODEL_FOR_CAUSAL_LM_MAPPING,
@@ -71,7 +71,10 @@ def is_vlm_for_direct_loading(model_path: str) -> bool:
     return config.__class__ in MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING
 
 
-def load_vlm_for_text_training(model_path: str, load_kwargs: dict) -> PreTrainedModel:
+def load_vlm_for_text_training(
+    model_path: str,  # pylint: disable=unused-argument
+    load_kwargs: dict,
+) -> PreTrainedModel:
     """Load a VLM model directly for text-only training.
 
     Used when no CausalLM variant exists. The VLM's forward() works with just
@@ -263,6 +266,7 @@ def has_timm_vision_tower(model_path: str) -> bool:
     if model_type in ("timm_wrapper", "gemma3n_vision"):
         return True
     try:
+        # Third Party
         from transformers.models.auto import MODEL_MAPPING
 
         if vision_config.__class__ in MODEL_MAPPING:

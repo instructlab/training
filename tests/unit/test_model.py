@@ -243,6 +243,8 @@ def test_causal_lm_model_with_flash_attention(mock_tokenizer, mock_model, mock_c
         patch(
             "transformers.AutoModelForCausalLM.from_pretrained", return_value=mock_model
         ),
+        patch("instructlab.training.model.needs_sdpa", return_value=False),
+        patch("instructlab.training.model.has_timm_vision_tower", return_value=False),
     ):
         model = CausalLMModel(
             model_path="test_model",
