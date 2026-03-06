@@ -125,7 +125,10 @@ class Model:
                 if self.is_gpt_oss:
                     # vllm-flash-attn3 requires Hopper (SM 9.0+) GPUs;
                     # GPT-OSS only supports flash-attn3 or eager
-                    major, _ = torch.cuda.get_device_capability(0)
+                    device = (
+                        torch.cuda.current_device() if torch.cuda.is_available() else 0
+                    )
+                    major, _ = torch.cuda.get_device_capability(device)
                     if major >= 9:
                         self.base_model_args["attn_implementation"] = (
                             "kernels-community/vllm-flash-attn3"
