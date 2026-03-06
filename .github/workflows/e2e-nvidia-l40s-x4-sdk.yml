@@ -166,7 +166,7 @@ jobs:
           df -h
 
       - name: Upload training logs Phase 1
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase-1-training-log.jsonl
           path: ./phase-1-training-log.jsonl
@@ -174,7 +174,7 @@ jobs:
           overwrite: true
 
       - name: Upload training logs Phase 2
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: phase-2-training-log.jsonl
           path: ./phase-2-training-log.jsonl
