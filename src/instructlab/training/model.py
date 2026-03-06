@@ -76,8 +76,9 @@ class Model:
         self.is_granitemoehybrid = is_known_model(model_path, "granitemoehybrid")
         self.is_gpt_oss = is_gpt_oss(model_path)
 
-        # The Hub kernel for mamba-ssm is incompatible with causal_conv1d
-        # v1.6.0 (different C API). Use local packages instead.
+        # Pre-populate the Hub kernel cache with locally installed mamba_ssm
+        # and causal_conv1d to avoid PyTorch/CUDA ABI mismatches with the
+        # Hub-provided kernel builds.
         if self.is_granitemoehybrid:
             self._use_local_mamba_kernels()
 
@@ -162,10 +163,9 @@ class Model:
     def _use_local_mamba_kernels():
         """Use locally installed mamba_ssm/causal_conv1d instead of Hub kernels.
 
-        The Hub kernel for mamba-ssm is compiled against an older causal_conv1d
-        C API that is incompatible with causal_conv1d v1.6.0. Pre-populate the
-        transformers kernel cache with the local packages so the Hub kernels
-        are never loaded.
+        Pre-populate the transformers Hub kernel cache with the locally
+        installed packages to avoid PyTorch/CUDA ABI mismatches with the
+        Hub-provided kernel builds.
         """
         try:
             # Third Party
@@ -189,10 +189,11 @@ class Model:
             _KERNEL_MODULE_MAPPING["causal-conv1d"] = causal_conv1d
             _KERNEL_MODULE_MAPPING["mamba-ssm"] = mamba_ssm
             logger.info("Using local mamba_ssm/causal_conv1d instead of Hub kernels")
-        except ImportError:
+        except (ImportError, AttributeError) as e:
             logger.warning(
-                "mamba_ssm or causal_conv1d not installed; "
-                "GraniteMoeHybrid will use slow (torch) path"
+                "Could not patch mamba kernels (%s); "
+                "GraniteMoeHybrid may use Hub kernels",
+                e,
             )
 
     def _post_model_init(self):
