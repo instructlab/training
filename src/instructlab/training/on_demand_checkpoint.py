@@ -20,12 +20,28 @@ There are two sides to this feature:
     node** can see the file instantly with zero network I/O.
 
 **Worker processes** (torchrun children):
-    After every optimizer step the training loop calls
-    ``check_checkpoint_requested()``. Each rank checks its local ``/dev/shm``
-    for the trigger file, converts the boolean to a tensor, and does an
-    ``all_reduce(MAX)`` so that if *any* rank on *any* node detected the
-    trigger, *every* rank agrees to save a checkpoint. This works correctly in
-    multi-node training because all_reduce is a global collective.
+    The training loop calls ``check_checkpoint_requested()`` at five
+    synchronization points per training step, allowing the system to
+    react as quickly as possible to termination signals:
+
+    1. **Before each minibatch forward pass** — no partial computation;
+       the current state is saved as-is.
+    2. **Before each minibatch backward pass** — the forward result is
+       discarded; the pre-step state is saved.
+    3. **After each minibatch backward pass** — gradients are computed but
+       not yet applied; the pre-step state is saved (gradients will be
+       recomputed on resume).
+    4. **Before the optimizer step** — all minibatches are done and
+       gradients are ready, but the step is skipped; the pre-step state
+       is saved.
+    5. **After the optimizer step** — the step has been applied;
+       ``samples_seen`` is updated and the post-step state is saved.
+
+    Each rank checks its local ``/dev/shm`` for the trigger file, converts
+    the boolean to a tensor, and does an ``all_reduce(MAX)`` so that if
+    *any* rank on *any* node detected the trigger, *every* rank agrees to
+    save a checkpoint. This works correctly in multi-node training because
+    all_reduce is a global collective.
 
 Signals handled
 ---------------
