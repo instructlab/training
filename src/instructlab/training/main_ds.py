@@ -196,6 +196,22 @@ def train(
         checkpoint_job_id = os.environ.get("INSTRUCTLAB_ON_DEMAND_JOB_ID")
         base_logger.info("On-demand checkpointing is enabled in worker process.")
 
+        def _save_and_exit(checkpoint_location: str) -> None:
+            """Save an on-demand checkpoint and exit the training loop."""
+            save_on_demand_checkpoint(
+                args=args,
+                accelerator=accelerator,
+                model=model,
+                tokenizer=model.tokenizer,
+                samples_seen=samples_seen,
+                epoch=epoch,
+                is_lora=bool(args.lora_r),
+            )
+            base_logger.info(
+                "On-demand checkpoint saved (%s). Exiting training.",
+                checkpoint_location,
+            )
+
     # Mini_trainer approach: batch_size will be determined dynamically by data loader
     # For save logic, use effective_batch_size since that's the target
     samples_seen = 0
@@ -251,22 +267,14 @@ def train(
             # since we want to preserve the pre-step model state for
             # exact resumption.
             if batch_metrics.interrupted:
-                save_on_demand_checkpoint(
-                    args=args,
-                    accelerator=accelerator,
-                    model=model,
-                    tokenizer=model.tokenizer,
-                    samples_seen=samples_seen,
-                    epoch=epoch,
-                    is_lora=bool(args.lora_r),
-                )
-                base_logger.info(
-                    "On-demand checkpoint saved. Exiting training gracefully."
-                )
+                _save_and_exit("during minibatch processing")
                 return
 
-            # Update samples seen
-            samples_seen += batch_metrics.total_samples
+            if on_demand_checkpointing and check_checkpoint_requested(
+                checkpoint_job_id
+            ):
+                _save_and_exit("before optimizer step")
+                return
 
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {avg_loss_across_ranks:.6f}, grad_accum_steps = {batch_metrics.grad_accum_steps}"
@@ -274,6 +282,15 @@ def train(
 
             # Take optimizer step after all minibatches
             accelerator.take_optimizer_step()
+
+            # Update samples seen after the optimizer step has been applied
+            samples_seen += batch_metrics.total_samples
+
+            if on_demand_checkpointing and check_checkpoint_requested(
+                checkpoint_job_id
+            ):
+                _save_and_exit("after optimizer step")
+                return
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
@@ -1163,9 +1180,11 @@ if __name__ == "__main__":
         default=False,
         help=(
             "Enable on-demand full-state checkpointing triggered by Unix signals. "
-            "When enabled, workers check for a trigger file in /dev/shm after each "
-            "minibatch backward pass and collectively save a distributed checkpoint before "
-            "exiting. Designed for OpenShift AI / KubeFlow preemption handling."
+            "When enabled, workers check for a trigger file in /dev/shm at five "
+            "synchronization points per step (before/after each minibatch forward "
+            "and backward pass, and before/after the optimizer step) and collectively "
+            "save a distributed checkpoint before exiting. Designed for OpenShift AI / "
+            "KubeFlow preemption handling."
         ),
     )
     parser.add_argument(

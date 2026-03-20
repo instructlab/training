@@ -74,10 +74,11 @@ class BatchLossManager:
 
         Args:
             batch: List of minibatches to process
-            interrupt_check: Optional callback invoked after each minibatch's
-                backward pass. If it returns ``True``, gradient accumulation
+            interrupt_check: Optional callback invoked at three points per
+                minibatch: before forward, before backward, and after
+                backward. If it returns ``True`` at any point, processing
                 stops early and ``BatchMetrics.interrupted`` is set. Used by
-                on-demand checkpointing to react within one fwd+bwd cycle
+                on-demand checkpointing to react as quickly as possible
                 instead of waiting for the full optimizer step.
 
         Returns:
@@ -97,6 +98,11 @@ class BatchLossManager:
 
         # process each minibatch
         for mb in batch:
+            # Check for on-demand checkpoint before forward
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
+
             # extract minibatch-specific info
             micro_batch_size = mb["num_samples"]
             total_length = mb["total_length"]
@@ -108,10 +114,16 @@ class BatchLossManager:
             # prepare model inputs
             model_inputs = self._prepare_model_inputs(mb)
 
-            # compute loss and backward pass
+            # compute loss (forward pass)
             scaled_loss, raw_losses = self.model.compute_loss(
                 model_inputs, self.world_size, batch_num_loss_counted_tokens
             )
+
+            # Check for on-demand checkpoint before backward
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
+
             self.accelerator.backward(scaled_loss)
 
             # accumulate losses
@@ -120,7 +132,7 @@ class BatchLossManager:
             if raw_losses.aux_loss is not None:
                 accumulated_aux_loss += raw_losses.aux_loss
 
-            # check for early exit (e.g. on-demand checkpoint requested)
+            # Check for on-demand checkpoint after backward
             if interrupt_check is not None and interrupt_check():
                 interrupted = True
                 break
@@ -183,8 +195,8 @@ class BatchLossManager:
 
     def _compute_average_loss(
         self,
-        accumulated_loss: torch.Tensor,
-        accumulated_aux_loss: torch.Tensor | None,
+        accumulated_loss: torch.Tensor | float,
+        accumulated_aux_loss: torch.Tensor | float | None,
         batch_num_loss_counted_tokens: int,
     ) -> float:
         """Compute average loss across all ranks for metrics logging."""
@@ -195,11 +207,16 @@ class BatchLossManager:
         if accumulated_aux_loss is not None:
             total_batch_loss += accumulated_aux_loss
 
+        # Extract scalar value — accumulated_loss may be a plain float if the
+        # minibatch loop was interrupted before any forward pass completed.
+        if isinstance(total_batch_loss, torch.Tensor):
+            loss_value = total_batch_loss.detach().item()
+        else:
+            loss_value = float(total_batch_loss)
+
         # reduce across ranks
         avg_loss_across_ranks = self.accelerator.reduce(
-            torch.tensor(
-                total_batch_loss.detach().item(), device=self.accelerator.device
-            ),
+            torch.tensor(loss_value, device=self.accelerator.device),
             reduction="mean",
         ).item()
 
