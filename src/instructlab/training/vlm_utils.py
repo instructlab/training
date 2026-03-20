@@ -15,13 +15,16 @@ logger = logging.getLogger("instructlab.training")
 def is_vlm_with_causal_lm(model_path: str, trust_remote_code: bool = False) -> bool:
     """Check if a model is a VLM that wraps a CausalLM text backbone.
 
-    Returns True when the model's top-level config does NOT map to a CausalLM
-    but its ``text_config`` does — meaning the model needs VLM extraction to
-    obtain the trainable CausalLM sub-model.
+    Returns True when the model needs VLM extraction to obtain the trainable
+    CausalLM sub-model.  This covers two cases:
 
-    Models that are dual-registered (top-level config maps directly to CausalLM)
-    return False because ``AutoModelForCausalLM`` can load them without
-    extraction.
+    1. The top-level config does NOT map to CausalLM, but ``text_config`` does
+       (e.g. Ministral-3 / Mistral3ForConditionalGeneration).
+    2. The top-level config IS in the CausalLM mapping, but the resolved class
+       is actually a ``ForConditionalGeneration`` VLM (e.g. Gemma 3, which is
+       dual-registered so ``AutoModelForCausalLM`` loads the full VLM).  These
+       models still have an extractable CausalLM text backbone via
+       ``text_config``.
 
     Args:
         model_path: HuggingFace model ID or local path.
@@ -32,11 +35,22 @@ def is_vlm_with_causal_lm(model_path: str, trust_remote_code: bool = False) -> b
     """
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=trust_remote_code)
 
-    # If the top-level config maps to CausalLM, no extraction needed.
-    if config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING:
-        return False
-
     text_config = getattr(config, "text_config", None)
+
+    if config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING:
+        # The config maps to CausalLM, but check what class it actually
+        # resolves to.  Some models (e.g. Gemma 3) are dual-registered and
+        # AutoModelForCausalLM loads a ForConditionalGeneration VLM instead
+        # of a text-only CausalLM.  Those still need extraction.
+        resolved_cls = MODEL_FOR_CAUSAL_LM_MAPPING[config.__class__]
+        is_actually_vlm = "ForConditionalGeneration" in resolved_cls.__name__
+        if not is_actually_vlm:
+            return False
+        # It's a VLM disguised as CausalLM — fall through to check text_config
+        if text_config is None:
+            return False
+        return text_config.__class__ in MODEL_FOR_CAUSAL_LM_MAPPING
+
     if text_config is None:
         return False
 
