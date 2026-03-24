@@ -179,6 +179,25 @@ class ParentSignalHandler:
 
     def install(self) -> None:
         """Register signal handlers for all catchable signals."""
+        # Clear any stale trigger file from a previous run. If the file
+        # exists before we've even installed signal handlers, it cannot
+        # be from this job — it's left over from a prior run that was
+        # killed before the workers could clean it up.
+        if trigger_file_exists(self.job_id):
+            logger.info(
+                "On-demand checkpoint: clearing stale trigger file from "
+                "a previous run (job_id=%s).",
+                self.job_id,
+            )
+            try:
+                remove_trigger_file(self.job_id)
+            except Exception:
+                logger.warning(
+                    "On-demand checkpoint: failed to remove stale trigger file, "
+                    "but continuing anyway.",
+                    exc_info=True,
+                )
+
         for sig in _CATCHABLE_SIGNALS:
             try:
                 self._original_handlers[sig] = signal.getsignal(sig)
@@ -264,6 +283,7 @@ def save_on_demand_checkpoint(
     tokenizer,
     samples_seen: int,
     epoch: int,
+    global_step: int,
     is_lora: bool,
 ) -> None:
     """Save a full-state distributed checkpoint for on-demand resume.
@@ -271,6 +291,10 @@ def save_on_demand_checkpoint(
     This is a thin wrapper that calls the existing ``save_checkpoint``
     utility with ``full_state=True`` so that optimizer + LR scheduler
     state are also persisted, enabling exact training resumption.
+
+    The ``global_step`` is saved to the checkpoint metadata so that
+    on resume the training loop can fast-forward to the exact step
+    within the epoch where training was interrupted.
     """
     # First Party
     from instructlab.training.utils import save_checkpoint
@@ -279,8 +303,9 @@ def save_on_demand_checkpoint(
     if local_rank == 0:
         logger.info(
             "On-demand checkpoint: saving full-state checkpoint at "
-            "epoch=%d, samples_seen=%d",
+            "epoch=%d, global_step=%d, samples_seen=%d",
             epoch,
+            global_step,
             samples_seen,
         )
 
@@ -294,6 +319,7 @@ def save_on_demand_checkpoint(
         full_state=True,
         hf_format=True,
         epoch=epoch,
+        global_step=global_step,
     )
 
     if local_rank == 0:
