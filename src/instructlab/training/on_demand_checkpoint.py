@@ -20,9 +20,10 @@ There are two sides to this feature:
     node** can see the file instantly with zero network I/O.
 
 **Worker processes** (torchrun children):
-    The training loop calls ``check_checkpoint_requested()`` at five
-    synchronization points per training step, allowing the system to
-    react as quickly as possible to termination signals:
+    The training loop calls ``check_checkpoint_requested()`` at multiple
+    synchronization points per training step (three per minibatch plus
+    two around the optimizer step), allowing the system to react as
+    quickly as possible to termination signals:
 
     1. **Before each minibatch forward pass** — no partial computation;
        the current state is saved as-is.

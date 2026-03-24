@@ -1181,11 +1181,10 @@ if __name__ == "__main__":
         default=False,
         help=(
             "Enable on-demand full-state checkpointing triggered by Unix signals. "
-            "When enabled, workers check for a trigger file in /dev/shm at five "
-            "synchronization points per step (before/after each minibatch forward "
-            "and backward pass, and before/after the optimizer step) and collectively "
-            "save a distributed checkpoint before exiting. Designed for OpenShift AI / "
-            "KubeFlow preemption handling."
+            "When enabled, workers check for a trigger file in /dev/shm at multiple "
+            "synchronization points (three times per minibatch and twice around the "
+            "optimizer step) and collectively save a distributed checkpoint before "
+            "exiting. Designed for OpenShift AI / KubeFlow preemption handling."
         ),
     )
     parser.add_argument(
