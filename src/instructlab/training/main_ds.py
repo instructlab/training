@@ -185,7 +185,6 @@ def train(
     base_logger = logging.getLogger("instructlab.training")
 
     # Import on-demand checkpointing utilities once if the feature is enabled
-    checkpoint_job_id = None
     if on_demand_checkpointing:
         # First Party
         from instructlab.training.on_demand_checkpoint import (
@@ -193,7 +192,6 @@ def train(
             save_on_demand_checkpoint,
         )
 
-        checkpoint_job_id = os.environ.get("INSTRUCTLAB_ON_DEMAND_JOB_ID")
         base_logger.info("On-demand checkpointing is enabled in worker process.")
 
         def _save_and_exit(checkpoint_location: str) -> None:
@@ -255,7 +253,7 @@ def train(
             # the check runs after every minibatch backward rather than
             # waiting for the full optimizer step.
             _interrupt_check = (
-                (lambda: check_checkpoint_requested(checkpoint_job_id))
+                (lambda: check_checkpoint_requested())
                 if on_demand_checkpointing
                 else None
             )
@@ -271,9 +269,7 @@ def train(
                 _save_and_exit("during minibatch processing")
                 return
 
-            if on_demand_checkpointing and check_checkpoint_requested(
-                checkpoint_job_id
-            ):
+            if on_demand_checkpointing and check_checkpoint_requested():
                 _save_and_exit("before optimizer step")
                 return
 
@@ -287,9 +283,7 @@ def train(
             # Update samples seen after the optimizer step has been applied
             samples_seen += batch_metrics.total_samples
 
-            if on_demand_checkpointing and check_checkpoint_requested(
-                checkpoint_job_id
-            ):
+            if on_demand_checkpointing and check_checkpoint_requested():
                 _save_and_exit("after optimizer step")
                 return
 
@@ -881,14 +875,11 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
         # Use rdzv_id to namespace the trigger file so concurrent jobs
         # sharing /dev/shm don't interfere with each other.
-        checkpoint_job_id = str(torch_args.rdzv_id)
-        os.environ["INSTRUCTLAB_ON_DEMAND_JOB_ID"] = checkpoint_job_id
-        signal_handler = ParentSignalHandler(job_id=checkpoint_job_id)
+        signal_handler = ParentSignalHandler()
         signal_handler.install()
         logger.info(
-            "On-demand checkpointing is ENABLED (job_id=%s). "
+            "On-demand checkpointing is ENABLED. "
             "Termination signals will trigger a full-state checkpoint before exit.",
-            checkpoint_job_id,
         )
 
     process = None

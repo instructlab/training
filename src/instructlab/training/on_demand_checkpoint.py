@@ -92,23 +92,18 @@ _TRIGGER_DIR = Path("/dev/shm")
 _TRIGGER_FILENAME = "instructlab_checkpoint_requested"
 
 
-def _get_trigger_path(job_id: Optional[str] = None) -> Path:
-    """Return the path to the checkpoint trigger file.
-
-    An optional *job_id* can be supplied to avoid collisions if multiple
-    training jobs share the same ``/dev/shm`` (unlikely but possible).
-    """
-    name = f"{_TRIGGER_FILENAME}_{job_id}" if job_id else _TRIGGER_FILENAME
-    return _TRIGGER_DIR / name
+def _get_trigger_path() -> Path:
+    """Return the path to the checkpoint trigger file."""
+    return _TRIGGER_DIR / _TRIGGER_FILENAME
 
 
-def write_trigger_file(job_id: Optional[str] = None) -> Path:
+def write_trigger_file() -> Path:
     """Create the trigger file that tells workers to checkpoint.
 
     This is called from the *parent* process signal handler.
     Returns the path that was written.
     """
-    path = _get_trigger_path(job_id)
+    path = _get_trigger_path()
     # Use a atomic write via tempfile + rename to avoid partial reads.
     fd, tmp = tempfile.mkstemp(dir=_TRIGGER_DIR, prefix=".ckpt_trigger_")
     try:
@@ -123,14 +118,14 @@ def write_trigger_file(job_id: Optional[str] = None) -> Path:
     return path
 
 
-def trigger_file_exists(job_id: Optional[str] = None) -> bool:
+def trigger_file_exists() -> bool:
     """Check whether the trigger file exists (worker-side)."""
-    return _get_trigger_path(job_id).exists()
+    return _get_trigger_path().exists()
 
 
-def remove_trigger_file(job_id: Optional[str] = None) -> None:
+def remove_trigger_file() -> None:
     """Remove the trigger file after the checkpoint has been saved."""
-    path = _get_trigger_path(job_id)
+    path = _get_trigger_path()
     try:
         path.unlink(missing_ok=True)
     except OSError:
@@ -164,15 +159,9 @@ class ParentSignalHandler:
     The handler is idempotent – multiple signals will not create multiple
     trigger files.
 
-    Parameters
-    ----------
-    job_id : str, optional
-        Unique identifier for this training job. Used to namespace the
-        trigger file.
     """
 
-    def __init__(self, job_id: Optional[str] = None):
-        self.job_id = job_id
+    def __init__(self):
         self.signal_received: Optional[signal.Signals] = None
         self._original_handlers: dict[signal.Signals, _SignalHandler] = {}
         self._trigger_written = False
@@ -183,14 +172,13 @@ class ParentSignalHandler:
         # exists before we've even installed signal handlers, it cannot
         # be from this job — it's left over from a prior run that was
         # killed before the workers could clean it up.
-        if trigger_file_exists(self.job_id):
+        if trigger_file_exists():
             logger.info(
                 "On-demand checkpoint: clearing stale trigger file from "
-                "a previous run (job_id=%s).",
-                self.job_id,
+                "a previous run.",
             )
             try:
-                remove_trigger_file(self.job_id)
+                remove_trigger_file()
             except Exception:
                 logger.warning(
                     "On-demand checkpoint: failed to remove stale trigger file, "
@@ -232,7 +220,7 @@ class ParentSignalHandler:
         self.signal_received = sig
 
         if not self._trigger_written:
-            write_trigger_file(self.job_id)
+            write_trigger_file()
             self._trigger_written = True
 
 
@@ -241,7 +229,7 @@ class ParentSignalHandler:
 # ---------------------------------------------------------------------------
 
 
-def check_checkpoint_requested(job_id: Optional[str] = None) -> bool:
+def check_checkpoint_requested() -> bool:
     """Check across all ranks whether an on-demand checkpoint was requested.
 
     This function must be called by **all ranks** at the same point in the
@@ -250,7 +238,7 @@ def check_checkpoint_requested(job_id: Optional[str] = None) -> bool:
     Returns ``True`` if any rank detected the trigger file, meaning all
     ranks should save a checkpoint.
     """
-    local_trigger = trigger_file_exists(job_id)
+    local_trigger = trigger_file_exists()
 
     # Convert to a tensor and all-reduce (MAX) so that if ANY rank on ANY
     # node saw the trigger, every rank gets True.
@@ -271,7 +259,7 @@ def check_checkpoint_requested(job_id: Optional[str] = None) -> bool:
             )
         # Clean up the trigger file so that if the process somehow
         # continues, we don't save again immediately.
-        remove_trigger_file(job_id)
+        remove_trigger_file()
 
     return requested
 
