@@ -205,6 +205,7 @@ def train(
                 tokenizer=model.tokenizer,
                 samples_seen=samples_seen,
                 epoch=epoch,
+                global_step=global_step,
                 is_lora=bool(args.lora_r),
             )
             base_logger.info(
