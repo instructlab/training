@@ -858,7 +858,14 @@ def save_checkpoint(
         )
 
 
-def save_full_state(args, accelerator, is_lora: bool, epoch: int, samples_seen: int, global_step: int | None = None):
+def save_full_state(
+    args,
+    accelerator,
+    is_lora: bool,
+    epoch: int,
+    samples_seen: int,
+    global_step: int | None = None,
+):
     """
     Saves model, optimizer, and lr_scheduler state.
     TODO: save model config - decided not to do this.
