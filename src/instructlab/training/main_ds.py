@@ -253,9 +253,7 @@ def train(
             # the check runs after every minibatch backward rather than
             # waiting for the full optimizer step.
             _interrupt_check = (
-                (lambda: check_checkpoint_requested())
-                if on_demand_checkpointing
-                else None
+                check_checkpoint_requested if on_demand_checkpointing else None
             )
             batch_metrics, avg_loss_across_ranks = batch_loss_manager.process_batch(
                 batch, interrupt_check=_interrupt_check
