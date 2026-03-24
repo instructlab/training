@@ -131,25 +131,11 @@ You can trigger a checkpoint-and-exit without sending a signal by writing
 the trigger file directly. This is useful for debugging, testing, or
 integration with custom orchestration that doesn't use Unix signals.
 
-The trigger file lives in `/dev/shm` and is named using the job ID that
-the training process was started with. To find the correct filename and
-create the trigger:
+The trigger file is always at a fixed path. To trigger a checkpoint
+(e.g. via `kubectl exec` into the training pod):
 
 ```bash
-# Find the trigger filename for the running job — look for the job ID
-# that was set when training started
-ls /dev/shm/instructlab_checkpoint_requested*
-
-# Create the trigger file (use the exact name shown by ls above)
-touch /dev/shm/instructlab_checkpoint_requested_<JOB_ID>
-```
-
-If you don't know the job ID, you can read it from the training process
-environment:
-
-```bash
-# From inside the same pod / container where training is running
-cat /proc/$(pgrep -f main_ds.py | head -1)/environ | tr '\0' '\n' | grep INSTRUCTLAB_ON_DEMAND_JOB_ID
+touch /dev/shm/instructlab_checkpoint_requested
 ```
 
 Workers check for the trigger file at each synchronization point in the
@@ -164,7 +150,7 @@ From Python:
 ```python
 from instructlab.training.on_demand_checkpoint import write_trigger_file
 
-write_trigger_file(job_id="12345")  # or job_id=None for default path
+write_trigger_file()
 ```
 
 ## Kubernetes / OpenShift Configuration
