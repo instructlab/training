@@ -7,7 +7,8 @@ and reduction across distributed training environments.
 """
 
 # Standard
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 import logging
 
 # Third Party
@@ -33,6 +34,7 @@ class BatchMetrics:
     accumulated_aux_loss: torch.Tensor | None
     grad_accum_steps: int
     num_minibatches: int
+    interrupted: bool = field(default=False)
 
 
 class BatchLossManager:
@@ -62,12 +64,22 @@ class BatchLossManager:
         self.local_rank: int = local_rank
         self.torch_device = torch.device("cuda", local_rank)
 
-    def process_batch(self, batch: list[CollatedItem]) -> tuple[BatchMetrics, float]:
+    def process_batch(
+        self,
+        batch: list[CollatedItem],
+        interrupt_check: Callable[[], bool] | None = None,
+    ) -> tuple[BatchMetrics, float]:
         """
         Process a batch of minibatches, computing losses and accumulating gradients.
 
         Args:
             batch: List of minibatches to process
+            interrupt_check: Optional callback invoked at three points per
+                minibatch: before forward, before backward, and after
+                backward. If it returns ``True`` at any point, processing
+                stops early and ``BatchMetrics.interrupted`` is set. Used by
+                on-demand checkpointing to react as quickly as possible
+                instead of waiting for the full optimizer step.
 
         Returns:
             tuple: (BatchMetrics, average_loss_across_ranks)
@@ -82,9 +94,15 @@ class BatchLossManager:
         accumulated_loss = 0.0
         accumulated_aux_loss = 0.0
         grad_accum_steps = 0
+        interrupted = False
 
         # process each minibatch
         for mb in batch:
+            # Check for on-demand checkpoint before forward
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
+
             # extract minibatch-specific info
             micro_batch_size = mb["num_samples"]
             total_length = mb["total_length"]
@@ -96,10 +114,16 @@ class BatchLossManager:
             # prepare model inputs
             model_inputs = self._prepare_model_inputs(mb)
 
-            # compute loss and backward pass
+            # compute loss (forward pass)
             scaled_loss, raw_losses = self.model.compute_loss(
                 model_inputs, self.world_size, batch_num_loss_counted_tokens
             )
+
+            # Check for on-demand checkpoint before backward
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
+
             self.accelerator.backward(scaled_loss)
 
             # accumulate losses
@@ -107,6 +131,11 @@ class BatchLossManager:
             accumulated_loss += raw_losses.main_loss
             if raw_losses.aux_loss is not None:
                 accumulated_aux_loss += raw_losses.aux_loss
+
+            # Check for on-demand checkpoint after backward
+            if interrupt_check is not None and interrupt_check():
+                interrupted = True
+                break
 
         # reduce metrics across ranks
         batch_total_samples, batch_total_length = self._reduce_metrics(
@@ -127,6 +156,7 @@ class BatchLossManager:
             accumulated_aux_loss=accumulated_aux_loss,
             grad_accum_steps=grad_accum_steps,
             num_minibatches=num_minibatches,
+            interrupted=interrupted,
         )
 
         return metrics, avg_loss_across_ranks
@@ -165,8 +195,8 @@ class BatchLossManager:
 
     def _compute_average_loss(
         self,
-        accumulated_loss: torch.Tensor,
-        accumulated_aux_loss: torch.Tensor | None,
+        accumulated_loss: torch.Tensor | float,
+        accumulated_aux_loss: torch.Tensor | float | None,
         batch_num_loss_counted_tokens: int,
     ) -> float:
         """Compute average loss across all ranks for metrics logging."""
@@ -177,11 +207,16 @@ class BatchLossManager:
         if accumulated_aux_loss is not None:
             total_batch_loss += accumulated_aux_loss
 
+        # Extract scalar value — accumulated_loss may be a plain float if the
+        # minibatch loop was interrupted before any forward pass completed.
+        if isinstance(total_batch_loss, torch.Tensor):
+            loss_value = total_batch_loss.detach().item()
+        else:
+            loss_value = float(total_batch_loss)
+
         # reduce across ranks
         avg_loss_across_ranks = self.accelerator.reduce(
-            torch.tensor(
-                total_batch_loss.detach().item(), device=self.accelerator.device
-            ),
+            torch.tensor(loss_value, device=self.accelerator.device),
             reduction="mean",
         ).item()
 

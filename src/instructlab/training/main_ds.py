@@ -173,6 +173,7 @@ def train(
     accelerator: Accelerator,
     val_data_loader=None,
     validation_frequency=None,
+    on_demand_checkpointing: bool = False,
 ):
     model.train()
 
@@ -182,6 +183,33 @@ def train(
 
     metric_logger = logging.getLogger("instructlab.training.metrics")
     base_logger = logging.getLogger("instructlab.training")
+
+    # Import on-demand checkpointing utilities once if the feature is enabled
+    if on_demand_checkpointing:
+        # First Party
+        from instructlab.training.on_demand_checkpoint import (
+            check_checkpoint_requested,
+            save_on_demand_checkpoint,
+        )
+
+        base_logger.info("On-demand checkpointing is enabled in worker process.")
+
+        def _save_and_exit(checkpoint_location: str) -> None:
+            """Save an on-demand checkpoint and exit the training loop."""
+            save_on_demand_checkpoint(
+                args=args,
+                accelerator=accelerator,
+                model=model,
+                tokenizer=model.tokenizer,
+                samples_seen=samples_seen,
+                epoch=epoch,
+                global_step=global_step,
+                is_lora=bool(args.lora_r),
+            )
+            base_logger.info(
+                "On-demand checkpoint saved (%s). Exiting training.",
+                checkpoint_location,
+            )
 
     # Mini_trainer approach: batch_size will be determined dynamically by data loader
     # For save logic, use effective_batch_size since that's the target
@@ -220,13 +248,28 @@ def train(
                 continue
             start = time.time()
 
-            # Process the batch using the BatchLossManager
+            # Process the batch using the BatchLossManager.
+            # When on-demand checkpointing is enabled, pass a callback so
+            # the check runs after every minibatch backward rather than
+            # waiting for the full optimizer step.
+            _interrupt_check = (
+                check_checkpoint_requested if on_demand_checkpointing else None
+            )
             batch_metrics, avg_loss_across_ranks = batch_loss_manager.process_batch(
-                batch
+                batch, interrupt_check=_interrupt_check
             )
 
-            # Update samples seen
-            samples_seen += batch_metrics.total_samples
+            # If the batch was interrupted by an on-demand checkpoint
+            # request, save immediately and exit — skip the optimizer step
+            # since we want to preserve the pre-step model state for
+            # exact resumption.
+            if batch_metrics.interrupted:
+                _save_and_exit("during minibatch processing")
+                return
+
+            if on_demand_checkpointing and check_checkpoint_requested():
+                _save_and_exit("before optimizer step")
+                return
 
             base_logger.info(
                 f"Epoch: {epoch}, Step: {global_step}, Rank: {dist.get_rank()}, loss = {avg_loss_across_ranks:.6f}, grad_accum_steps = {batch_metrics.grad_accum_steps}"
@@ -234,6 +277,13 @@ def train(
 
             # Take optimizer step after all minibatches
             accelerator.take_optimizer_step()
+
+            # Update samples seen after the optimizer step has been applied
+            samples_seen += batch_metrics.total_samples
+
+            if on_demand_checkpointing and check_checkpoint_requested():
+                _save_and_exit("after optimizer step")
+                return
 
             if local_rank == 0:
                 elapsed_time = time.time() - start
@@ -561,6 +611,7 @@ def main(args):
         accelerator=accelerator,
         val_data_loader=val_loader,
         validation_frequency=validation_frequency,
+        on_demand_checkpointing=getattr(args, "on_demand_checkpointing", False),
     )
 
     dist.barrier()
@@ -791,7 +842,26 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
 
+    if train_args.on_demand_checkpointing:
+        command.append("--on_demand_checkpointing")
+
     logger.info("Running training command as subprocess: %s", " ".join(command))
+
+    # --- On-demand checkpointing: install signal handlers in the parent ---
+    signal_handler = None
+    if train_args.on_demand_checkpointing:
+        # First Party
+        from instructlab.training.on_demand_checkpoint import ParentSignalHandler
+
+        # Use rdzv_id to namespace the trigger file so concurrent jobs
+        # sharing /dev/shm don't interfere with each other.
+        signal_handler = ParentSignalHandler()
+        signal_handler.install()
+        logger.info(
+            "On-demand checkpointing is ENABLED. "
+            "Termination signals will trigger a full-state checkpoint before exit.",
+        )
+
     process = None
     interrupt: KeyboardInterrupt | Exception | None = None
     failure = False
@@ -811,36 +881,85 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         interrupt = e
     finally:
         if "process" not in locals() or process is None:
+            if signal_handler is not None:
+                signal_handler.uninstall()
             return
 
-        # wait for the process to exit so we can properly read the exit code
-        process.wait(timeout=60)
-        process_code = process.poll()
-        failure = process_code != 0
-
-        if not failure:
-            logger.info("Operation completed successfully! 🎉")
-        else:
-            logger.error(
-                f"Training subprocess has not exited yet. Sending SIGTERM. Process code: {process_code}"
+        # If a signal was caught by the on-demand checkpoint handler, give
+        # the workers time to detect the trigger file and save a checkpoint
+        # before we start sending our own signals to the subprocess.
+        if signal_handler is not None and signal_handler.signal_received is not None:
+            logger.info(
+                "On-demand checkpoint: signal %s received. Waiting for workers to "
+                "save checkpoint before proceeding with shutdown...",
+                signal_handler.signal_received.name,
             )
+            # Give workers generous time to complete the checkpoint save.
+            # The workers will exit on their own after saving.
+            try:
+                process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "On-demand checkpoint: workers did not finish within 300s. "
+                    "Proceeding with shutdown."
+                )
 
-        process.terminate()
+        # wait for the process to exit so we can properly read the exit code
         try:
-            logger.info("Waiting for process to exit, 60s...")
             process.wait(timeout=60)
         except subprocess.TimeoutExpired:
+            pass
+        process_code = process.poll()
+
+        if process_code is not None and process_code == 0:
+            logger.info("Operation completed successfully!")
+        elif process_code is None:
+            logger.error("Training subprocess has not exited yet. Sending SIGTERM.")
+            process.terminate()
+            try:
+                logger.info("Waiting for process to exit, 60s...")
+                process.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                logger.error(
+                    "Training subprocess did not terminate before timeout, sending SIGKILL."
+                )
+                process.kill()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+        else:
             logger.error(
-                "Training subprocess did not terminate before timeout, sending SIGKILL."
+                "Training subprocess exited with code %d.",
+                process_code,
             )
-            process.kill()
+
+        # Recompute final exit status after any forced shutdown
+        process_code = process.poll()
+        failure = process_code is None or process_code != 0
+
+        if signal_handler is not None:
+            signal_handler.uninstall()
 
         if interrupt:
             raise interrupt
         if failure:
-            raise RuntimeError(
-                "Suffered a failure during distributed training. Please see the training logs for more context."
-            )
+            msg = "Suffered a failure during distributed training. Please see the training logs for more context."
+            if (
+                signal_handler is not None
+                and signal_handler.signal_received is not None
+            ):
+                msg += (
+                    f"\n\nNote: signal {signal_handler.signal_received.name} was"
+                    " received and on-demand checkpointing was enabled, but the"
+                    " training subprocess did not exit cleanly. This usually"
+                    " means the process was killed (SIGKILL) before the"
+                    " checkpoint could be saved. To fix this, increase"
+                    " terminationGracePeriodSeconds in your pod spec to give"
+                    " workers more time, or reduce the model's forward/backward"
+                    " pass time so the checkpoint check fires sooner."
+                )
+            raise RuntimeError(msg)
 
 
 if __name__ == "__main__":
@@ -1045,6 +1164,18 @@ if __name__ == "__main__":
         ),
     )
 
+    parser.add_argument(
+        "--on_demand_checkpointing",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable on-demand full-state checkpointing triggered by Unix signals. "
+            "When enabled, workers check for a trigger file in /dev/shm at multiple "
+            "synchronization points (three times per minibatch and twice around the "
+            "optimizer step) and collectively save a distributed checkpoint before "
+            "exiting. Designed for OpenShift AI / KubeFlow preemption handling."
+        ),
+    )
     parser.add_argument(
         "--use_liger",
         action="store_true",
