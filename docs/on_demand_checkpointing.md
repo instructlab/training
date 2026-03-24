@@ -125,6 +125,52 @@ trigger file, the new run's `ParentSignalHandler` detects and removes it
 during initialization. This prevents a new job from immediately
 checkpointing and exiting due to a leftover trigger from a prior run.
 
+## Manually Triggering a Checkpoint
+
+You can trigger a checkpoint-and-exit without sending a signal by writing
+the trigger file directly. This is useful for debugging, testing, or
+integration with custom orchestration that doesn't use Unix signals.
+
+The trigger file path is:
+
+```
+/dev/shm/instructlab_checkpoint_requested_<JOB_ID>
+```
+
+Where `<JOB_ID>` is the `rdzv_id` passed to `TorchrunArgs`. If no job ID
+was set, the path is `/dev/shm/instructlab_checkpoint_requested` (no suffix).
+
+To trigger a checkpoint from a shell on any node in the training cluster:
+
+```bash
+# Find the job ID (it's the rdzv_id, also stored in the environment)
+JOB_ID=$(printenv INSTRUCTLAB_ON_DEMAND_JOB_ID)
+
+# Write the trigger file
+echo 1 > /dev/shm/instructlab_checkpoint_requested_${JOB_ID}
+```
+
+Or without the job ID:
+
+```bash
+echo 1 > /dev/shm/instructlab_checkpoint_requested
+```
+
+Workers check for the trigger file at each synchronization point in the
+training loop (multiple times per step). Once any rank on any node detects
+it, all ranks coordinate via `all_reduce` to save a checkpoint and exit.
+
+You only need to write the file on **one node** — the `all_reduce` ensures
+all nodes participate even if they don't see the file locally.
+
+From Python:
+
+```python
+from instructlab.training.on_demand_checkpoint import write_trigger_file
+
+write_trigger_file(job_id="12345")  # or job_id=None for default path
+```
+
 ## Kubernetes / OpenShift Configuration
 
 To give workers enough time to save a checkpoint before the hard SIGKILL,
