@@ -131,29 +131,25 @@ You can trigger a checkpoint-and-exit without sending a signal by writing
 the trigger file directly. This is useful for debugging, testing, or
 integration with custom orchestration that doesn't use Unix signals.
 
-The trigger file path is:
-
-```
-/dev/shm/instructlab_checkpoint_requested_<JOB_ID>
-```
-
-Where `<JOB_ID>` is the `rdzv_id` passed to `TorchrunArgs`. If no job ID
-was set, the path is `/dev/shm/instructlab_checkpoint_requested` (no suffix).
-
-To trigger a checkpoint from a shell on any node in the training cluster:
+The trigger file lives in `/dev/shm` and is named using the job ID that
+the training process was started with. To find the correct filename and
+create the trigger:
 
 ```bash
-# Find the job ID (it's the rdzv_id, also stored in the environment)
-JOB_ID=$(printenv INSTRUCTLAB_ON_DEMAND_JOB_ID)
+# Find the trigger filename for the running job — look for the job ID
+# that was set when training started
+ls /dev/shm/instructlab_checkpoint_requested*
 
-# Write the trigger file
-echo 1 > /dev/shm/instructlab_checkpoint_requested_${JOB_ID}
+# Create the trigger file (use the exact name shown by ls above)
+touch /dev/shm/instructlab_checkpoint_requested_<JOB_ID>
 ```
 
-Or without the job ID:
+If you don't know the job ID, you can read it from the training process
+environment:
 
 ```bash
-echo 1 > /dev/shm/instructlab_checkpoint_requested
+# From inside the same pod / container where training is running
+cat /proc/$(pgrep -f main_ds.py | head -1)/environ | tr '\0' '\n' | grep INSTRUCTLAB_ON_DEMAND_JOB_ID
 ```
 
 Workers check for the trigger file at each synchronization point in the
