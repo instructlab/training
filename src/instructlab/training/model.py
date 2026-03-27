@@ -65,6 +65,7 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
@@ -100,7 +101,7 @@ class Model:
         self.base_model_args = {
             "pretrained_model_name_or_path": model_path,
             "quantization_config": quant_config,
-            "trust_remote_code": True,
+            "trust_remote_code": trust_remote_code,
         }
 
         # load GPT-OSS in bfloat16 because it's a massive model, but otherwise
@@ -115,7 +116,7 @@ class Model:
             # - M-RoPE models produce 3D position_ids that FA2 misinterprets
             # - Models with timm vision towers (TimmWrapperModel rejects FA2)
             # Detect these and fall back to SDPA.
-            use_sdpa = needs_sdpa(model_path, trust_remote_code=True)
+            use_sdpa = needs_sdpa(model_path, trust_remote_code=trust_remote_code)
             if use_sdpa:
                 logger.warning(
                     "Disabling flash_attention_2 — model is incompatible "
@@ -146,7 +147,7 @@ class Model:
             # For models with timm vision towers: set vision config to eager
             # while keeping the text model's attention implementation.
             # timm's TimmWrapperModel rejects both FA2 and SDPA.
-            if has_timm_vision_tower(model_path, trust_remote_code=True):
+            if has_timm_vision_tower(model_path, trust_remote_code=trust_remote_code):
                 attn_impl = self.base_model_args.get(
                     "attn_implementation", "flash_attention_2"
                 )
@@ -557,6 +558,7 @@ class LigerModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -566,6 +568,7 @@ class LigerModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            trust_remote_code=trust_remote_code,
         )
         try:
             # Third Party
@@ -599,6 +602,7 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -608,10 +612,15 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            trust_remote_code=trust_remote_code,
         )
-        if is_vlm_with_causal_lm(model_path, trust_remote_code=True):
+        if is_vlm_with_causal_lm(
+            model_path, trust_remote_code=trust_remote_code
+        ):
             self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
-        elif is_vlm_for_direct_loading(model_path, trust_remote_code=True):
+        elif is_vlm_for_direct_loading(
+            model_path, trust_remote_code=trust_remote_code
+        ):
             self.model = load_vlm_for_text_training(model_path, self.base_model_args)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)

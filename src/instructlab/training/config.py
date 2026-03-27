@@ -302,6 +302,16 @@ class TrainingArgs(BaseModel):
         description="Whether to use Liger kernels for training.",
     )
 
+    trust_remote_code: bool = Field(
+        default=False,
+        description=(
+            "Whether to trust remote code when loading models and tokenizers "
+            "from HuggingFace Hub. Required for models with custom code such as "
+            "Nemotron, Ministral, and Qwen3.5. Can also be enabled via the "
+            "TRUST_REMOTE_CODE=1 environment variable."
+        ),
+    )
+
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO"
     )

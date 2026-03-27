@@ -112,9 +112,9 @@ class TestProcessDocumentsForPretraining:
             document_column_name="documents",
         )
 
-        # Verify tokenizer was loaded with trust_remote_code
+        # Verify tokenizer was loaded (trust_remote_code defaults to False)
         mock_from_pretrained.assert_called_once_with(
-            "test-model", trust_remote_code=True
+            "test-model", trust_remote_code=False
         )
 
         # Verify dataset filter and map were called

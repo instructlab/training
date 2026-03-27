@@ -396,8 +396,16 @@ def main(args):
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
+    # Resolve trust_remote_code from CLI flag or environment variable
+    trust_remote_code = getattr(args, "trust_remote_code", False) or os.environ.get(
+        "TRUST_REMOTE_CODE", ""
+    ).lower() in ("1", "true", "yes")
+    if trust_remote_code:
+        # Export so downstream calls (data_process, tokenizer_utils, etc.) pick it up
+        os.environ["TRUST_REMOTE_CODE"] = "1"
+
     model_conf = AutoConfig.from_pretrained(
-        args.model_name_or_path, trust_remote_code=True
+        args.model_name_or_path, trust_remote_code=trust_remote_code
     )
     args.model_type = model_conf.model_type
 
@@ -453,6 +461,7 @@ def main(args):
         flash_enabled=flash_enabled,
         noise_alpha=args.NEFTune_alpha,
         lora_quant_bits=args.lora_quant_bits,
+        trust_remote_code=trust_remote_code,
     )
 
     args.base_model_args = m.base_model_args
@@ -629,14 +638,15 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
     # build distributed training command
-    # Find torchrun executable. If unavailable, fall back to module invocation.
     torchrun_path = shutil.which("torchrun")
-    if torchrun_path:
-        command = [torchrun_path]
-    else:
-        command = [sys.executable, "-m", "torch.distributed.run"]
+    if not torchrun_path:
+        raise RuntimeError(
+            "torchrun executable not found in PATH. "
+            "Ensure PyTorch is installed correctly."
+        )
 
-    command += [
+    command = [
+        torchrun_path,
         f"--nproc-per-node={torch_args.nproc_per_node}",
         f"--nnodes={torch_args.nnodes}",
         f"--node-rank={torch_args.node_rank}",
@@ -719,6 +729,13 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
 
     if train_args.use_liger:
         command.append("--use_liger")
+
+    # Resolve trust_remote_code from flag or environment variable
+    trust_remote_code = train_args.trust_remote_code or os.environ.get(
+        "TRUST_REMOTE_CODE", ""
+    ).lower() in ("1", "true", "yes")
+    if trust_remote_code:
+        command.append("--trust_remote_code")
 
     if train_args.keep_last_checkpoint_only:
         command.append("--keep_last_checkpoint_only")
@@ -1046,6 +1063,15 @@ if __name__ == "__main__":
         help="Path to the chat template to set on the model for training. If none is provided, the chat template used in the model will be used.",
     )
     parser.add_argument("--disable_flash_attn", action="store_true")
+    parser.add_argument(
+        "--trust_remote_code",
+        action="store_true",
+        help=(
+            "Trust remote code when loading models/tokenizers from HuggingFace Hub. "
+            "Required for models with custom code (e.g. Nemotron, Ministral, Qwen3.5). "
+            "Can also be set via the TRUST_REMOTE_CODE=1 environment variable."
+        ),
+    )
     parser.add_argument(
         "--keep_last_checkpoint_only",
         action="store_true",

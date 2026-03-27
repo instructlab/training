@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+# Standard
+import os
+
 # Third Party
 from transformers import AutoTokenizer, PreTrainedTokenizer
 import transformers
@@ -95,8 +98,11 @@ def setup_tokenizer(
     model_name_or_path,
     chat_tmpl_path: str | None = None,
 ) -> PreTrainedTokenizer:
+    trust_remote_code = os.environ.get(
+        "TRUST_REMOTE_CODE", ""
+    ).lower() in ("1", "true", "yes")
     tokenizer = AutoTokenizer.from_pretrained(
-        model_name_or_path, use_fast=True, trust_remote_code=True
+        model_name_or_path, trust_remote_code=trust_remote_code
     )
     if not tokenizer.chat_template and chat_tmpl_path is None:
         raise ValueError(
