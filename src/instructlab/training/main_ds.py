@@ -629,14 +629,14 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
     # build distributed training command
-    # Find torchrun executable - try PATH first, then sys.executable's bin dir
+    # Find torchrun executable. If unavailable, fall back to module invocation.
     torchrun_path = shutil.which("torchrun")
-    if not torchrun_path:
-        # Fall back to same directory as current Python executable
-        torchrun_path = os.path.join(os.path.dirname(sys.executable), "torchrun")
+    if torchrun_path:
+        command = [torchrun_path]
+    else:
+        command = [sys.executable, "-m", "torch.distributed.run"]
 
-    command = [
-        torchrun_path,
+    command += [
         f"--nproc-per-node={torch_args.nproc_per_node}",
         f"--nnodes={torch_args.nnodes}",
         f"--node-rank={torch_args.node_rank}",

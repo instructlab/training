@@ -197,6 +197,18 @@ class Model:
                 e,
             )
 
+    def _enable_gradient_checkpointing_if_supported(self) -> None:
+        """Enable gradient checkpointing if the model supports it.
+
+        Some models (e.g. NemotronH with hybrid Mamba/MoE/Attention architecture)
+        do not support gradient checkpointing and will raise an error. This helper
+        catches known exception types and logs a warning instead of crashing.
+        """
+        try:
+            self.model.gradient_checkpointing_enable()
+        except (ValueError, NotImplementedError, AttributeError) as e:
+            logger.warning("Gradient checkpointing not supported: %s", e)
+
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
         self.reconcile_tokenizer()
@@ -571,7 +583,7 @@ class LigerModel(Model):
             cross_entropy=True,
             fused_linear_cross_entropy=False,
         )
-        self.model.gradient_checkpointing_enable()
+        self._enable_gradient_checkpointing_if_supported()
         self._post_model_init()
 
 
@@ -604,11 +616,7 @@ class CausalLMModel(Model):
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()
-        try:
-            self.model.gradient_checkpointing_enable()
-        except ValueError as e:
-            # Some models like NemotronH don't support gradient checkpointing
-            logger.warning(f"Gradient checkpointing not supported: {e}")
+        self._enable_gradient_checkpointing_if_supported()
 
 
 def setup_optimizer(

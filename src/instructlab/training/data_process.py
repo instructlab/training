@@ -46,10 +46,13 @@ def is_gpt_oss_model(tokenizer: PreTrainedTokenizer) -> bool:
     """Check if this is a GPT-OSS model based on tokenizer."""
     model_name_or_path = tokenizer.name_or_path
     try:
-        config = AutoConfig.from_pretrained(
-            model_name_or_path, trust_remote_code=True
+        config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+    except (OSError, ValueError) as e:
+        logger.warning(
+            "Failed to load config for '%s' while detecting GPT-OSS: %s",
+            model_name_or_path,
+            e,
         )
-    except Exception:
         return False
     return config.model_type == "gpt_oss"
 
@@ -1187,7 +1190,7 @@ def process_documents_for_pretraining(
         )
 
     logger.info("Loading tokenizer from %s", model_path)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer must have an EOS token defined for pretraining")
