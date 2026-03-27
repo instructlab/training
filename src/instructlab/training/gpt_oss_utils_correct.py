@@ -415,7 +415,9 @@ def is_known_model(
     # convert to config
     model_config = model_path_or_config
     if isinstance(model_path_or_config, str):
-        model_config = AutoConfig.from_pretrained(model_path_or_config)
+        model_config = AutoConfig.from_pretrained(
+            model_path_or_config, trust_remote_code=True
+        )
 
     known_model_types = (
         [known_model_type] if isinstance(known_model_type, str) else known_model_type

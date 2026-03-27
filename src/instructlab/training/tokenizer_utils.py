@@ -95,7 +95,9 @@ def setup_tokenizer(
     model_name_or_path,
     chat_tmpl_path: str | None = None,
 ) -> PreTrainedTokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, fast_tokenizer=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path, fast_tokenizer=True, trust_remote_code=True
+    )
     if not tokenizer.chat_template and chat_tmpl_path is None:
         raise ValueError(
             "Tokenizer does not have a chat template. Please provide a path to a chat template."

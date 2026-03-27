@@ -100,6 +100,7 @@ class Model:
         self.base_model_args = {
             "pretrained_model_name_or_path": model_path,
             "quantization_config": quant_config,
+            "trust_remote_code": True,
         }
 
         # load GPT-OSS in bfloat16 because it's a massive model, but otherwise
@@ -114,7 +115,7 @@ class Model:
             # - M-RoPE models produce 3D position_ids that FA2 misinterprets
             # - Models with timm vision towers (TimmWrapperModel rejects FA2)
             # Detect these and fall back to SDPA.
-            use_sdpa = needs_sdpa(model_path)
+            use_sdpa = needs_sdpa(model_path, trust_remote_code=True)
             if use_sdpa:
                 logger.warning(
                     "Disabling flash_attention_2 — model is incompatible "
@@ -145,7 +146,7 @@ class Model:
             # For models with timm vision towers: set vision config to eager
             # while keeping the text model's attention implementation.
             # timm's TimmWrapperModel rejects both FA2 and SDPA.
-            if has_timm_vision_tower(model_path):
+            if has_timm_vision_tower(model_path, trust_remote_code=True):
                 attn_impl = self.base_model_args.get(
                     "attn_implementation", "flash_attention_2"
                 )
@@ -596,9 +597,9 @@ class CausalLMModel(Model):
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
         )
-        if is_vlm_with_causal_lm(model_path):
+        if is_vlm_with_causal_lm(model_path, trust_remote_code=True):
             self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
-        elif is_vlm_for_direct_loading(model_path):
+        elif is_vlm_for_direct_loading(model_path, trust_remote_code=True):
             self.model = load_vlm_for_text_training(model_path, self.base_model_args)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)

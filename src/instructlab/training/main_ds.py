@@ -5,7 +5,9 @@ import argparse
 import datetime
 import logging
 import os
+import shutil
 import subprocess
+import sys
 import time
 import warnings
 
@@ -394,7 +396,9 @@ def main(args):
     tokenizer = setup_tokenizer(args.model_name_or_path, args.chat_tmpl_path)
     # device = torch.device("cuda", args.local_rank)
 
-    model_conf = AutoConfig.from_pretrained(args.model_name_or_path)
+    model_conf = AutoConfig.from_pretrained(
+        args.model_name_or_path, trust_remote_code=True
+    )
     args.model_type = model_conf.model_type
 
     #### distributed init #####
@@ -625,8 +629,14 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
     # build distributed training command
+    # Find torchrun executable - try PATH first, then sys.executable's bin dir
+    torchrun_path = shutil.which("torchrun")
+    if not torchrun_path:
+        # Fall back to same directory as current Python executable
+        torchrun_path = os.path.join(os.path.dirname(sys.executable), "torchrun")
+
     command = [
-        "torchrun",
+        torchrun_path,
         f"--nproc-per-node={torch_args.nproc_per_node}",
         f"--nnodes={torch_args.nnodes}",
         f"--node-rank={torch_args.node_rank}",

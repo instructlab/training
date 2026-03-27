@@ -45,7 +45,12 @@ logger = logging.getLogger(__name__)
 def is_gpt_oss_model(tokenizer: PreTrainedTokenizer) -> bool:
     """Check if this is a GPT-OSS model based on tokenizer."""
     model_name_or_path = tokenizer.name_or_path
-    config = AutoConfig.from_pretrained(model_name_or_path)
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name_or_path, trust_remote_code=True
+        )
+    except Exception:
+        return False
     return config.model_type == "gpt_oss"
 
 
@@ -1294,7 +1299,7 @@ def load_and_validate_dataset(data_path: str, num_procs: int) -> Dataset:
 
 def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
     """Configure the tokenizer with necessary special tokens."""
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
     if not tokenizer.chat_template:
         raise ValueError(
