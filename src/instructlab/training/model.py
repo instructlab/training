@@ -604,7 +604,11 @@ class CausalLMModel(Model):
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()
-        self.model.gradient_checkpointing_enable()
+        try:
+            self.model.gradient_checkpointing_enable()
+        except ValueError as e:
+            # Some models like NemotronH don't support gradient checkpointing
+            logger.warning(f"Gradient checkpointing not supported: {e}")
 
 
 def setup_optimizer(
