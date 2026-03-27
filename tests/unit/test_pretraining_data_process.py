@@ -113,7 +113,9 @@ class TestProcessDocumentsForPretraining:
         )
 
         # Verify tokenizer was loaded with trust_remote_code
-        mock_from_pretrained.assert_called_once_with("test-model", trust_remote_code=True)
+        mock_from_pretrained.assert_called_once_with(
+            "test-model", trust_remote_code=True
+        )
 
         # Verify dataset filter and map were called
         assert mock_ds.filter.called
