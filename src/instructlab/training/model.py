@@ -75,12 +75,13 @@ class Model:
 
         # check model type & set on the mclasss
         self.is_granitemoehybrid = is_known_model(model_path, "granitemoehybrid")
+        self.is_nemotronh = is_known_model(model_path, "nemotron_h")
         self.is_gpt_oss = is_gpt_oss(model_path)
 
         # Pre-populate the Hub kernel cache with locally installed mamba_ssm
         # and causal_conv1d to avoid PyTorch/CUDA ABI mismatches with the
         # Hub-provided kernel builds.
-        if self.is_granitemoehybrid:
+        if self.is_granitemoehybrid or self.is_nemotronh:
             self._use_local_mamba_kernels()
 
         if self.is_gpt_oss:
