@@ -416,9 +416,11 @@ def is_known_model(
     # convert to config
     model_config = model_path_or_config
     if isinstance(model_path_or_config, str):
-        _trust_remote = os.environ.get(
-            "TRUST_REMOTE_CODE", ""
-        ).lower() in ("1", "true", "yes")
+        _trust_remote = os.environ.get("TRUST_REMOTE_CODE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
         model_config = AutoConfig.from_pretrained(
             model_path_or_config, trust_remote_code=_trust_remote
         )

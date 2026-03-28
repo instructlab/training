@@ -5,9 +5,7 @@ import argparse
 import datetime
 import logging
 import os
-import shutil
 import subprocess
-import sys
 import time
 import warnings
 
@@ -638,15 +636,8 @@ def run_training(torch_args: TorchrunArgs, train_args: TrainingArgs) -> None:
         os.makedirs(train_args.ckpt_output_dir, exist_ok=True)
 
     # build distributed training command
-    torchrun_path = shutil.which("torchrun")
-    if not torchrun_path:
-        raise RuntimeError(
-            "torchrun executable not found in PATH. "
-            "Ensure PyTorch is installed correctly."
-        )
-
     command = [
-        torchrun_path,
+        "torchrun",
         f"--nproc-per-node={torch_args.nproc_per_node}",
         f"--nnodes={torch_args.nnodes}",
         f"--node-rank={torch_args.node_rank}",

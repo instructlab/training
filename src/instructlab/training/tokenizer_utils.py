@@ -98,9 +98,11 @@ def setup_tokenizer(
     model_name_or_path,
     chat_tmpl_path: str | None = None,
 ) -> PreTrainedTokenizer:
-    trust_remote_code = os.environ.get(
-        "TRUST_REMOTE_CODE", ""
-    ).lower() in ("1", "true", "yes")
+    trust_remote_code = os.environ.get("TRUST_REMOTE_CODE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path, trust_remote_code=trust_remote_code
     )

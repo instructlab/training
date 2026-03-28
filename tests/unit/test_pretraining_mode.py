@@ -138,9 +138,7 @@ class TestPretrainingDataProcessing(unittest.TestCase):
                     num_cpu_procs=1,
                 )
 
-                mock_auto.assert_called_once_with(
-                    "stub-model", trust_remote_code=False
-                )
+                mock_auto.assert_called_once_with("stub-model", trust_remote_code=False)
 
             output_file = output_dir / "data.jsonl"
             self.assertTrue(output_file.exists())

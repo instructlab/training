@@ -615,13 +615,9 @@ class CausalLMModel(Model):
             lora_quant_bits=lora_quant_bits,
             trust_remote_code=trust_remote_code,
         )
-        if is_vlm_with_causal_lm(
-            model_path, trust_remote_code=trust_remote_code
-        ):
+        if is_vlm_with_causal_lm(model_path, trust_remote_code=trust_remote_code):
             self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
-        elif is_vlm_for_direct_loading(
-            model_path, trust_remote_code=trust_remote_code
-        ):
+        elif is_vlm_for_direct_loading(model_path, trust_remote_code=trust_remote_code):
             self.model = load_vlm_for_text_training(model_path, self.base_model_args)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
