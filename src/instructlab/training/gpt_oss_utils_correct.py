@@ -8,6 +8,7 @@ Based on the official OSS specification.
 # Standard
 from typing import Dict
 import logging
+import os
 import re
 
 # Third Party
@@ -415,7 +416,14 @@ def is_known_model(
     # convert to config
     model_config = model_path_or_config
     if isinstance(model_path_or_config, str):
-        model_config = AutoConfig.from_pretrained(model_path_or_config)
+        _trust_remote = os.environ.get("TRUST_REMOTE_CODE", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        model_config = AutoConfig.from_pretrained(
+            model_path_or_config, trust_remote_code=_trust_remote
+        )
 
     known_model_types = (
         [known_model_type] if isinstance(known_model_type, str) else known_model_type

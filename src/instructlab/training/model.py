@@ -65,6 +65,7 @@ class Model:
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         self.lora_config = lora_config
         self.noise_alpha = noise_alpha
@@ -74,12 +75,13 @@ class Model:
 
         # check model type & set on the mclasss
         self.is_granitemoehybrid = is_known_model(model_path, "granitemoehybrid")
+        self.is_nemotronh = is_known_model(model_path, "nemotron_h")
         self.is_gpt_oss = is_gpt_oss(model_path)
 
         # Pre-populate the Hub kernel cache with locally installed mamba_ssm
         # and causal_conv1d to avoid PyTorch/CUDA ABI mismatches with the
         # Hub-provided kernel builds.
-        if self.is_granitemoehybrid:
+        if self.is_granitemoehybrid or self.is_nemotronh:
             self._use_local_mamba_kernels()
 
         if self.is_gpt_oss:
@@ -100,6 +102,7 @@ class Model:
         self.base_model_args = {
             "pretrained_model_name_or_path": model_path,
             "quantization_config": quant_config,
+            "trust_remote_code": trust_remote_code,
         }
 
         # load GPT-OSS in bfloat16 because it's a massive model, but otherwise
@@ -114,7 +117,7 @@ class Model:
             # - M-RoPE models produce 3D position_ids that FA2 misinterprets
             # - Models with timm vision towers (TimmWrapperModel rejects FA2)
             # Detect these and fall back to SDPA.
-            use_sdpa = needs_sdpa(model_path)
+            use_sdpa = needs_sdpa(model_path, trust_remote_code=trust_remote_code)
             if use_sdpa:
                 logger.warning(
                     "Disabling flash_attention_2 — model is incompatible "
@@ -145,7 +148,7 @@ class Model:
             # For models with timm vision towers: set vision config to eager
             # while keeping the text model's attention implementation.
             # timm's TimmWrapperModel rejects both FA2 and SDPA.
-            if has_timm_vision_tower(model_path):
+            if has_timm_vision_tower(model_path, trust_remote_code=trust_remote_code):
                 attn_impl = self.base_model_args.get(
                     "attn_implementation", "flash_attention_2"
                 )
@@ -195,6 +198,18 @@ class Model:
                 "GraniteMoeHybrid may use Hub kernels",
                 e,
             )
+
+    def _enable_gradient_checkpointing_if_supported(self) -> None:
+        """Enable gradient checkpointing if the model supports it.
+
+        Some models (e.g. NemotronH with hybrid Mamba/MoE/Attention architecture)
+        do not support gradient checkpointing and will raise an error. This helper
+        catches known exception types and logs a warning instead of crashing.
+        """
+        try:
+            self.model.gradient_checkpointing_enable()
+        except (ValueError, NotImplementedError, AttributeError) as e:
+            logger.warning("Gradient checkpointing not supported: %s", e)
 
     def _post_model_init(self):
         """Common initialization steps that should happen after model initialization."""
@@ -544,6 +559,7 @@ class LigerModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -553,6 +569,7 @@ class LigerModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            trust_remote_code=trust_remote_code,
         )
         try:
             # Third Party
@@ -570,7 +587,7 @@ class LigerModel(Model):
             cross_entropy=True,
             fused_linear_cross_entropy=False,
         )
-        self.model.gradient_checkpointing_enable()
+        self._enable_gradient_checkpointing_if_supported()
         self._post_model_init()
 
 
@@ -586,6 +603,7 @@ class CausalLMModel(Model):
         flash_enabled: bool = False,
         lora_config: Optional[LoraConfig] = None,
         lora_quant_bits: int = 0,
+        trust_remote_code: bool = False,
     ):
         super().__init__(
             model_path=model_path,
@@ -595,15 +613,16 @@ class CausalLMModel(Model):
             flash_enabled=flash_enabled,
             lora_config=lora_config,
             lora_quant_bits=lora_quant_bits,
+            trust_remote_code=trust_remote_code,
         )
-        if is_vlm_with_causal_lm(model_path):
+        if is_vlm_with_causal_lm(model_path, trust_remote_code=trust_remote_code):
             self.model = extract_causal_lm_from_vlm(model_path, self.base_model_args)
-        elif is_vlm_for_direct_loading(model_path):
+        elif is_vlm_for_direct_loading(model_path, trust_remote_code=trust_remote_code):
             self.model = load_vlm_for_text_training(model_path, self.base_model_args)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(**self.base_model_args)
         self._post_model_init()
-        self.model.gradient_checkpointing_enable()
+        self._enable_gradient_checkpointing_if_supported()
 
 
 def setup_optimizer(
