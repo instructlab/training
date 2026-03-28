@@ -244,7 +244,7 @@ for training jobs. There are a number of options you can specify, such as settin
 | distributed_backend | Specifies which distributed training backend to use. Supported options are "fsdp" and "deepspeed". |
 | disable_flash_attn | Disables flash attention when set to true. This allows for training on older devices. |
 | keep_last_checkpoint_only | Determines whether we should only keep the last checkpoint directory - the previous checkpoint directory is always overwritten. The checkpoint directory is called `last_epoch`. |
-| trust_remote_code | Whether to trust remote code when loading models and tokenizers from HuggingFace Hub. Required for models with custom code such as Nemotron, Ministral, and Qwen3.5. Can also be enabled via the `TRUST_REMOTE_CODE=1` environment variable. Defaults to `False`. |
+| trust_remote_code | Controls whether repository-provided Python code from HuggingFace Hub is executed when loading models and tokenizers. This is required for models that ship custom modeling code, such as Nemotron, Ministral, and Qwen3.5. Can also be enabled via the `TRUST_REMOTE_CODE=1` environment variable. Defaults to `False`. **Security note:** enabling this setting will execute remote code from the model repository — only enable it for sources you trust. |
 
 ### `DeepSpeedOptions`
 
@@ -508,7 +508,7 @@ run_training(
 Below is a list of custom environment variables users can set in the training library.
 
 1. `INSTRUCTLAB_NCCL_TIMEOUT_MS`, this environment variable controls the NCCL timeout in milliseconds. Consider increasing if seeing FSDP related NCCL errors.
-2. `TRUST_REMOTE_CODE`, when set to `1`, enables trusting remote code when loading models and tokenizers from HuggingFace Hub. This is required for models that ship custom modeling code (e.g. Nemotron, Ministral, Qwen3.5). Equivalent to setting `trust_remote_code=True` in `TrainingArgs`.
+2. `TRUST_REMOTE_CODE`, when set to `1`, allows repository-provided Python code from HuggingFace Hub to be executed when loading models and tokenizers. This is required for models that ship custom modeling code (e.g. Nemotron, Ministral, Qwen3.5). Equivalent to setting `trust_remote_code=True` in `TrainingArgs`. Only enable for sources you trust.
 
 ## Developer Certificate of Origin
 
