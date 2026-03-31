@@ -785,11 +785,10 @@ def save_hf_format_accelerate(
         elif getattr(model.module.config, "_fp8_scales", None):
             # FP8 model (e.g. Ministral): re-quantize state dict before saving
             if accelerator.is_main_process:
+                # First Party
                 from instructlab.training.vlm_utils import requantize_fp8_state_dict
 
-                log_rank_0(
-                    "Re-quantizing FP8 parameters for checkpoint compatibility"
-                )
+                log_rank_0("Re-quantizing FP8 parameters for checkpoint compatibility")
                 model_state = model.module.state_dict()
                 model_state = requantize_fp8_state_dict(
                     model_state, model.module.config._fp8_scales

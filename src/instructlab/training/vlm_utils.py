@@ -2,13 +2,13 @@
 import logging
 
 # Third Party
-import torch
 from torch import nn
 from transformers import AutoConfig, AutoModelForImageTextToText, PreTrainedModel
 from transformers.models.auto import (
     MODEL_FOR_CAUSAL_LM_MAPPING,
     MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING,
 )
+import torch
 
 logger = logging.getLogger("instructlab.training")
 
