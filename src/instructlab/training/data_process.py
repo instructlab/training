@@ -41,11 +41,18 @@ UNMASK_REASONING_END_TOKEN = "<|UNMASK_REASONING_END|>"
 logger = logging.getLogger(__name__)
 
 
+def _trust_remote_code() -> bool:
+    """Resolve trust_remote_code from the TRUST_REMOTE_CODE environment variable."""
+    return os.environ.get("TRUST_REMOTE_CODE", "").lower() in ("1", "true", "yes")
+
+
 @lru_cache()
 def is_gpt_oss_model(tokenizer: PreTrainedTokenizer) -> bool:
     """Check if this is a GPT-OSS model based on tokenizer."""
     model_name_or_path = tokenizer.name_or_path
-    config = AutoConfig.from_pretrained(model_name_or_path)
+    config = AutoConfig.from_pretrained(
+        model_name_or_path, trust_remote_code=_trust_remote_code()
+    )
     return config.model_type == "gpt_oss"
 
 
@@ -1182,7 +1189,9 @@ def process_documents_for_pretraining(
         )
 
     logger.info("Loading tokenizer from %s", model_path)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=_trust_remote_code()
+    )
 
     if tokenizer.eos_token_id is None:
         raise ValueError("Tokenizer must have an EOS token defined for pretraining")
@@ -1294,7 +1303,9 @@ def load_and_validate_dataset(data_path: str, num_procs: int) -> Dataset:
 
 def configure_tokenizer(model_path: str) -> PreTrainedTokenizer:
     """Configure the tokenizer with necessary special tokens."""
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_path, trust_remote_code=_trust_remote_code()
+    )
 
     if not tokenizer.chat_template:
         raise ValueError(

@@ -713,7 +713,30 @@ def save_hf_format_accelerate(
         if is_gpt_oss(model.module.config):
             add_gpt_oss_quantization_config(model.module.config)
 
+        # For FP8 models (e.g. Ministral), restore the original quantization
+        # config so the saved checkpoint matches the original FP8 format.
+        # We must also temporarily remove _fp8_* attrs since they contain
+        # tensors that are not JSON-serializable.
+        _fp8_quant_cfg = getattr(model.module.config, "_fp8_quantization_config", None)
+        _had_fp8_scales = hasattr(model.module.config, "_fp8_scales")
+        if _fp8_quant_cfg is not None:
+            model.module.config.quantization_config = _fp8_quant_cfg
+        if _had_fp8_scales:
+            _saved_scales = model.module.config._fp8_scales
+            del model.module.config._fp8_scales
+            if hasattr(model.module.config, "_fp8_quantization_config"):
+                del model.module.config._fp8_quantization_config
+
         model.module.config.to_json_file(output_config_file)
+
+        # Restore internal attrs and clear quantization_config so the live
+        # model doesn't look quantized during training
+        if _had_fp8_scales:
+            model.module.config._fp8_scales = _saved_scales
+            if _fp8_quant_cfg is not None:
+                model.module.config._fp8_quantization_config = _fp8_quant_cfg
+        if _fp8_quant_cfg is not None:
+            model.module.config.quantization_config = None
 
         tokenizer.save_pretrained(output_dir)
 
@@ -759,7 +782,25 @@ def save_hf_format_accelerate(
                     max_shard_size="5GB",
                     safe_serialization=True,
                 )
-        elif not is_gpt_oss(model.module.config):
+        elif getattr(model.module.config, "_fp8_scales", None):
+            # FP8 model (e.g. Ministral): re-quantize state dict before saving
+            if accelerator.is_main_process:
+                # First Party
+                from instructlab.training.vlm_utils import requantize_fp8_state_dict
+
+                log_rank_0("Re-quantizing FP8 parameters for checkpoint compatibility")
+                model_state = model.module.state_dict()
+                model_state = requantize_fp8_state_dict(
+                    model_state, model.module.config._fp8_scales
+                )
+                save_dict_accelerate(
+                    accelerator,
+                    model_state,
+                    save_directory=output_dir,
+                    max_shard_size="5GB",
+                    safe_serialization=True,
+                )
+        else:
             # Standard model saving
             accelerator.save_model(
                 model,
