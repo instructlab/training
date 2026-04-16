@@ -835,6 +835,7 @@ def save_checkpoint(
     epoch: int = None,
     hf_format: bool = True,
     full_state: bool = False,
+    global_step: int | None = None,
 ) -> None:
     if hf_format:
         save_hf_format_accelerate(
@@ -853,10 +854,18 @@ def save_checkpoint(
             is_lora=is_lora,
             epoch=epoch,
             samples_seen=samples_seen,
+            global_step=global_step,
         )
 
 
-def save_full_state(args, accelerator, is_lora: bool, epoch: int, samples_seen: int):
+def save_full_state(
+    args,
+    accelerator,
+    is_lora: bool,
+    epoch: int,
+    samples_seen: int,
+    global_step: int | None = None,
+):
     """
     Saves model, optimizer, and lr_scheduler state.
     TODO: save model config - decided not to do this.
@@ -889,9 +898,11 @@ def save_full_state(args, accelerator, is_lora: bool, epoch: int, samples_seen: 
 
     # save metadata file for current training status
     if accelerator.is_main_process:
-        # TODO: should we set the global_step here rather than calculating global_step
-        #   based on samples_seen?
         metadata = {"current_epoch": epoch, "samples_seen": samples_seen}
+        # Save global_step when provided (on-demand mid-epoch checkpoints)
+        # so that resume can fast-forward to the exact training step.
+        if global_step is not None:
+            metadata["global_step"] = global_step
         torch.save(metadata, output_dir / "training_metadata.json")
         log_rank_0(f"\033[93mSaving training state: {metadata}\033[0m", to_print=True)
 
@@ -936,9 +947,21 @@ def load_latest_full_state(args, accelerator) -> None:
         f"\033[93mTraining metadata loaded: {training_metadata}\033[0m", to_print=True
     )
 
-    # previous epoch is basis for current epoch.
-    args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
     args.__dict__["samples_seen"] = training_metadata["samples_seen"]
+
+    if "global_step" in training_metadata:
+        # On-demand mid-epoch checkpoint: resume at the same epoch and
+        # fast-forward to the exact step via last_step.
+        args.__dict__["current_epoch"] = training_metadata["current_epoch"]
+        args.__dict__["last_step"] = training_metadata["global_step"]
+        log_rank_0(
+            f"\033[93mResuming mid-epoch: epoch={args.current_epoch}, "
+            f"last_step={args.last_step}\033[0m",
+            to_print=True,
+        )
+    else:
+        # Epoch-boundary checkpoint: start at the next epoch.
+        args.__dict__["current_epoch"] = training_metadata["current_epoch"] + 1
 
 
 def freeze_router_params(model: Model):
