@@ -67,7 +67,6 @@ class TestRemoveTriggerFile:
 
     def test_noop_on_missing_file(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            # Should not raise
             remove_trigger_file()
 
 
@@ -118,7 +117,6 @@ class TestParentSignalHandler:
 
                 mock_write.assert_called_once()
 
-            # signal_received should be the LAST signal
             assert handler.signal_received == signal.SIGINT
 
     def test_uninstall_restores_original_handlers(self):
@@ -157,11 +155,25 @@ class TestCheckCheckpointRequested:
         """Mock all_reduce that just keeps the local value."""
         pass
 
+    def _make_cpu_tensor_patch(self):
+        """Return a patched torch.tensor that forces CPU device."""
+        _original_tensor = torch.tensor
+
+        def _cpu_tensor(*args, **kwargs):
+            kwargs.pop("device", None)
+            return _original_tensor(*args, **kwargs)
+
+        return _cpu_tensor
+
     def test_returns_false_when_no_trigger(self, tmp_path):
         with (
             patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path),
             patch("instructlab.training.on_demand_checkpoint.dist") as mock_dist,
             patch("torch.cuda.current_device", return_value=0),
+            patch(
+                "instructlab.training.on_demand_checkpoint.torch.tensor",
+                side_effect=self._make_cpu_tensor_patch(),
+            ),
         ):
             mock_dist.all_reduce = self._mock_all_reduce_propagate
             mock_dist.is_initialized.return_value = True
@@ -174,6 +186,10 @@ class TestCheckCheckpointRequested:
             patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path),
             patch("instructlab.training.on_demand_checkpoint.dist") as mock_dist,
             patch("torch.cuda.current_device", return_value=0),
+            patch(
+                "instructlab.training.on_demand_checkpoint.torch.tensor",
+                side_effect=self._make_cpu_tensor_patch(),
+            ),
         ):
             mock_dist.all_reduce = self._mock_all_reduce_propagate
             mock_dist.is_initialized.return_value = True
@@ -187,6 +203,10 @@ class TestCheckCheckpointRequested:
             patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path),
             patch("instructlab.training.on_demand_checkpoint.dist") as mock_dist,
             patch("torch.cuda.current_device", return_value=0),
+            patch(
+                "instructlab.training.on_demand_checkpoint.torch.tensor",
+                side_effect=self._make_cpu_tensor_patch(),
+            ),
         ):
             mock_dist.all_reduce = self._mock_all_reduce_propagate
             mock_dist.is_initialized.return_value = True
@@ -201,6 +221,10 @@ class TestCheckCheckpointRequested:
             patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path),
             patch("instructlab.training.on_demand_checkpoint.dist") as mock_dist,
             patch("torch.cuda.current_device", return_value=0),
+            patch(
+                "instructlab.training.on_demand_checkpoint.torch.tensor",
+                side_effect=self._make_cpu_tensor_patch(),
+            ),
         ):
             mock_dist.all_reduce = MagicMock()
             mock_dist.is_initialized.return_value = True
@@ -242,6 +266,8 @@ class TestBatchLossManagerInterrupt:
             world_size=1,
             local_rank=0,
         )
+        # Override torch_device to CPU so tests work without CUDA
+        mgr.torch_device = torch.device("cpu")
         return mgr
 
     def _make_batch(self, n_minibatches=3):
