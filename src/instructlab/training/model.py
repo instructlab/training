@@ -84,6 +84,17 @@ class Model:
         if self.is_granitemoehybrid or self.is_nemotronh:
             self._use_local_mamba_kernels()
 
+        # Compatibility shim for Nemotron's HF Hub remote code which imports
+        # is_flash_attn_greater_or_equal_2_10, renamed in transformers 5.x.
+        if self.is_nemotronh:
+            # Third Party
+            from transformers.utils import import_utils as _iu
+
+            if not hasattr(_iu, "is_flash_attn_greater_or_equal_2_10"):
+                _iu.is_flash_attn_greater_or_equal_2_10 = lambda: (
+                    _iu.is_flash_attn_greater_or_equal("2.10")
+                )
+
         if self.is_gpt_oss:
             # Third Party
             quant_config = Mxfp4Config(dequantize=True)
