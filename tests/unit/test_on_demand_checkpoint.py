@@ -2,7 +2,7 @@
 """Tests for on-demand checkpointing."""
 
 # Standard
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 import os
 import signal
 
@@ -27,57 +27,48 @@ from instructlab.training.on_demand_checkpoint import (
 
 
 class TestGetTriggerPath:
-    def test_without_job_id(self):
+    def test_returns_correct_name(self):
         path = _get_trigger_path()
         assert path.name == "instructlab_checkpoint_requested"
         assert str(path.parent) == "/dev/shm"
-
-    def test_with_job_id(self):
-        path = _get_trigger_path("my-job-123")
-        assert path.name == "instructlab_checkpoint_requested_my-job-123"
-
-    def test_different_job_ids_produce_different_paths(self):
-        p1 = _get_trigger_path("job-a")
-        p2 = _get_trigger_path("job-b")
-        assert p1 != p2
 
 
 class TestWriteTriggerFile:
     def test_creates_file(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            path = write_trigger_file("test-write")
+            path = write_trigger_file()
             assert path.exists()
             assert path.read_text() == "1"
 
     def test_returns_correct_path(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            path = write_trigger_file("test-path")
-            assert path == tmp_path / "instructlab_checkpoint_requested_test-path"
+            path = write_trigger_file()
+            assert path == tmp_path / "instructlab_checkpoint_requested"
 
 
 class TestTriggerFileExists:
     def test_returns_false_when_absent(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            assert trigger_file_exists("nonexistent") is False
+            assert trigger_file_exists() is False
 
     def test_returns_true_when_present(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            write_trigger_file("exists")
-            assert trigger_file_exists("exists") is True
+            write_trigger_file()
+            assert trigger_file_exists() is True
 
 
 class TestRemoveTriggerFile:
     def test_removes_existing_file(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            write_trigger_file("to-remove")
-            assert trigger_file_exists("to-remove") is True
-            remove_trigger_file("to-remove")
-            assert trigger_file_exists("to-remove") is False
+            write_trigger_file()
+            assert trigger_file_exists() is True
+            remove_trigger_file()
+            assert trigger_file_exists() is False
 
     def test_noop_on_missing_file(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
             # Should not raise
-            remove_trigger_file("never-existed")
+            remove_trigger_file()
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +78,7 @@ class TestRemoveTriggerFile:
 
 class TestParentSignalHandler:
     def test_install_registers_handlers(self):
-        handler = ParentSignalHandler(job_id="test-install")
+        handler = ParentSignalHandler()
         original_handlers = {sig: signal.getsignal(sig) for sig in _CATCHABLE_SIGNALS}
         try:
             handler.install()
@@ -97,13 +88,12 @@ class TestParentSignalHandler:
                     f"Expected handler._handle for {sig.name}, got {current}"
                 )
         finally:
-            # Restore originals regardless
             for sig, orig in original_handlers.items():
                 signal.signal(sig, orig)
 
     def test_handle_writes_trigger_and_records_signal(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            handler = ParentSignalHandler(job_id="test-handle")
+            handler = ParentSignalHandler()
             assert handler.signal_received is None
             assert handler._trigger_written is False
 
@@ -111,12 +101,12 @@ class TestParentSignalHandler:
 
             assert handler.signal_received == signal.SIGUSR1
             assert handler._trigger_written is True
-            assert trigger_file_exists("test-handle") is True
+            assert trigger_file_exists() is True
 
     def test_handle_is_idempotent(self, tmp_path):
         """Multiple signals should only write the trigger file once."""
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            handler = ParentSignalHandler(job_id="test-idempotent")
+            handler = ParentSignalHandler()
 
             with patch(
                 "instructlab.training.on_demand_checkpoint.write_trigger_file"
@@ -126,38 +116,35 @@ class TestParentSignalHandler:
                 handler._handle(signal.SIGTERM, None)
                 handler._handle(signal.SIGINT, None)
 
-                # write_trigger_file called only once
-                mock_write.assert_called_once_with("test-idempotent")
+                mock_write.assert_called_once()
 
             # signal_received should be the LAST signal
             assert handler.signal_received == signal.SIGINT
 
     def test_uninstall_restores_original_handlers(self):
-        handler = ParentSignalHandler(job_id="test-uninstall")
+        handler = ParentSignalHandler()
         originals = {sig: signal.getsignal(sig) for sig in _CATCHABLE_SIGNALS}
 
         handler.install()
-        # Verify handlers changed
         for sig in _CATCHABLE_SIGNALS:
             assert signal.getsignal(sig) == handler._handle
 
         handler.uninstall()
-        # Verify handlers restored
         for sig in _CATCHABLE_SIGNALS:
             assert signal.getsignal(sig) == originals[sig], f"{sig.name} not restored"
 
     def test_install_via_real_signal(self, tmp_path):
         """End-to-end: install handler, send SIGUSR1, verify trigger written."""
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
-            handler = ParentSignalHandler(job_id="test-real-signal")
+            handler = ParentSignalHandler()
             handler.install()
             try:
                 os.kill(os.getpid(), signal.SIGUSR1)
                 assert handler.signal_received == signal.SIGUSR1
-                assert trigger_file_exists("test-real-signal") is True
+                assert trigger_file_exists() is True
             finally:
                 handler.uninstall()
-                remove_trigger_file("test-real-signal")
+                remove_trigger_file()
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +155,7 @@ class TestParentSignalHandler:
 class TestCheckCheckpointRequested:
     def _mock_all_reduce_propagate(self, tensor, op=None):
         """Mock all_reduce that just keeps the local value."""
-        pass  # tensor already has the local value
+        pass
 
     def test_returns_false_when_no_trigger(self, tmp_path):
         with (
@@ -180,8 +167,7 @@ class TestCheckCheckpointRequested:
             mock_dist.is_initialized.return_value = True
             mock_dist.get_rank.return_value = 0
 
-            result = check_checkpoint_requested("test-no-trigger")
-            assert result is False
+            assert check_checkpoint_requested() is False
 
     def test_returns_true_when_trigger_exists(self, tmp_path):
         with (
@@ -193,9 +179,8 @@ class TestCheckCheckpointRequested:
             mock_dist.is_initialized.return_value = True
             mock_dist.get_rank.return_value = 0
 
-            write_trigger_file("test-trigger")
-            result = check_checkpoint_requested("test-trigger")
-            assert result is True
+            write_trigger_file()
+            assert check_checkpoint_requested() is True
 
     def test_cleans_up_trigger_after_detection(self, tmp_path):
         with (
@@ -207,9 +192,9 @@ class TestCheckCheckpointRequested:
             mock_dist.is_initialized.return_value = True
             mock_dist.get_rank.return_value = 0
 
-            write_trigger_file("test-cleanup")
-            check_checkpoint_requested("test-cleanup")
-            assert trigger_file_exists("test-cleanup") is False
+            write_trigger_file()
+            check_checkpoint_requested()
+            assert trigger_file_exists() is False
 
     def test_all_reduce_is_called(self, tmp_path):
         with (
@@ -222,9 +207,8 @@ class TestCheckCheckpointRequested:
             mock_dist.get_rank.return_value = 0
             mock_dist.ReduceOp.MAX = torch.distributed.ReduceOp.MAX
 
-            check_checkpoint_requested("test-allreduce")
+            check_checkpoint_requested()
             mock_dist.all_reduce.assert_called_once()
-            # Verify MAX reduction op
             _, kwargs = mock_dist.all_reduce.call_args
             assert kwargs.get("op") == torch.distributed.ReduceOp.MAX
 
@@ -246,8 +230,6 @@ class TestBatchLossManagerInterrupt:
         )
         accelerator = MagicMock()
         accelerator.device = torch.device("cpu")
-        # reduce is called with a 2-element tensor (metrics) and a scalar (loss).
-        # Return the input unchanged to simulate single-rank "reduction".
         accelerator.reduce.side_effect = lambda t, **kw: t
         accelerator.backward = MagicMock()
 
@@ -297,8 +279,6 @@ class TestBatchLossManagerInterrupt:
         def interrupt_on_second_call():
             nonlocal call_count
             call_count += 1
-            # First call: before forward — let it pass
-            # Second call: before backward — interrupt
             return call_count == 2
 
         batch = self._make_batch(3)
@@ -306,7 +286,6 @@ class TestBatchLossManagerInterrupt:
             batch, interrupt_check=interrupt_on_second_call
         )
         assert metrics.interrupted is True
-        # Forward ran once, backward never ran
         assert manager.model.compute_loss.call_count == 1
         manager.accelerator.backward.assert_not_called()
         assert metrics.grad_accum_steps == 0
@@ -318,7 +297,6 @@ class TestBatchLossManagerInterrupt:
         def interrupt_on_third_call():
             nonlocal call_count
             call_count += 1
-            # Calls: 1=before_fwd, 2=before_bwd, 3=after_bwd (interrupt)
             return call_count == 3
 
         batch = self._make_batch(3)
@@ -339,11 +317,9 @@ class TestBatchLossManagerInterrupt:
 
     def test_compute_average_loss_handles_float_when_interrupted(self, manager):
         """When interrupted before any forward, accumulated_loss is 0.0 (float)."""
-        # _compute_average_loss must handle float, not just Tensor
         result = manager._compute_average_loss(
             accumulated_loss=0.0,
             accumulated_aux_loss=None,
             batch_num_loss_counted_tokens=64,
         )
-        # Should not raise and should return a float
         assert isinstance(result, float)
