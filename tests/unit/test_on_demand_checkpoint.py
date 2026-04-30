@@ -29,7 +29,13 @@ from instructlab.training.on_demand_checkpoint import (
 class TestGetTriggerPath:
     def test_returns_correct_name(self):
         path = _get_trigger_path()
-        assert path.name == "instructlab_checkpoint_requested"
+        assert path.name == "checkpoint_requested"
+        assert str(path.parent) == "/dev/shm"
+
+    def test_respects_env_override(self, monkeypatch):
+        monkeypatch.setenv("CHECKPOINT_TRIGGER_FILENAME", "my_custom_trigger")
+        path = _get_trigger_path()
+        assert path.name == "my_custom_trigger"
         assert str(path.parent) == "/dev/shm"
 
 
@@ -43,7 +49,7 @@ class TestWriteTriggerFile:
     def test_returns_correct_path(self, tmp_path):
         with patch("instructlab.training.on_demand_checkpoint._TRIGGER_DIR", tmp_path):
             path = write_trigger_file()
-            assert path == tmp_path / "instructlab_checkpoint_requested"
+            assert path == tmp_path / "checkpoint_requested"
 
 
 class TestTriggerFileExists:

@@ -135,8 +135,12 @@ The trigger file is always at a fixed path. To trigger a checkpoint
 (e.g. via `kubectl exec` into the training pod):
 
 ```bash
-touch /dev/shm/instructlab_checkpoint_requested
+touch /dev/shm/checkpoint_requested
 ```
+
+The default filename is `checkpoint_requested`. To use a custom filename,
+set the `CHECKPOINT_TRIGGER_FILENAME` environment variable before starting
+training.
 
 Workers check for the trigger file at each synchronization point in the
 training loop (multiple times per step). Once any rank on any node detects
