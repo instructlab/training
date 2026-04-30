@@ -89,7 +89,7 @@ logger = logging.getLogger("instructlab.training")
 #   2. Shared between all containers in the same Kubernetes pod.
 #   3. Automatically cleaned up when the pod is destroyed.
 _TRIGGER_DIR = Path("/dev/shm")
-_TRIGGER_FILENAME = "instructlab_checkpoint_requested"
+_TRIGGER_FILENAME = "checkpoint_requested"
 
 
 def _get_trigger_path() -> Path:

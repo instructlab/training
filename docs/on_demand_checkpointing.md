@@ -135,7 +135,7 @@ The trigger file is always at a fixed path. To trigger a checkpoint
 (e.g. via `kubectl exec` into the training pod):
 
 ```bash
-touch /dev/shm/instructlab_checkpoint_requested
+touch /dev/shm/checkpoint_requested
 ```
 
 Workers check for the trigger file at each synchronization point in the
