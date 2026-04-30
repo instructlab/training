@@ -32,6 +32,12 @@ class TestGetTriggerPath:
         assert path.name == "checkpoint_requested"
         assert str(path.parent) == "/dev/shm"
 
+    def test_respects_env_override(self, monkeypatch):
+        monkeypatch.setenv("CHECKPOINT_TRIGGER_FILENAME", "my_custom_trigger")
+        path = _get_trigger_path()
+        assert path.name == "my_custom_trigger"
+        assert str(path.parent) == "/dev/shm"
+
 
 class TestWriteTriggerFile:
     def test_creates_file(self, tmp_path):

@@ -138,6 +138,10 @@ The trigger file is always at a fixed path. To trigger a checkpoint
 touch /dev/shm/checkpoint_requested
 ```
 
+The default filename is `checkpoint_requested`. To use a custom filename,
+set the `CHECKPOINT_TRIGGER_FILENAME` environment variable before starting
+training.
+
 Workers check for the trigger file at each synchronization point in the
 training loop (multiple times per step). Once any rank on any node detects
 it, all ranks coordinate via `all_reduce` to save a checkpoint and exit.
