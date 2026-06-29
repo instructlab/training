@@ -1,0 +1,74 @@
+name: Auto-merge agent PRs
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine PR number
+        id: pr
+        run: echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Check merge conditions
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          echo "Checking PR #$PR_NUMBER..."
+
+          # Must have agent-pr label or be from an agent branch
+          BRANCH=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>/dev/null || echo "")
+
+          if ! echo "$BRANCH" | grep -q "^agent/" && ! echo "$LABELS" | grep -q "agent-pr"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: not an agent branch or agent-pr label"
+            exit 0
+          fi
+
+          # Skip if from a fork
+          IS_FORK=$(gh pr view "$PR_NUMBER" --json isCrossRepository --jq '.isCrossRepository')
+          if [ "$IS_FORK" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: PR is from a fork"
+            exit 0
+          fi
+
+          # Must have at least one approval
+          APPROVALS=$(gh pr view "$PR_NUMBER" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length')
+          if [ "$APPROVALS" = "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: No approvals"
+            exit 0
+          fi
+
+          # All CI checks must pass (ignore this workflow)
+          FAILING=$(gh pr checks "$PR_NUMBER" --json name,state --jq '[.[] | select(.state != "SUCCESS" and .state != "SKIPPED" and .name != "auto-merge")] | length' 2>/dev/null || echo "0")
+          if [ "$FAILING" != "0" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: $FAILING CI checks not passing"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "All conditions met: agent branch + approved + CI green"
+
+      - name: Merge
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" --squash --delete-branch
+          echo "Merged PR #$PR_NUMBER"
