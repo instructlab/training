@@ -191,7 +191,7 @@ class TrainingArgs(BaseModel):
     """
 
     # disable the protected namespace for the model_config field
-    model_config = ConfigDict(protected_namespaces=())
+    model_config = ConfigDict(protected_namespaces=(), arbitrary_types_allowed=True)
 
     # Either the name of a HuggingFace model or a path to a model saved in HuggingFace format.
     model_path: str
@@ -372,6 +372,12 @@ class TrainingArgs(BaseModel):
             "checkpoint before exiting gracefully. Designed for OpenShift AI / "
             "KubeFlow training jobs where preemption signals must be handled."
         ),
+    )
+
+    callbacks: list | None = Field(
+        default=None,
+        exclude=True,
+        description="List of TrainerCallback instances for training lifecycle hooks.",
     )
 
     @model_validator(mode="after")

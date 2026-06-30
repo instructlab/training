@@ -5,7 +5,9 @@ __all__ = (
     "LoraOptions",
     "QuantizeDataType",
     "TorchrunArgs",
+    "TrainerCallback",
     "TrainingArgs",
+    "TrainingContext",
     "run_training",
     "FSDPOptions",
     "ShardingStrategies",
@@ -17,6 +19,7 @@ __all__ = (
 import instructlab.training.logger  # Disable package logging by default
 
 # Local
+from .callbacks import TrainerCallback, TrainingContext
 from .config import (
     DataProcessArgs,
     DeepSpeedOffloadStrategy,

@@ -48,7 +48,14 @@ class BatchLossManager:
     - Computing average losses for logging
     """
 
-    def __init__(self, model, accelerator, world_size: int, local_rank: int):
+    def __init__(
+        self,
+        model,
+        accelerator,
+        world_size: int,
+        local_rank: int,
+        callback_manager=None,
+    ):
         """
         Initialize the BatchLossManager.
 
@@ -57,12 +64,14 @@ class BatchLossManager:
             accelerator: The accelerator instance for distributed training
             world_size: Number of distributed processes
             local_rank: Local rank of the current process
+            callback_manager: Optional CallbackManager for lifecycle hooks
         """
         self.model: Model = model
         self.accelerator: Accelerator = accelerator
         self.world_size: int = world_size
         self.local_rank: int = local_rank
         self.torch_device = torch.device("cuda", local_rank)
+        self.callback_manager = callback_manager
 
     def process_batch(
         self,
@@ -111,6 +120,9 @@ class BatchLossManager:
             batch_total_samples += micro_batch_size
             batch_total_length += total_length
 
+            if self.callback_manager:
+                self.callback_manager.fire("on_before_forward")
+
             # prepare model inputs
             model_inputs = self._prepare_model_inputs(mb)
 
@@ -125,6 +137,9 @@ class BatchLossManager:
                 break
 
             self.accelerator.backward(scaled_loss)
+
+            if self.callback_manager:
+                self.callback_manager.fire("on_after_backward")
 
             # accumulate losses
             grad_accum_steps += 1
