@@ -253,10 +253,9 @@ def test_training_feature_matrix(
     if dist_backend == DistributedBackend.FSDP:
         train_args.fsdp_options.cpu_offload_params = cpu_offload
     else:
-        pytest.xfail("DeepSpeed not currently functional. OOMs during backprop.")
         if cpu_offload:
             pytest.xfail("DeepSpeed CPU Adam isn't currently building correctly")
-        train_args.deepspeed_options.cpu_offload_optimizer = cpu_offload
+        pytest.xfail("DeepSpeed not currently functional. OOMs during backprop.")
 
     torch_args = TorchrunArgs(**DEFAULT_TORCHRUN_ARGS)
 
