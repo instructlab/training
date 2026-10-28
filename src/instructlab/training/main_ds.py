@@ -43,7 +43,7 @@ import torch
 import torch.distributed as dist
 
 # First Party
-from instructlab.training import config
+from instructlab.training import config, device_utils
 from instructlab.training.accelerator import Accelerator
 from instructlab.training.batch_loss_manager import BatchLossManager
 from instructlab.training.config import (
@@ -324,8 +324,12 @@ def train(
                 elapsed_time = time.time() - start
                 overall_throughput = batch_metrics.total_samples / elapsed_time
                 current_lr = accelerator.lr_scheduler.get_last_lr()[0]
-                cuda_mem_allocated = torch.cuda.memory_allocated() / (1024**3)
-                cuda_malloc_retries = torch.cuda.memory_stats()["num_alloc_retries"]
+                # metric keys keep their cuda_* names for compatibility; values come
+                # from whichever accelerator is active
+                cuda_mem_allocated = (
+                    device_utils.get_device_module().memory_allocated() / (1024**3)
+                )
+                cuda_malloc_retries = device_utils.num_alloc_retries()
                 global_grad_norm = (
                     model.get_global_grad_norm()
                     if hasattr(model, "get_global_grad_norm")
@@ -389,7 +393,7 @@ def train(
                 and validation_frequency is not None
                 and global_step % validation_frequency == 0
             ):
-                torch_device = torch.device("cuda", local_rank)
+                torch_device = device_utils.get_device(local_rank)
                 val_metrics = compute_validation_loss(
                     model, val_data_loader, torch_device
                 )
@@ -430,7 +434,7 @@ def train(
             global_step += 1
             if local_rank == 0:
                 inner_pb.update(1)
-            torch.cuda.empty_cache()
+            device_utils.get_device_module().empty_cache()
 
         if args.checkpoint_at_epoch:
             base_logger.debug(f"Saving checkpoint at epoch {epoch}")
@@ -551,7 +555,7 @@ def main(args):
     args.model_type = model_conf.model_type
 
     #### distributed init #####
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    device_utils.get_device_module().set_device(int(os.environ["LOCAL_RANK"]))
     args.local_rank = int(os.environ["LOCAL_RANK"])
 
     timeout = _get_collective_timeout()
@@ -561,7 +565,7 @@ def main(args):
         dist.init_process_group()
 
     args.global_rank = dist.get_rank()
-    tensor = torch.ByteTensor([False]).cuda()
+    tensor = torch.ByteTensor([False]).to(device_utils.get_device())
     dist.all_reduce(tensor)
     dist.barrier()
 
@@ -745,8 +749,24 @@ def main(args):
         if callback_manager:
             callback_manager.close()
 
+    _shutdown_dataloader_workers(accelerator.train_loader, val_loader)
     dist.barrier()
     dist.destroy_process_group()
+
+
+def _shutdown_dataloader_workers(*loaders) -> None:
+    """Stop the persistent worker processes of the given DataLoaders.
+
+    With XCCL (Intel XPU), destroy_process_group() blocks indefinitely while
+    forked DataLoader workers are still alive, so release them before tearing
+    down the process group. Training is finished at this point, so this is
+    harmless on other backends.
+    """
+    for loader in loaders:
+        iterator = getattr(loader, "_iterator", None)
+        if iterator is not None and hasattr(iterator, "_shutdown_workers"):
+            iterator._shutdown_workers()
+            loader._iterator = None
 
 
 # public API

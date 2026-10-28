@@ -16,6 +16,7 @@ import torch
 import torch.distributed
 
 # First Party
+from instructlab.training import device_utils
 from instructlab.training.accelerator import Accelerator
 from instructlab.training.model import Model
 from instructlab.training.type_definitions import CollatedItem, ModelInputs
@@ -70,7 +71,7 @@ class BatchLossManager:
         self.accelerator: Accelerator = accelerator
         self.world_size: int = world_size
         self.local_rank: int = local_rank
-        self.torch_device = torch.device("cuda", local_rank)
+        self.torch_device = device_utils.get_device(local_rank)
         self.callback_manager = callback_manager
 
     def process_batch(

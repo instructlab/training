@@ -16,6 +16,7 @@ from transformers import get_scheduler
 import torch
 
 # First Party
+from instructlab.training import device_utils
 from instructlab.training.config import (  # Adjust this import if needed
     DeepSpeedOptions,
     DistributedBackend,
@@ -185,7 +186,7 @@ class Accelerator:
         if sharding_strategy == "HYBRID_SHARD":
             world_size = torch.distributed.get_world_size()
             # FSDP1 auto-detects num_devices_per_node from available GPUs
-            num_devices_per_node = torch.cuda.device_count()
+            num_devices_per_node = device_utils.get_device_module().device_count()
             if world_size < num_devices_per_node:
                 logger.warning(
                     f"HYBRID_SHARD requested but world_size ({world_size}) < "

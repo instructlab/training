@@ -39,6 +39,7 @@ from transformers import (
 import torch
 
 # First Party
+from instructlab.training import device_utils
 from instructlab.training.config import (  # Adjust this import if needed
     DistributedBackend,
     Optimizer,
@@ -135,6 +136,18 @@ class Model:
                     "(M-RoPE or timm vision tower). Using SDPA instead."
                 )
                 self.base_model_args["attn_implementation"] = "sdpa"
+            elif device_utils.is_xpu():
+                if self.is_gpt_oss:
+                    # GPT-OSS needs flash-attn3 (attention sinks), which has no XPU build
+                    self.base_model_args["attn_implementation"] = "eager"
+                    logger.warning(
+                        "GPT-OSS: flash-attn3 is not available on Intel XPU. "
+                        "Using eager attention instead."
+                    )
+                else:
+                    self.base_model_args["attn_implementation"] = (
+                        device_utils.xpu_flash_attn_implementation()
+                    )
             else:
                 self.base_model_args["attn_implementation"] = "flash_attention_2"
                 if self.is_gpt_oss:
@@ -484,6 +497,10 @@ class Model:
         """
         if disable_flash_attn:
             return False
+        if device_utils.is_xpu():
+            # XPU keeps the flash path (padding-free batches); the attention
+            # kernel is chosen in Model.__init__ via xpu_flash_attn_implementation().
+            return True
         if Model.supports_flash_attention():
             return True
         raise RuntimeError(

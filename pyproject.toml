@@ -47,6 +47,7 @@ dependencies = { file = ["requirements.txt"] }
 optional-dependencies.cuda = { file = ["requirements-cuda.txt"] }
 optional-dependencies.rocm = { file = ["requirements-rocm.txt"] }
 optional-dependencies.hpu = { file = ["requirements-hpu.txt"] }
+optional-dependencies.xpu = { file = ["requirements-xpu.txt"] }
 optional-dependencies.deepspeed = { file = ["requirements-deepspeed.txt"] }
 optional-dependencies.mlflow = { file = ["requirements-mlflow.txt"] }
 optional-dependencies.wandb = { file = ["requirements-wandb.txt"] }
@@ -115,4 +116,5 @@ follow_imports = "silent"
 [tool.pytest.ini_options]
 markers = [
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+  "xpu: requires a real Intel XPU (select with '-m xpu')",
 ]

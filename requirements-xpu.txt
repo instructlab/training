@@ -1,0 +1,5 @@
+# Intel XPU build of PyTorch: not on PyPI, install with
+#   pip install instructlab-training[xpu] --extra-index-url https://download.pytorch.org/whl/xpu
+torch==2.13.0+xpu
+# flash-attention kernel with Intel XPU builds (kernels-community/flash-attn2)
+kernels>=0.9.0

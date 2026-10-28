@@ -15,6 +15,9 @@ import re
 from transformers import AutoConfig, PretrainedConfig
 import torch
 
+# First Party
+from instructlab.training import device_utils
+
 logger = logging.getLogger("instructlab.training")
 
 GROUP_SIZE = 32  # MXFP4 block size (last-dim groups)
@@ -381,7 +384,7 @@ def convert_dequantized_to_quantized_format_correct(
 
             # Clear GPU memory after each conversion
             del blocks_u8, scales_i8, scales_u8
-            torch.cuda.empty_cache()
+            device_utils.get_device_module().empty_cache()
 
         except Exception as e:
             logger.error(f"❌ Failed to convert {param_name}: {e}")

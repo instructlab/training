@@ -33,6 +33,7 @@ import torch
 import torch.nn.functional as F
 
 # First Party
+from instructlab.training import device_utils
 from instructlab.training.config import (
     DistributedBackend,
     QuantizeDataType,
@@ -95,8 +96,12 @@ def check_valid_train_args(train_args: TrainingArgs):
             "Quantization is not supported when training LoRA models with FSDP. For quantized LoRA training, please switch to DeepSpeed."
         )
 
-    if Model.check_flash_attn_enabled(train_args.disable_flash_attn):
-        # verify that the flash_attn package is actually installed
+    if (
+        Model.check_flash_attn_enabled(train_args.disable_flash_attn)
+        and not device_utils.is_xpu()
+    ):
+        # verify that the flash_attn package is actually installed (CUDA/ROCm;
+        # XPU uses a hub kernel or SDPA, see device_utils.xpu_flash_attn_implementation)
         try:
             # pylint: disable=unused-import
             # Third Party
@@ -487,7 +492,9 @@ def save_fsdp_gpt_oss_model(
         for clean_name, param in expert_params_to_process:
             # Create mini state dict with just this parameter on GPU
             mini_state = {
-                clean_name: param.cuda() if param.device.type == "cpu" else param
+                clean_name: param.to(device_utils.get_device())
+                if param.device.type == "cpu"
+                else param
             }
 
             # Convert this parameter
@@ -502,7 +509,7 @@ def save_fsdp_gpt_oss_model(
 
             # Clean up GPU memory
             del mini_state, mini_converted
-            torch.cuda.empty_cache()
+            device_utils.get_device_module().empty_cache()
 
         # Save state dict using accelerator.save
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -821,7 +828,7 @@ def set_random_seed(seed):
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+        device_utils.get_device_module().manual_seed_all(seed)
 
 
 # TODO: move this to also live in the `Model` object

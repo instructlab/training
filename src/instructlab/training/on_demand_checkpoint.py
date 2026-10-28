@@ -72,6 +72,9 @@ import types
 import torch
 import torch.distributed as dist
 
+# First Party
+from instructlab.training import device_utils
+
 # Type alias matching the return type of signal.getsignal().
 _SignalHandler = Union[
     Callable[[int, Optional[types.FrameType]], None], int, signal.Handlers, None
@@ -245,7 +248,9 @@ def check_checkpoint_requested() -> bool:
     trigger_tensor = torch.tensor(
         [1 if local_trigger else 0],
         dtype=torch.int32,
-        device=torch.cuda.current_device(),
+        device=device_utils.get_device(
+            device_utils.get_device_module().current_device()
+        ),
     )
     dist.all_reduce(trigger_tensor, op=dist.ReduceOp.MAX)
 
