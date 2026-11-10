@@ -16,7 +16,7 @@ In CI, the tests are run with Python 3.11 - 3.13 on Ubuntu and MacOS runners - y
 
 Some smoke tests currently live in the `tests/smoke` directory and are run with [pytest](https://docs.pytest.org/) via [tox](https://tox.wiki/).
 
-There is also a Shell-based smoke test script that can be found at `tests/smoketest.sh`.
+There is also a Shell-based smoke test script at `tests/smoketest.sh`. It is not run by any CI workflow and is currently stale (e.g. it passes the removed `--is_granite` flag); see [#705](https://github.com/instructlab/training/issues/705).
 
 To run the smoke tests, you can run `tox -e py3-smoke`
 
