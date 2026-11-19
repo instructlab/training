@@ -59,7 +59,6 @@ pull_request_rules:
   actions:
     merge:
       method: merge
-    delete_head_branch:
 
 - name: label-cicd
   description: Automatically apply CI/CD label
